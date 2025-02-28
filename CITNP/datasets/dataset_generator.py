@@ -2,14 +2,15 @@
 This file contains dataset generators.
 """
 from functools import partial
-from typing import List, Optional, Union
+from typing import List, Tuple, Union
 
 import numpy as np
 from torch.utils.data import IterableDataset
 from tqdm import trange
 
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
-from CITNP.datasets.functions_generator import GPFunctionGenerator
+from CITNP.datasets.functions_generator import (GPFunctionGenerator,
+                                                SinusoidFunctionGenerator)
 
 
 class InterventionDatasetGenerator(IterableDataset):
@@ -61,10 +62,12 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_type = graph_type
         self.graph_degrees = graph_degrees
 
-        self.max_num_variables = max(num_variables)
+        self.max_num_variables = max(num_variables) if isinstance(num_variables, list) else num_variables
 
         if self.function_generator == "gp":
             self.data_generator = partial(GPFunctionGenerator)
+        elif self.function_generator == "sinusoid":
+            self.data_generator = partial(SinusoidFunctionGenerator)
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """
@@ -117,6 +120,19 @@ class InterventionDatasetGenerator(IterableDataset):
         degree = np.random.choice(self.graph_degrees)
         return degree
 
+    def randomly_intervene_on_dag(self, dag: np.ndarray) -> Tuple[np.ndarray, int]:
+        """
+        Randomly intervene on a variable in the DAG.
+
+        This is done by randomly selecting a variable and removing all
+        incoming edges to that variable (by setting the corresponding column
+        in the adjacency matrix to 0) in the data generation phase.
+        """
+        # TODO: Do we intervene on a variable that has no parents?
+        # Choose intervention index
+        intervention_index = np.random.choice(dag.shape[0])
+        return intervention_index
+
     def pad_data(self, data: np.ndarray, current_vars: int) -> np.ndarray:
         """
         Pad data to match the maximum number of variables.
@@ -133,16 +149,16 @@ class InterventionDatasetGenerator(IterableDataset):
         padded_data : np.ndarray
             Padded data
         """
-        if current_vars == self.max_variables:
+        if current_vars == self.max_num_variables:
             return data
 
         # For 2D data: samples x variables
         if data.ndim == 2:
-            pad_width = ((0, 0), (0, self.max_variables - current_vars))
+            pad_width = ((0, 0), (0, self.max_num_variables - current_vars))
         # For 3D data: variables x variables (adjacency matrix)
         elif data.ndim == 3:
-            pad_width = ((0, 0), (0, self.max_variables - current_vars),
-                         (0, self.max_variables - current_vars))
+            pad_width = ((0, 0), (0, self.max_num_variables - current_vars),
+                         (0, self.max_num_variables - current_vars))
 
         return np.pad(data, pad_width, mode='constant', constant_values=0)
 
@@ -172,24 +188,22 @@ class InterventionDatasetGenerator(IterableDataset):
             The intervened causal graphs.
         variable_counts : np.ndarray shape (batch_size,)
             The number of variables in each dataset.
-        masks : np.ndarray shape (batch_size, max_variables)
+        masks : np.ndarray shape (batch_size, max_num_variables)
             Binary masks indicating which variables are valid (1) vs padding (0)
         """
         # Lists to store data for each batch
         obs_data_array = np.zeros(
-            (self.batch_size, self.sample_size, self.max_variables)
+            (self.batch_size, self.sample_size, self.max_num_variables)
         )
         int_data_array = np.zeros(
-            (self.batch_size, self.sample_size, self.max_variables)
+            (self.batch_size, self.sample_size, self.max_num_variables)
         )
         causal_graphs_array = np.zeros(
-            (self.batch_size, self.max_variables, self.max_variables)
+            (self.batch_size, self.max_num_variables, self.max_num_variables)
         )
-        intervened_causal_graphs_array = np.zeros(
-            (self.batch_size, self.num_variables, self.max_variables)
-        )
+        intvn_indices = np.zeros(self.batch_size)
         variable_counts = np.zeros(self.batch_size)
-        masks = np.zeros((self.batch_size, self.max_variables))
+        masks = np.zeros((self.batch_size, self.max_num_variables))
 
 
         # Each batch is a different dataset
@@ -212,15 +226,19 @@ class InterventionDatasetGenerator(IterableDataset):
 
             # Generate data
             currnet_data_generator = self.data_generator(
-                number_of_variables=current_num_variables,
+                num_variables=current_num_variables,
             )
+            # Create interventional DAG
+            # We do this by randomly intervening on a variable
+            intvn_index = self.randomly_intervene_on_dag(dag)
+
             (
                 obs_data,
                 intvn_data,
-                intvt_dag,
             ) = currnet_data_generator.generate_data(
                 causal_graph=dag,
                 sample_size=self.sample_size,
+                intervention_index=intvn_index,
             )
 
             # Permute the data and graphs
@@ -229,11 +247,8 @@ class InterventionDatasetGenerator(IterableDataset):
                 dag,
                 permutation_indices=permutation_indices,
             )[0]
-
-            intvt_dag = self.permute_causal_graph(
-                intvt_dag,
-                permutation_indices=permutation_indices,
-            )[0]
+            # find the index of the intervened variable post permutation
+            intvn_index = np.where(permutation_indices == intvn_index)[0][0]
 
             # Permute data
             obs_data, intvn_data = self.permute_data(
@@ -242,7 +257,7 @@ class InterventionDatasetGenerator(IterableDataset):
             )
 
             # Create mask for valid variables (1 for valid, 0 for padding)
-            mask = np.zeros(self.max_variables)
+            mask = np.zeros(self.max_num_variables)
             mask[:current_num_variables] = 1
 
             # Pad data if necessary
@@ -250,21 +265,20 @@ class InterventionDatasetGenerator(IterableDataset):
             obs_data = self.pad_data(obs_data, current_num_variables)
             intvn_data = self.pad_data(intvn_data, current_num_variables)
             dag = self.pad_data(dag, current_num_variables)
-            intvt_dag = self.pad_data(intvt_dag, current_num_variables)
 
             # Store data for this batch
             obs_data_array[b] = obs_data
             int_data_array[b] = intvn_data
             causal_graphs_array[b] = dag
-            intervened_causal_graphs_array[b] = intvt_dag
+            intvn_indices[b] = intvn_index
             variable_counts[b] = current_num_variables
             masks[b] = mask
 
-        yield (
+        return (
             obs_data_array,
             int_data_array,
             causal_graphs_array,
-            intervened_causal_graphs_array,
+            intvn_indices,
             variable_counts,
             masks
         )

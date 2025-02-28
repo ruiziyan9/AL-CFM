@@ -1,0 +1,267 @@
+"""
+The following file will contain class of functions that will generate the data
+given a causal graph.
+
+All classses will contain the generate_data method, which will generate the
+data.
+
+Contains:
+- GPLVMFunctionGenerator: Data is generated using a GPLVM.
+"""
+from abc import ABC, abstractmethod
+
+import numpy as np
+import torch as th
+
+from CITNP.utils.gplvm_utils import SumExpGammaKernels
+from CITNP.utils.processing import normalise_variable
+
+
+class SinFunction:
+
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents
+        self.scale = np.random.gamma(1, 1, size=(1))
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Generate a sinusoidal function.
+        """
+        input_num = inputs.shape[-1]
+        if input_num == 0:
+            # If there is no parent, we sample from a normal distribution.
+            outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            return outputs
+        else:
+            outputs = np.sin(inputs.sum(axis=-1) / 0.4) + np.random.normal(loc=0, scale=self.scale, size=(inputs.shape[0]))
+            return outputs[:, None]
+
+
+class GPFunctions:
+    """
+    Helper class to sample from GPs.
+
+    If no parents are given, we sample from a normal distribution.
+    If parents are given, we sample from a GP with a sum of exponential
+    gamma kernels.
+    """
+
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents
+        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+
+        lengthscale_values = np.random.lognormal(-1, 1, size=(3, num_parents))
+        lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
+        gamma_values = np.random.uniform(0.1, 1, size=(3,))
+        self.noise_dist = th.distributions.Gamma(1, 10)
+        # Define the kernel
+        self.kernel = SumExpGammaKernels(
+            num_kernels=2,
+            gamma_vals=th.from_numpy(gamma_values).to(self.device),
+            lengthscale_vals=th.from_numpy(lengthscale_values).to(self.device),
+        )
+
+    def sample_gp(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Sample from an GPLVM.
+        """
+        assert inputs.shape[-1] == self.num_parents, "Incorrect input shape!"
+        with th.no_grad():
+            inputs = th.from_numpy(inputs).to(self.device).to(th.float64)
+            covariance = self.kernel(inputs, inputs)
+
+            noise_value = self.noise_dist.sample((inputs.shape[0],)).to(self.device).to(th.float64)
+            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device)
+            mean = th.zeros(inputs.shape[0], device=self.device)
+            normal_dist = th.distributions.MultivariateNormal(mean, covariance)
+            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(mean)
+            final_output = output.detach().cpu().numpy().astype(np.float32)
+            return final_output[:, None]
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Samples from GP given kernel and mean.
+        """
+        input_num = inputs.shape[-1]
+        if input_num == 0:
+            # If there is no parent, we sample from a normal distribution.
+            outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+        else:
+            outputs = self.sample_gp(inputs)
+        return outputs
+
+
+class DataGenerator(ABC):
+    """
+    Base class for all causal data generators.
+    """
+
+    def __init__(
+        self,
+        num_variables: int,
+    ):
+        self.number_of_variables = num_variables
+
+    def _get_inputs(
+        self, parents_of_i: np.ndarray, data: np.ndarray
+    ) -> np.ndarray:
+        """
+        Get the inputs for the variable i.
+        """
+        parents_of_i = np.where(parents_of_i)[0]
+        inputs = data[:, parents_of_i]
+        assert inputs.ndim == 2
+        return inputs
+
+    def generate_data(
+        self,
+        causal_graph: np.ndarray,
+        sample_size: int,
+        intervention_index: int,
+    ) -> np.ndarray:
+        """
+        Generate functions for the SCM.
+
+        For now, we always intervene on the 0th index variable.
+
+        Args:
+        ----------
+        causal_graph : np.ndarray shape (num_variables, num_variables)
+            Causal graph to use for the data generation. Where row i is a parent of column j.
+            A[i, j] = 1 if i -> j.
+
+        sample_size : int
+            Number of samples to generate.
+
+        intervention_index : int
+            Index of the variable to intervene on. The parents of this variable
+            will be set to 0.
+        """
+        # Functions will be a dict with keys being the variable number
+        function_dict = self.generate_functions(causal_graph)
+        obs_data = np.zeros((sample_size, self.number_of_variables))
+        intvn_data = np.zeros((sample_size, self.number_of_variables))
+        # Causal graph row i is a parent of column j.
+        # The causal graph should be upper triangular.
+        # We always need to generate the cause first.
+        # Thus, we need to loop over the columns.
+        loop_order = np.arange(self.number_of_variables)
+
+        # We need to make sure that the inerventions are sampled from the
+        # SAME FUNCTION!
+        for i in loop_order:
+            function_for_i = function_dict[i]
+            parents_of_i = causal_graph[:, i]
+
+            # Observational data
+            # Inputs will be an empty array if there are no parents.
+            obs_inputs = self._get_inputs(parents_of_i, obs_data)
+            # Intervention on i we set the parents to 0
+            if i == intervention_index:
+                variable_intvn = np.random.normal(loc=0, scale=1.0, size=(sample_size, 1))
+                obs_inputs = normalise_variable(obs_inputs)
+                variable_obs = function_for_i(obs_inputs)
+                variable_obs = normalise_variable(variable_obs)
+            else:
+                intvn_parents_of_i = parents_of_i
+                intvn_inputs = self._get_inputs(intvn_parents_of_i, intvn_data)
+                full_inputs = np.concatenate([obs_inputs, intvn_inputs], axis=0)
+                # Pass the inputs to the function
+                full_inputs = normalise_variable(full_inputs)
+                variable = function_for_i(full_inputs)
+
+                all_data = normalise_variable(variable)
+                variable_obs = all_data[:sample_size]
+                variable_intvn = all_data[sample_size:]
+
+            obs_data[:, i:i+1] = variable_obs
+            intvn_data[:, i:i+1] = variable_intvn
+
+        assert not np.isnan(obs_data).any(), "Obs Data contains NaNs!"
+        assert not np.isinf(obs_data).any(), "Obs Data contains infs!"
+        assert not np.isnan(intvn_data).any(), "Intvn Data contains NaNs!"
+        assert not np.isinf(intvn_data).any(), "Intvn Data contains infs!"
+        return obs_data, intvn_data
+
+    @abstractmethod
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        """
+        raise NotImplementedError()
+
+
+class SinusoidFunctionGenerator(DataGenerator):
+    """
+    Will generate data using sinusoidal functions respecting a given causal graph.
+    """
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function = SinFunction(
+                num_parents=num_parents
+            )
+            function_dict[i] = function
+
+        return function_dict
+
+
+class GPFunctionGenerator(DataGenerator):
+    """
+    Will generate data using Gaussian Process model priors
+    respecting a given causal graph.
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function = GPFunctions(
+                num_parents=num_parents
+            )
+            function_dict[i] = function
+
+        return function_dict

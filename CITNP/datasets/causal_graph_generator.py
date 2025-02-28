@@ -1,8 +1,8 @@
 """
 File that contains the class that generates causal graphs.
 """
-import numpy as np
 import igraph as ig
+import numpy as np
 
 
 def generate_synthetic_dag(d, s0, graph_type):
@@ -14,7 +14,8 @@ def generate_synthetic_dag(d, s0, graph_type):
         graph_type (str): ER, SF, BP
 
     Returns:
-        B (np.ndarray): [d, d] binary adj matrix of DAG
+        B (np.ndarray): [d, d] binary adj matrix of DAG, where
+        B[i, j] = 1 if i -> j
     """
     def _random_permutation(M):
         # np.random.permutation permutes first axis only
