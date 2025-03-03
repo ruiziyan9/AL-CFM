@@ -1,0 +1,45 @@
+{
+  "os":  "Linux-6.8.0-49-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.10.16",
+  "startedAt":  "2025-03-03T20:08:36.652761Z",
+  "args":  [
+    "--iterations_per_epoch=10000"
+  ],
+  "program":  "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments/iterable_train.py",
+  "codePath":  "CITNP/experiments/iterable_train.py",
+  "git":  {
+    "remote":  "https://github.com/Anish144/CausalInferenceNeuralProcess.git",
+    "commit":  "948e7e66552b5f9885758dad1650398c1b2d396c"
+  },
+  "email":  "anishdhir144@gmail.com",
+  "root":  "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments",
+  "host":  "alchemy.doc.ic.ac.uk",
+  "executable":  "/vol/bitbucket/ad6013/anaconda3/envs/meta_causal_inf/bin/python3",
+  "codePathLocal":  "iterable_train.py",
+  "cpu_count":  24,
+  "cpu_count_logical":  32,
+  "gpu":  "NVIDIA GeForce RTX 4090",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "67318153216",
+      "used":  "39916113920"
+    }
+  },
+  "memory":  {
+    "total":  "67187224576"
+  },
+  "cpu":  {
+    "count":  24,
+    "countLogical":  32
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada"
+    }
+  ],
+  "cudaVersion":  "12.4"
+}

@@ -2,11 +2,14 @@
 File to train the model.
 """
 import argparse
+from pathlib import Path
 
-from torch.utils.data import DataLoader
+import torch
+import wandb
 
 from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
 from CITNP.models.causalinferencemodel import CausalInferenceModel
+from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.default_args import return_default_args
 
 
@@ -18,15 +21,21 @@ def main(args: argparse.Namespace):
         "function_generator": args.function_generator,
         "graph_type":  args.graph_type,
         "graph_degrees": args.graph_degrees,
+        "iterations_per_epoch": args.iterations_per_epoch,
+        "batch_size": args.batch_size,
     }
 
-    dataset = InterventionDatasetGenerator(
+    train_dataset = InterventionDatasetGenerator(
         **DATA_ARGS
     )
-    dataloader = DataLoader(
-        dataset,
-        batch_size=None,
-        shuffle=True,
+    DATA_ARGS.pop("iterations_per_epoch")
+    val_dataset = InterventionDatasetGenerator(
+        iterations_per_epoch=100,
+        **DATA_ARGS,
+    )
+    test_dataset = InterventionDatasetGenerator(
+        iterations_per_epoch=100,
+        **DATA_ARGS,
     )
 
     MODEL_ARGS = {
@@ -34,10 +43,9 @@ def main(args: argparse.Namespace):
         "emb_depth": args.emb_depth,
         "dim_feedforward": args.dim_feedforward,
         "nhead": args.nhead,
-        "dropout": args.dropout,
+        "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
-        "num_layers_decoder": args.num_layers_decoder,
-        "num_nodes": args.num_nodes,
+        "num_nodes": args.num_variables,
         "device": args.device,
         "dtype": args.dtype,
     }
@@ -46,8 +54,40 @@ def main(args: argparse.Namespace):
         **MODEL_ARGS
     )
 
+    TRAINER_ARGS = {
+        "batch_size": 32,
+        "epochs": 10,
+        "use_wandb": True,
+        "lr_warmup_ratio": 0.1,
+        "bfloat16": True,
+        "num_workers": 0,
+        "save_dir": Path("/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments/results"),
+        "cntxt_split": [0.2, 0.8],
+        "sample_size": args.sample_size,
+    }
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    run = wandb.init(
+        # Set the project where this run will be logged
+        project="meta_causal_inference",
+        name="test",
+        # Track hyperparameters and run metadata
+        config=vars(args).update(TRAINER_ARGS),
+    )
+
+    trainer = CausalInferenceTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        validation_dataset=val_dataset,
+        test_dataset=test_dataset,
+        optimizer=optimizer,
+        **TRAINER_ARGS,
+    )
+    trainer.train()
+
 
 if __name__ == "__main__":
+    wandb.login(key="bc359b26d166ea6980eb0e231060bd7b8c06925e")
     parser = argparse.ArgumentParser()
     default_args = return_default_args()
     for key, value in default_args.items():

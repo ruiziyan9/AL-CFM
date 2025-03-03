@@ -1,50 +1,60 @@
 """
 File to train the transformer NP classifier model.
 """
+from functools import partial
 from pathlib import Path
+from typing import List
 
 import torch as th
 import wandb
-from ml2_meta_causal_discovery.utils.datautils import (
-    transformer_classifier_split, transformer_classifier_split_withpadding,
-    transformer_classifier_val_split_withpadding)
-from ml2_meta_causal_discovery.utils.metrics import (auc_graph_scores,
-                                                     expected_f1_score,
-                                                     expected_shd,
-                                                     log_prob_graph_scores)
-from ml2_meta_causal_discovery.utils.wandb import plot_perm_matrix
 from tqdm import tqdm
 
+from CITNP.utils.datautils import transformer_inference_split_withpadding
 
-class CausalClassifierTrainer:
+
+def send_to_device(data, device):
+    if isinstance(data, th.Tensor):
+        return data.to(device)
+    elif isinstance(data, list):
+        return [send_to_device(d, device) for d in data]
+    elif isinstance(data, dict):
+        return {k: send_to_device(v, device) for k, v in data.items()}
+    else:
+        return data
+
+
+class CausalInferenceTrainer:
     """
     Class to train the causal classifier model.
 
     Params:
     -------
-    train_dataset: torch.utils.data.Dataset
+    - train_dataset: th.utils.data.Dataset
         The training dataset.
-
-    validation_dataset: torch.utils.data.Dataset
+    - validation_dataset: th.utils.data.Dataset
         The validation dataset.
-
-    model: torch.nn.Module
+    - test_dataset: th.utils.data.Dataset
+        The test dataset.
+    - model: th.nn.Module
         The model to train.
-
-    optimizer: torch.optim.Optimizer
-        The initialised optimizer to use.
-
-    epochs: int
+    - optimizer: th.optim.Optimizer
+        The optimizer to use.
+    - epochs: int
         The number of epochs to train for.
-
-    batch_size: int
-        The batch size to use for training.
-
-    num_workers: int
-        The number of workers to use for the data loader.
-
-    lr_warmup_steps: int
-        Number of steps to warm up the learning rate.
+    - batch_size: int
+        The batch size.
+    - num_workers: int
+        The number of workers to use for the DataLoader.
+    - lr_warmup_ratio: float
+        The ratio of the total number of steps to use for learning rate warmup.
+    - bfloat16: bool
+        Whether to use bfloat16 precision.
+    - save_dir: Path
+        The directory to save the model.
+    - scheduler: th.optim.lr_scheduler
+        The scheduler to use.
+    - use_wandb: bool
+        Whether to use wandb.
     """
 
     def __init__(
@@ -60,6 +70,8 @@ class CausalClassifierTrainer:
         lr_warmup_ratio: float,
         bfloat16: bool,
         save_dir: Path,
+        cntxt_split: List[float],
+        sample_size: int,
         scheduler: th.optim.lr_scheduler = None,
         use_wandb: bool = True,
     ):
@@ -74,6 +86,8 @@ class CausalClassifierTrainer:
         self.lr_warmup_ratio = lr_warmup_ratio
         self.bfloat16 = bfloat16
         self.save_dir = save_dir
+        self.cntxt_split = cntxt_split
+        self.sample_size = sample_size
         self.scheduler = scheduler
         self.use_wandb = use_wandb
 
@@ -82,137 +96,146 @@ class CausalClassifierTrainer:
         self.initialise_loaders()
 
     def initialise_loaders(self):
+        # For iterable datasets, we don't need to specify the batch size
+        if isinstance(self.train_dataset, th.utils.data.IterableDataset):
+            self.batch_size = None
+            shuffle = False
+        else:
+            shuffle = True
+
+        collator = partial(
+            transformer_inference_split_withpadding,
+            cntxt_split=self.cntxt_split,
+            sample_size=self.sample_size,
+        )
         # Get loaders
+        persistent_workers = True if self.num_workers > 0 else False
         self.train_loader = th.utils.data.DataLoader(
-            self.train_dataset, batch_size=self.batch_size, shuffle=True,
+            self.train_dataset, batch_size=self.batch_size, shuffle=shuffle,
             num_workers=self.num_workers, pin_memory=True,
-            persistent_workers=True,
-            collate_fn=transformer_classifier_split_withpadding(),
+            persistent_workers=persistent_workers,
+            collate_fn=collator(),
         )
         self.val_loader = th.utils.data.DataLoader(
-            self.validation_dataset, batch_size=4, shuffle=True,
+            self.validation_dataset, batch_size=self.batch_size, shuffle=shuffle,
             num_workers=self.num_workers, pin_memory=True,
-            persistent_workers=True,
-            collate_fn=transformer_classifier_split_withpadding(),
+            persistent_workers=persistent_workers,
+            collate_fn=collator(),
         )
         self.test_loader = th.utils.data.DataLoader(
-            self.test_dataset, batch_size=4, shuffle=True,
+            self.test_dataset, batch_size=self.batch_size, shuffle=shuffle,
             num_workers=self.num_workers, pin_memory=True,
-            persistent_workers=True,
-            collate_fn=transformer_classifier_split_withpadding(),
+            persistent_workers=persistent_workers,
+            collate_fn=collator(),
         )
 
-    def apply_learning_rate_warmup(self, epoch, step, lr_warmup_steps, is_avici=False):
+    def apply_learning_rate_warmup(self, epoch, step, lr_warmup_steps):
         """
         Warmup should be around 10% of the total steps.
-
-        If the model is an Avici model, then we need top warmup the
-        regularisation parameter as well.
         """
         if epoch == 0 and step < lr_warmup_steps:
             lr = step / lr_warmup_steps * self.learning_rate
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = lr
-            if is_avici:
-                # Hard code to 1e-4
-                self.model.regulariser_lr = step / lr_warmup_steps * 1e-4
         else:
             pass
 
     def test_single_epoch(self, test_loader, metric_dict, calc_metrics=False, num_samples=100, check_acyclic=False):
-        with th.no_grad():
-            self.model.to("cuda")
-            dtype = th.float32
-            self.model.eval()
-            self.model.to(dtype)
-            all_loss = 0
-            for i, data in enumerate(tqdm(test_loader, desc="Testing")):
-                # Get the inputs and targets
-                inputs, targets, attention_mask = data
-                targets = targets.to("cuda", dtype=dtype)
-                inputs = inputs.to("cuda", dtype=dtype)
-                if attention_mask is not None:
-                    attention_mask = attention_mask.to("cuda", dtype=dtype)
-                inputs = (inputs - inputs.mean(dim=1, keepdim=True)) / inputs.std(dim=1, keepdim=True)
-                # Forward pass
-                adj_logit = self.model(inputs, graph=targets, mask=attention_mask, is_training=False)
+        pass
+        # with th.no_grad():
+        #     self.model.to("cuda")
+        #     dtype = th.float32
+        #     self.model.eval()
+        #     self.model.to(dtype)
+        #     all_loss = 0
+        #     for i, data in enumerate(tqdm(test_loader, desc="Testing")):
+        #         # Get the inputs and targets
+        #         inputs, targets, attention_mask = data
+        #         targets = targets.to("cuda", dtype=dtype)
+        #         inputs = inputs.to("cuda", dtype=dtype)
+        #         if attention_mask is not None:
+        #             attention_mask = attention_mask.to("cuda", dtype=dtype)
+        #         inputs = (inputs - inputs.mean(dim=1, keepdim=True)) / inputs.std(dim=1, keepdim=True)
+        #         # Forward pass
+        #         adj_logit = self.model(inputs, graph=targets, mask=attention_mask, is_training=False)
 
-                if isinstance(adj_logit, tuple):
-                    adj_logit = adj_logit[0]
+        #         if isinstance(adj_logit, tuple):
+        #             adj_logit = adj_logit[0]
 
-                loss = self.model.calculate_loss(adj_logit, targets)
-                all_loss += th.sum(loss).cpu().item()
-                if calc_metrics:
-                    predictions, _ = self.model.sample(
-                        inputs, num_samples=num_samples, mask=attention_mask
-                    )
-                    auc = auc_graph_scores(targets, predictions)
-                    log_prob = log_prob_graph_scores(targets, predictions.to(targets.device))
-                    e_shd = expected_shd(targets.cpu().detach().numpy(), predictions.cpu().detach().numpy(), check_acyclic=check_acyclic)
-                    e_f1 = expected_f1_score(targets.cpu().detach().numpy(), predictions.cpu().detach().numpy(), check_acyclic=check_acyclic)
-                    result = {
-                        "e_shd": list(e_shd),
-                        "e_f1": list(e_f1),
-                        "auc": list(auc),
-                        "log_prob": list(log_prob),
-                    }
-                    if "e_shd" in metric_dict:
-                        metric_dict["e_shd"] += result["e_shd"]
-                        metric_dict["e_f1"] += result["e_f1"]
-                        metric_dict["auc"] += result["auc"]
-                        metric_dict["log_prob"] += result["log_prob"]
-                    else:
-                        metric_dict.update(result)
-            # Log the test loss
-            loss = all_loss / len(test_loader.dataset)
-            metric_dict.update(
-                {
-                    "test_loss": loss,
-                }
-            )
-            dtype = th.bfloat16 if self.bfloat16 else th.float32
-            self.model.train()
-            self.model.to(dtype)
-            return metric_dict
+        #         loss = self.model.calculate_loss(adj_logit, targets)
+        #         all_loss += th.sum(loss).cpu().item()
+        #         if calc_metrics:
+        #             predictions, _ = self.model.sample(
+        #                 inputs, num_samples=num_samples, mask=attention_mask
+        #             )
+        #             auc = auc_graph_scores(targets, predictions)
+        #             log_prob = log_prob_graph_scores(targets, predictions.to(targets.device))
+        #             e_shd = expected_shd(targets.cpu().detach().numpy(), predictions.cpu().detach().numpy(), check_acyclic=check_acyclic)
+        #             e_f1 = expected_f1_score(targets.cpu().detach().numpy(), predictions.cpu().detach().numpy(), check_acyclic=check_acyclic)
+        #             result = {
+        #                 "e_shd": list(e_shd),
+        #                 "e_f1": list(e_f1),
+        #                 "auc": list(auc),
+        #                 "log_prob": list(log_prob),
+        #             }
+        #             if "e_shd" in metric_dict:
+        #                 metric_dict["e_shd"] += result["e_shd"]
+        #                 metric_dict["e_f1"] += result["e_f1"]
+        #                 metric_dict["auc"] += result["auc"]
+        #                 metric_dict["log_prob"] += result["log_prob"]
+        #             else:
+        #                 metric_dict.update(result)
+        #     # Log the test loss
+        #     loss = all_loss / len(test_loader.dataset)
+        #     metric_dict.update(
+        #         {
+        #             "test_loss": loss,
+        #         }
+        #     )
+        #     dtype = th.bfloat16 if self.bfloat16 else th.float32
+        #     self.model.train()
+        #     self.model.to(dtype)
+            # return metric_dict
 
     def validate_single_epoch(self, val_loader, metric_dict):
-        self.model.eval()
-        dtype = th.float32
-        self.model.to(dtype)
+        pass
+        # self.model.eval()
+        # dtype = th.float32
+        # self.model.to(dtype)
 
-        all_loss = 0
-        all_preds = 0
-        for i, data in enumerate(tqdm(val_loader, desc="Validation")):
-            # Get the inputs and targets
-            inputs, targets, attention_mask = data
-            targets = targets.to("cuda", dtype=dtype)
-            inputs = inputs.to("cuda", dtype=dtype)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to("cuda", dtype=dtype)
-            inputs = (inputs - inputs.mean(dim=1, keepdim=True)) / inputs.std(dim=1, keepdim=True)
-            # Forward pass
-            adj_logit = self.model(inputs, graph=targets, is_training=False, mask=attention_mask)
+        # all_loss = 0
+        # all_preds = 0
+        # for i, data in enumerate(tqdm(val_loader, desc="Validation")):
+        #     # Get the inputs and targets
+        #     inputs, targets, attention_mask = data
+        #     targets = targets.to("cuda", dtype=dtype)
+        #     inputs = inputs.to("cuda", dtype=dtype)
+        #     if attention_mask is not None:
+        #         attention_mask = attention_mask.to("cuda", dtype=dtype)
+        #     inputs = (inputs - inputs.mean(dim=1, keepdim=True)) / inputs.std(dim=1, keepdim=True)
+        #     # Forward pass
+        #     adj_logit = self.model(inputs, graph=targets, is_training=False, mask=attention_mask)
 
-            if isinstance(adj_logit, tuple):
-                adj_logit = adj_logit[0]
+        #     if isinstance(adj_logit, tuple):
+        #         adj_logit = adj_logit[0]
 
-            loss = self.model.calculate_loss(adj_logit, targets)
-            all_loss += th.sum(loss).cpu().item()
-            # pred = (adj_logit > 0.5).double()
-            # all_preds += th.sum(pred == flat_target).cpu().item()
-        # Log the validation loss
-        # accuracy = all_preds / len(val_loader.dataset)
-        loss = all_loss / len(val_loader.dataset)
-        metric_dict.update(
-            {
-                "val_loss": loss,
-                # "val_accuracy": accuracy,
-            }
-        )
-        dtype = th.bfloat16 if self.bfloat16 else th.float32
-        self.model.train()
-        self.model.to(dtype)
-        return metric_dict
+        #     loss = self.model.calculate_loss(adj_logit, targets)
+        #     all_loss += th.sum(loss).cpu().item()
+        #     # pred = (adj_logit > 0.5).double()
+        #     # all_preds += th.sum(pred == flat_target).cpu().item()
+        # # Log the validation loss
+        # # accuracy = all_preds / len(val_loader.dataset)
+        # loss = all_loss / len(val_loader.dataset)
+        # metric_dict.update(
+        #     {
+        #         "val_loss": loss,
+        #         # "val_accuracy": accuracy,
+        #     }
+        # )
+        # dtype = th.bfloat16 if self.bfloat16 else th.float32
+        # self.model.train()
+        # self.model.to(dtype)
+        # return metric_dict
 
     def train_single_epoch(
         self,
@@ -222,7 +245,6 @@ class CausalClassifierTrainer:
         epoch,
         lr_warmup_steps,
     ):
-        is_avici = self.model.__class__.__name__ == "AviciDecoder"
         self.model.train()
         dtype = th.bfloat16 if self.bfloat16 else th.float32
         self.model.to(dtype)
@@ -231,28 +253,36 @@ class CausalClassifierTrainer:
         for i, data in enumerate(pbar):
             # Learning rate warmup
             self.apply_learning_rate_warmup(
-                epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps, is_avici=is_avici
+                epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps
             )
             # Get the inputs and targets
-            inputs, targets, attention_mask = data
-            targets = targets.to("cuda", dtype=dtype)
-            inputs = inputs.to("cuda", dtype=dtype)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to("cuda", dtype=dtype)
-            # Normaliser the inputs across axis 1
-            inputs = (inputs - inputs.mean(dim=1, keepdim=True)) / inputs.std(dim=1, keepdim=True)
+            context, target, intvn_indices, outcome_indices, masks = send_to_device(
+                list(data),
+                device="cuda",
+            )
+            context, target = send_to_device(
+                [context, target],
+                device=th.bfloat16 if self.bfloat16 else th.float32,
+            )
+            if masks is not None:
+                masks = masks.to("cuda", dtype=dtype)
 
             # Zero the parameter gradients
             self.optimizer.zero_grad()
             # Forward pass
-            logits = self.model(inputs, graph=targets, mask=attention_mask)
-            if is_avici:
-                if i % 500 == 0:
-                   loss = self.model.calculate_loss(logits, targets, update_regulariser=True)
-                else:
-                    loss = self.model.calculate_loss(logits, targets)
-            else:
-                loss = self.model.calculate_loss(logits, targets)
+            pred_mean, pred_std = self.model(
+                context_data=context,
+                target_data=target,
+                intervention_index=intvn_indices,
+                outcome_index=outcome_indices,
+                variable_mask=masks,
+            )
+            loss = self.model.calculate_loss(
+                pred_mean=pred_mean,
+                pred_std=pred_std,
+                target=target,
+                outcome_index=outcome_indices,
+            )
             loss.mean().backward()
             # Gradient clipping
             th.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
@@ -263,10 +293,8 @@ class CausalClassifierTrainer:
                     "train loss": loss.mean().item(),
                 }
                 if i % 10000 == 0 and i > 0:
-                    # don't do validation with autoregressive as its too expensive
-                    if self.model.__class__.__name__ != "CausalAutoregressiveDecoder":
-                        metric_dict = self.validate_single_epoch(val_loader, metric_dict)
-                        metric_dict = self.test_single_epoch(test_loader, metric_dict)
+                    metric_dict = self.validate_single_epoch(val_loader, metric_dict)
+                    metric_dict = self.test_single_epoch(test_loader, metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
             pbar.set_description(
@@ -292,8 +320,6 @@ class CausalClassifierTrainer:
                 epoch=epoch,
                 lr_warmup_steps=lr_warmup_steps,
             )
-            metric_dict = self.validate_single_epoch(self.val_loader, metric_dict)
-            metric_dict = self.test_single_epoch(self.test_loader, metric_dict)
             # Step the scheduler after each epoch
             if self.scheduler is not None:
                 self.scheduler.step()

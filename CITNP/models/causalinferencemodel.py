@@ -1,13 +1,15 @@
 """
 File containing the CausalInferenceModel class
 """
+from typing import Optional
+
 import torch
 
 from CITNP.models.causaltransformercomponents import (CausalInfEncoder,
                                                       build_mlp)
 
 
-class CausalInferenceModel:
+class CausalInferenceModel(torch.nn.Module):
     """
     Class containing the CausalInferenceModel class.
     """
@@ -20,7 +22,6 @@ class CausalInferenceModel:
         nhead,
         dropout,
         num_layers_encoder,
-        num_layers_decoder,
         num_nodes,
         device=None,
         dtype=None,
@@ -28,13 +29,13 @@ class CausalInferenceModel:
         """
         Constructor for the CausalInferenceModel class
         """
+        super(CausalInferenceModel, self).__init__()
         self.d_model = d_model
         self.emb_depth = emb_depth
         self.dim_feedforward = dim_feedforward
         self.nhead = nhead
         self.dropout = dropout
         self.num_layers_encoder = num_layers_encoder
-        self.num_layers_decoder = num_layers_decoder
         self.num_nodes = num_nodes
         self.device = device
         self.dtype = dtype
@@ -77,7 +78,9 @@ class CausalInferenceModel:
         --------
             torch.Tensor: Modified target_data with non-intervention targets set to zero.
         """
-        target_data = target_data.clone()
+        device = target_data.device
+        dtype = target_data.dtype
+        target_data = target_data.clone().to(device)
         batch_size, num_target, num_nodes, _ = target_data.shape
 
         # Create a tensor that lists node indices for broadcasting.
@@ -92,7 +95,7 @@ class CausalInferenceModel:
 
         # Broadcast the mask along the num_target dimension and apply it.
         target_data = target_data * mask
-
+        target_data = target_data.to(dtype)
         return target_data
 
     def append_outcome_index_to_context_and_target(
@@ -101,6 +104,7 @@ class CausalInferenceModel:
         target_data: torch.Tensor,
         outcome_index: torch.Tensor,
     ):
+        dtype = context_data.dtype
         # Make outcome index one hot
         outcome_index_onehot = torch.zeros(
             outcome_index.size(0), self.num_nodes, device=outcome_index.device
@@ -110,7 +114,23 @@ class CausalInferenceModel:
         outcome_index_onehot = outcome_index_onehot.unsqueeze(1).unsqueeze(-1)
         context_data = torch.cat([context_data, outcome_index_onehot], dim=1)
         target_data = torch.cat([target_data, outcome_index_onehot], dim=1)
+        # changed dtype
+        context_data = context_data.to(dtype)
+        target_data = target_data.to(dtype)
         return context_data, target_data
+
+    def calculate_loss(self, pred_mean, pred_std, target, outcome_index):
+        """
+        Calculate the loss for the model.
+        """
+        # Get the outcome
+        batch_idx = torch.arange(target.size(0), device=target.device)
+        target = target[batch_idx, :, outcome_index, :]
+
+        # Calculate the loss
+        distribution = torch.distributions.Normal(pred_mean, pred_std)
+        loss = - distribution.log_prob(target)
+        return loss.mean()
 
     def forward(
         self,
@@ -118,6 +138,7 @@ class CausalInferenceModel:
         target_data: torch.Tensor,
         intervention_index: torch.Tensor,
         outcome_index: torch.Tensor,
+        variable_mask: Optional[torch.Tensor] = None,
     ):
         """
         Forward pass for the CausalInferenceModel class.
@@ -150,12 +171,16 @@ class CausalInferenceModel:
             context_data, masked_target_data, outcome_index
         )
         # shape of encoder_output: (batch_size, num_target + 1, num_nodes, d_model)
-        encoding = self.encoder(context_data, masked_target_data)
+        encoding = self.encoder.encode(context_data, masked_target_data, variable_mask=variable_mask)
 
-        intervention_encoding = torch.gather(
-            encoding, 2, intervention_index
-        )
+        batch_idx = torch.arange(encoding.size(0), device=encoding.device)
+        intervention_encoding = encoding[batch_idx, :, intervention_index, :]
+
         pred = self.predictor(intervention_encoding)
         mean, std = pred.split(1, dim=-1)
         std = torch.nn.functional.softplus(std)
+
+        # Get rid of the extra sample for the outcome index
+        mean = mean[:, :-1]
+        std = std[:, :-1]
         return mean, std

@@ -62,7 +62,7 @@ class CausalInfTransformerEncoder(nn.Module):
                 src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_nodes, num_samples, d_model]
                 src = src.contiguous().view(batch_size * num_nodes, num_samples, d_model)
-                src = mod(src, src_mask=src_mask, src_key_padding_mask=sample_mask, is_causal=is_causal)
+                src = mod(src, src_mask=sample_mask, src_key_padding_mask=None, is_causal=is_causal)
                 # Reshape the tensor back to [batch_size, num_nodes, num_samples, d_model]
                 src = src.view(batch_size, num_nodes, num_samples, d_model)
             else:
@@ -248,7 +248,9 @@ class CausalInfEncoder(nn.Module):
         num_context = context_data.size(1)
         num_target = target_data.size(1)
         mask_size = num_context + num_target
-        sample_mask = torch.zeros(mask_size, mask_size).fill_(float("-inf"))
+        sample_mask = torch.zeros(
+            mask_size, mask_size, device=context_data.device, dtype=context_data.dtype
+        ).fill_(float("-inf"))
         # Context samples can attend to itself
         # target samples can only attend to context samples
         # The data is in the form [context, target]

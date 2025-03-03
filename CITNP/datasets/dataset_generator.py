@@ -2,7 +2,7 @@
 This file contains dataset generators.
 """
 from functools import partial
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from torch.utils.data import IterableDataset
@@ -53,6 +53,7 @@ class InterventionDatasetGenerator(IterableDataset):
         batch_size: int,
         graph_type: List[str],
         graph_degrees: List[int],
+        iterations_per_epoch: Optional[int] = 1000,
     ):
         self.function_generator = function_generator
         self.num_variables = num_variables
@@ -63,6 +64,8 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_degrees = graph_degrees
 
         self.max_num_variables = max(num_variables) if isinstance(num_variables, list) else num_variables
+
+        self.iterations_per_epoch = iterations_per_epoch
 
         if self.function_generator == "gp":
             self.data_generator = partial(GPFunctionGenerator)
@@ -201,13 +204,13 @@ class InterventionDatasetGenerator(IterableDataset):
         causal_graphs_array = np.zeros(
             (self.batch_size, self.max_num_variables, self.max_num_variables)
         )
-        intvn_indices = np.zeros(self.batch_size)
-        variable_counts = np.zeros(self.batch_size)
+        intvn_indices = np.zeros(self.batch_size, dtype=int)
+        variable_counts = np.zeros(self.batch_size, dtype=int)
         masks = np.zeros((self.batch_size, self.max_num_variables))
 
 
         # Each batch is a different dataset
-        for b in trange(self.batch_size):
+        for b in range(self.batch_size):
             # Sample number of variables
             if isinstance(self.num_variables, list):
                 current_num_variables = np.random.choice(self.num_variables)
@@ -274,6 +277,10 @@ class InterventionDatasetGenerator(IterableDataset):
             variable_counts[b] = current_num_variables
             masks[b] = mask
 
+        # If num_variables is not a list, masks will be None
+        if not isinstance(self.num_variables, list):
+            masks = None
+
         yield (
             obs_data_array,
             int_data_array,
@@ -284,4 +291,8 @@ class InterventionDatasetGenerator(IterableDataset):
         )
 
     def __iter__(self):
-        return iter(self.generate_next_dataset())
+        for _ in range(self.iterations_per_epoch):
+            yield next(self.generate_next_dataset())
+
+    def __len__(self):
+        return self.iterations_per_epoch
