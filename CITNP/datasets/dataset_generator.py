@@ -274,7 +274,7 @@ class InterventionDatasetGenerator(IterableDataset):
             variable_counts[b] = current_num_variables
             masks[b] = mask
 
-        return (
+        yield (
             obs_data_array,
             int_data_array,
             causal_graphs_array,
