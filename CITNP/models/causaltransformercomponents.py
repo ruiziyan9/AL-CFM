@@ -188,50 +188,6 @@ class CausalInfEncoder(nn.Module):
         embedding = self.embedder(target_data)
         return embedding
 
-    def compute_summary(self, query, key, value, avici_summary=False):
-        """
-        Compute the summary representation for the query.
-
-        Args:
-        -----
-            query: torch.Tensor, shape [batch_size, 1, num_nodes, d_model]
-            key: torch.Tensor, shape [batch_size, num_samples, num_nodes, d_model]
-            value: torch.Tensor, shape [batch_size, num_samples, num_nodes, d_model]
-            avici_summary: bool, whether to use the Avici summary. This is a max
-                pool over the samples.
-
-        Returns:
-        --------
-            summary_rep: torch.Tensor, shape [batch_size, num_nodes, 1, d_model]
-        """
-        if avici_summary:
-            # Max pool over the value
-            # shape [batch_size, 1, num_nodes, d_model]
-            summary_rep = value.max(dim=1, keepdim=True)[0]
-            # shape [batch_size, num_nodes, 1, d_model]
-            summary_rep = summary_rep.permute(0, 2, 1, 3)
-            return summary_rep
-        else:
-            # Perform attention over the samples
-            batch, num_samples, num_nodes, d_model = key.size()
-            # shape [batch, num_nodes, 1, d_model]
-            query = query.permute(0, 2, 1, 3)
-            query = query.contiguous().view(batch * num_nodes, 1, d_model)
-            # shape [batch, num_nodes, num_samples, d_model]
-            key = key.permute(0, 2, 1, 3)
-            key = key.contiguous().view(batch * num_nodes, num_samples, d_model)
-            # shape [batch, num_nodes, num_samples, d_model]
-            value = value.permute(0, 2, 1, 3)
-            value = value.contiguous().view(batch * num_nodes, num_samples, d_model)
-            # shape [batch * num_nodes, 1, d_model]
-            summary_rep = self.representation(
-                query=query,
-                key=key,
-                value=value,
-            )[0]
-            summary_rep = summary_rep.contiguous().view(batch, num_nodes, 1, d_model)
-            return summary_rep
-
     def create_input(self, context_data, target_data):
         """
         Creates the full input by concatenating the context and target data.
