@@ -130,7 +130,8 @@ class CausalInferenceModel(torch.nn.Module):
         # Calculate the loss
         distribution = torch.distributions.Normal(pred_mean, pred_std)
         loss = - distribution.log_prob(target)
-        return loss.mean()
+        # Mean over the samples and mean over the batch
+        return loss.mean(1).mean()
 
     def forward(
         self,
@@ -173,10 +174,11 @@ class CausalInferenceModel(torch.nn.Module):
         # shape of encoder_output: (batch_size, num_target + 1, num_nodes, d_model)
         encoding = self.encoder.encode(context_data, masked_target_data, variable_mask=variable_mask)
 
+        # We want to find p(outcome | do(intervention))
         batch_idx = torch.arange(encoding.size(0), device=encoding.device)
-        intervention_encoding = encoding[batch_idx, :, intervention_index, :]
+        outcome_encoding = encoding[batch_idx, :, outcome_index, :]
 
-        pred = self.predictor(intervention_encoding)
+        pred = self.predictor(outcome_encoding)
         mean, std = pred.split(1, dim=-1)
         std = torch.nn.functional.softplus(std)
 

@@ -97,6 +97,36 @@ class GPFunctions:
         return outputs
 
 
+class NeuralNetFunctions:
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents
+        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+        self.model = th.nn.Sequential(
+            th.nn.Linear(num_parents, 128),
+            th.nn.ReLU(),
+            th.nn.Linear(128, 128),
+            th.nn.ReLU(),
+            th.nn.Linear(128, 1),
+        ).to(self.device)
+        self.noise_dist = th.distributions.Gamma(1, 10)
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        input_num = inputs.shape[-1]
+        if input_num == 0:
+            # If there is no parent, we sample from a normal distribution.
+            outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            return outputs
+        else:
+            inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
+            outputs = self.model(inputs).detach()
+            noise_scale = self.noise_dist.sample((inputs.shape[0], 1)).to(self.device).to(th.float32)
+            outputs = (outputs + noise_scale * th.randn_like(outputs)).cpu().numpy().astype(np.float32)
+            return outputs
+
+
 class DataGenerator(ABC):
     """
     Base class for all causal data generators.
@@ -260,6 +290,43 @@ class GPFunctionGenerator(DataGenerator):
             num_parents = int(np.sum(parents_of_i))
 
             function = GPFunctions(
+                num_parents=num_parents
+            )
+            function_dict[i] = function
+
+        return function_dict
+
+
+class NeuralNetFunctionGenerator(DataGenerator):
+    """
+    Will generate data using Neural Net model priors
+    respecting a given causal graph.
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function = NeuralNetFunctions(
                 num_parents=num_parents
             )
             function_dict[i] = function

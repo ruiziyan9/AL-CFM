@@ -10,7 +10,8 @@ from tqdm import trange
 
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (GPFunctionGenerator,
-                                                SinusoidFunctionGenerator)
+                                                SinusoidFunctionGenerator,
+                                                NeuralNetFunctionGenerator)
 
 
 class InterventionDatasetGenerator(IterableDataset):
@@ -71,6 +72,8 @@ class InterventionDatasetGenerator(IterableDataset):
             self.data_generator = partial(GPFunctionGenerator)
         elif self.function_generator == "sinusoid":
             self.data_generator = partial(SinusoidFunctionGenerator)
+        elif self.function_generator == "neuralnet":
+            self.data_generator = partial(NeuralNetFunctionGenerator)
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """

@@ -48,7 +48,6 @@ class CausalInfTransformerEncoder(nn.Module):
         self,
         src: Tensor,
         sample_mask: Tensor,
-        src_mask: Optional[Tensor] = None,
         variable_mask: Optional[Tensor] = None,
         is_causal: bool = False,
     ) -> Tensor:
@@ -57,6 +56,7 @@ class CausalInfTransformerEncoder(nn.Module):
         # to carry out attention over samples
         batch_size, num_samples, num_nodes, d_model = src.size()
         for idx_layer, mod in enumerate(self.layers):
+            # Attention across samples
             if idx_layer % 2 == 0:
                 # shape [batch_size, num_nodes, num_samples, d_model]
                 src = src.permute(0, 2, 1, 3)
@@ -65,6 +65,7 @@ class CausalInfTransformerEncoder(nn.Module):
                 src = mod(src, src_mask=sample_mask, src_key_padding_mask=None, is_causal=is_causal)
                 # Reshape the tensor back to [batch_size, num_nodes, num_samples, d_model]
                 src = src.view(batch_size, num_nodes, num_samples, d_model)
+            # Attention across nodes
             else:
                 # shape [batch_size, num_samples, num_nodes, d_model]
                 src = src.permute(0, 2, 1, 3)
@@ -74,7 +75,7 @@ class CausalInfTransformerEncoder(nn.Module):
                 node_src_key_padding_mask = variable_mask
                 if node_src_key_padding_mask is not None:
                     node_src_key_padding_mask = node_src_key_padding_mask.contiguous().view(batch_size * num_samples, num_nodes)
-                src = mod(src, src_mask=src_mask, src_key_padding_mask=node_src_key_padding_mask, is_causal=is_causal)
+                src = mod(src, src_mask=None, src_key_padding_mask=node_src_key_padding_mask, is_causal=is_causal)
                 # Make masking position back to zero
                 if node_src_key_padding_mask is not None:
                     bool_pad = node_src_key_padding_mask == -float("inf")
