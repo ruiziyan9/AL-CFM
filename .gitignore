@@ -169,3 +169,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Ignore all files with .pt at the end
+*.pt
+# Ignore all folders called wandb no matter where they are
+**/wandb/
+wandb/
+*.wandb
