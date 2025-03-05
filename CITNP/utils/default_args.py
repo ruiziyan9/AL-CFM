@@ -25,4 +25,5 @@ def return_default_args():
         "graph_degrees": [1],
         "iterations_per_epoch": 10000,
         "learning_rate": 0.0001,
+        "run_name": "test",
     }

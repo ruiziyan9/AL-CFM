@@ -53,6 +53,8 @@ def main(args: argparse.Namespace):
     model = CausalInferenceModel(
         **MODEL_ARGS
     )
+    save_dir = Path("/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments/results")
+    model_save_dir = save_dir / f"{args.run_name}"
 
     TRAINER_ARGS = {
         "batch_size": 32,
@@ -61,16 +63,17 @@ def main(args: argparse.Namespace):
         "lr_warmup_ratio": 0.1,
         "bfloat16": True,
         "num_workers": 0,
-        "save_dir": Path("/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments/results"),
+        "save_dir": model_save_dir,
         "cntxt_split": [0.2, 0.8],
         "sample_size": args.sample_size,
+        "log_step": 500,
     }
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     run = wandb.init(
         # Set the project where this run will be logged
         project="meta_causal_inference",
-        name="test",
+        name=args.run_name,
         # Track hyperparameters and run metadata
         config=vars(args).update(TRAINER_ARGS),
     )

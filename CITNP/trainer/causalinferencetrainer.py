@@ -74,6 +74,7 @@ class CausalInferenceTrainer:
         sample_size: int,
         scheduler: th.optim.lr_scheduler = None,
         use_wandb: bool = True,
+        log_step: int = 500,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset
@@ -90,6 +91,7 @@ class CausalInferenceTrainer:
         self.sample_size = sample_size
         self.scheduler = scheduler
         self.use_wandb = use_wandb
+        self.log_step = log_step
 
         self.learning_rate = self.optimizer.param_groups[0]["lr"]
 
@@ -286,11 +288,13 @@ class CausalInferenceTrainer:
             th.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             # Optimize
             self.optimizer.step()
-            if i % 1000 == 0:
+            if i % self.log_step == 0:
                 metric_dict = {
                     "train loss": loss.mean().item(),
                 }
-                if i % 10000 == 0 and i > 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                metric_dict.update({"learning_rate": current_lr})
+                if i % self.log_step == 0 and i > 0:
                     metric_dict = self.validate_single_epoch(val_loader, metric_dict)
                     metric_dict = self.test_single_epoch(test_loader, metric_dict)
                 if self.use_wandb:
@@ -321,8 +325,4 @@ class CausalInferenceTrainer:
             # Step the scheduler after each epoch
             if self.scheduler is not None:
                 self.scheduler.step()
-            current_lr = self.optimizer.param_groups[0]['lr']
-            if self.use_wandb:
-                metric_dict.update({"learning_rate": current_lr})
-                wandb.log(metric_dict)
         pass

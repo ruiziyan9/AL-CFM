@@ -10,8 +10,8 @@ from tqdm import trange
 
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (GPFunctionGenerator,
-                                                SinusoidFunctionGenerator,
-                                                NeuralNetFunctionGenerator)
+                                                NeuralNetFunctionGenerator,
+                                                SinusoidFunctionGenerator)
 
 
 class InterventionDatasetGenerator(IterableDataset):

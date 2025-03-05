@@ -199,7 +199,13 @@ class CausalInferenceModel(torch.nn.Module):
             context_data, masked_target_data, outcome_index, treatment_index=intervention_index
         )
         # shape of encoder_output: (batch_size, num_target + 1, num_nodes, d_model)
-        encoding = self.encoder.encode(context_data, masked_target_data, variable_mask=variable_mask)
+        encoding = self.encoder.encode(
+            context_data,
+            masked_target_data,
+            outcome_indices=outcome_index,
+            intervention_indices=intervention_index,
+            variable_mask=variable_mask
+        )
 
         # We want to find p(outcome | do(intervention))
         batch_idx = torch.arange(encoding.size(0), device=encoding.device)

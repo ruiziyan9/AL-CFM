@@ -1,4 +1,5 @@
 import copy
+from functools import partial
 from typing import Optional
 
 import torch
@@ -10,20 +11,20 @@ def build_mlp(dim_in, dim_hid, dim_out, depth):
     if dim_in == dim_hid:
         modules = [
             nn.Sequential(
-                nn.Linear(dim_in, dim_hid, bias=False),
+                nn.Linear(dim_in, dim_hid, bias=True),
                 nn.ReLU(),
             )
         ]
     else:
-        modules = [nn.Linear(dim_in, dim_hid, bias=False), nn.ReLU()]
+        modules = [nn.Linear(dim_in, dim_hid, bias=True), nn.ReLU()]
     for _ in range(int(depth) - 2):
         modules.append(
             nn.Sequential(
-                nn.Linear(dim_hid, dim_hid, bias=False),
+                nn.Linear(dim_hid, dim_hid, bias=True),
                 nn.ReLU(),
             )
         )
-    modules.append(nn.Linear(dim_hid, dim_out, bias=False))
+    modules.append(nn.Linear(dim_hid, dim_out, bias=True))
     return nn.Sequential(*modules)
 
 
@@ -142,12 +143,16 @@ class CausalInfEncoder(nn.Module):
         dropout: Optional[float] = 0.0,
     ):
         super(CausalInfEncoder, self).__init__()
-        self.embedder = build_mlp(
-            dim_in=1,
-            dim_hid=d_model,
-            dim_out=d_model,
-            depth=emb_depth,
-        )
+        # Different MLP for context and target
+        # Different embedding for everything.
+        mlp = partial(build_mlp, dim_in=1, dim_hid=d_model, dim_out=d_model, depth=emb_depth)
+        self.context_variable = mlp()
+        self.context_intervention = mlp()
+        self.context_outcome = mlp()
+        self.target_variable = mlp()
+        self.target_intervention = mlp()
+        self.target_outcome = mlp()
+
         module = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -173,20 +178,48 @@ class CausalInfEncoder(nn.Module):
             dtype=dtype,
         )
 
-    def embed(self, target_data):
+    def embed(self, data, outcome_indices, intervention_indices, context=True):
         """
         Embed the target data into a d_model dimensional space.
 
+        Has a different embedding for context and target data.
+
         Args:
-        --------
-            target_data: torch.Tensor, shape [batch_size, num_samples, num_nodes, 1]
+        -----
+        - data: torch.Tensor, shape [batch_size, num_samples, num_nodes, 1]
+        - outcome_indices: torch.Tensor, shape [batch_size]
+        - intervention_indices: torch.Tensor, shape [batch_size]
 
         Returns:
         --------
             embedding: torch.Tensor, shape [batch_size, num_samples, num_nodes, d_model]
         """
-        # shape [batch_size, num_samples, num_nodes, d_model]
-        embedding = self.embedder(target_data)
+        batch_size, num_samples, num_nodes, _ = data.size()
+
+        # Choose the correct MLPs based on whether the data is context or target.
+        if context:
+            var_emb = self.context_variable(data)
+            int_emb = self.context_intervention(data)
+            out_emb = self.context_outcome(data)
+        else:
+            var_emb = self.target_variable(data)
+            int_emb = self.target_intervention(data)
+            out_emb = self.target_outcome(data)
+
+        # Replace embeddings at outcome and intervention indices.
+        # Using vectorized indexing:
+        batch_idx = torch.arange(batch_size, device=data.device)
+
+        # Create masks for outcome and intervention indices.
+        mask_outcome = torch.zeros_like(var_emb)
+        mask_int = torch.zeros_like(var_emb)
+        mask_outcome[batch_idx[:, None], :, outcome_indices[:, None], :] = 1.0
+        mask_int[batch_idx[:, None], :, intervention_indices[:, None], :] = 1.0
+
+        # Combine embeddings with a weighted sum.
+        # Ensure that masks do not overlap or adjust weights appropriately if they do.
+        # embedding = var_emb * (1 - mask_outcome - mask_int) + out_emb * mask_outcome + int_emb * mask_int
+        embedding = var_emb
         return embedding
 
     def create_input(self, context_data, target_data):
@@ -214,7 +247,14 @@ class CausalInfEncoder(nn.Module):
         sample_mask[:, :num_context] = 0
         return sample_mask, num_target
 
-    def encode(self, context_data, target_data, variable_mask: Optional[Tensor] = None):
+    def encode(
+        self,
+        context_data: Tensor,
+        target_data: Tensor,
+        outcome_indices: Tensor,
+        intervention_indices: Tensor,
+        variable_mask: Optional[Tensor] = None,
+    ):
         """
         Args:
         -----
@@ -223,18 +263,31 @@ class CausalInfEncoder(nn.Module):
         - target_data (torch.Tensor): The target data with shape
         [batch_size, num_target, num_nodes, 1]. This should be all zeros
         except for node that is meant to be the interventional variable.
+        - outcome_indices (torch.Tensor, optional): The indices of the outcome
+        with shape [batch_size]. Defaults to None.
         - variable_mask (torch.Tensor, optional): The mask that allows for
         different number of variables. Defaults to None.
         """
-        # shape [batch_size, num_context + num_target, num_nodes, 1]
-        full_data = self.create_input(context_data, target_data)
+        context_embed = self.embed(
+            data=context_data,
+            outcome_indices=outcome_indices,
+            intervention_indices=intervention_indices,
+            context=True,
+        )
+        target_embed = self.embed(
+            data=target_data,
+            outcome_indices=outcome_indices,
+            intervention_indices=intervention_indices,
+            context=False,
+        )
+        # shape [batch_size, num_context + num_target, num_nodes, d_model]
+        full_data = self.create_input(context_embed, target_embed)
         sample_mask, num_target = self.create_sample_mask(context_data, target_data)
         # shape [batch_size, num_samples, num_nodes, d_model]
-        embedding = self.embed(full_data)
         # Encode the data
         # shape [batch_size, num_samples, num_nodes, d_model]
         representation = self.encoder(
-            embedding,
+            full_data,
             sample_mask=sample_mask,
             variable_mask=variable_mask
         )
