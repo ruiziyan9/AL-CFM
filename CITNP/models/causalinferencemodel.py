@@ -98,25 +98,52 @@ class CausalInferenceModel(torch.nn.Module):
         target_data = target_data.to(dtype)
         return target_data
 
-    def append_outcome_index_to_context_and_target(
+    def append_treatment_outcome_index_to_context_and_target(
         self,
         context_data: torch.Tensor,
         target_data: torch.Tensor,
         outcome_index: torch.Tensor,
+        treatment_index: torch.Tensor,
     ):
+        """
+        Appends the treatment and outcome index to the context and target data.
+        The outcome is encoded by the value 1 and the treatment is encoded by
+        the value -1. The rest of the nodes are encoded by 0.
+
+        Args:
+        -----
+        - context_data (torch.Tensor): Context data tensor with shape
+            (batch_size, num_context, num_nodes, 1)
+        - target_data (torch.Tensor): Target data tensor with shape
+            (batch_size, num_target, num_nodes, 1)
+        - outcome_index (torch.Tensor): Outcome index tensor with shape
+            (batch_size)
+        - treatment_index (torch.Tensor): Treatment index tensor with shape
+            (batch_size)
+        """
         dtype = context_data.dtype
-        # Make outcome index one hot
-        outcome_index_onehot = torch.zeros(
-            outcome_index.size(0), self.num_nodes, device=outcome_index.device
-        )
-        outcome_index_onehot.scatter_(1, outcome_index.unsqueeze(1), 1)
-        # shape of outcome_index_onehot: (batch_size, 1, num_nodes, 1)
-        outcome_index_onehot = outcome_index_onehot.unsqueeze(1).unsqueeze(-1)
-        context_data = torch.cat([context_data, outcome_index_onehot], dim=1)
-        target_data = torch.cat([target_data, outcome_index_onehot], dim=1)
-        # changed dtype
+        batch_size = outcome_index.size(0)
+
+        # Create a tensor of zeros with shape (batch_size, num_nodes)
+        encoding = torch.zeros(batch_size, self.num_nodes, device=outcome_index.device)
+
+        # Set outcome index to 1 for each batch sample
+        encoding[torch.arange(batch_size), outcome_index] = 1
+
+        # Set treatment index to -1 for each batch sample
+        encoding[torch.arange(batch_size), treatment_index] = -1
+
+        # Reshape to (batch_size, 1, num_nodes, 1) for concatenation
+        encoding = encoding.unsqueeze(1).unsqueeze(-1)
+
+        # Concatenate the single encoding tensor along the channel dimension
+        context_data = torch.cat([context_data, encoding], dim=1)
+        target_data = torch.cat([target_data, encoding], dim=1)
+
+        # Convert back to the original dtype if necessary
         context_data = context_data.to(dtype)
         target_data = target_data.to(dtype)
+
         return context_data, target_data
 
     def calculate_loss(self, pred_mean, pred_std, target, outcome_index):
@@ -168,8 +195,8 @@ class CausalInferenceModel(torch.nn.Module):
         )
         # Shape of context_data: (batch_size, num_context + 1, num_nodes, 1)
         # Shape of masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
-        context_data, masked_target_data = self.append_outcome_index_to_context_and_target(
-            context_data, masked_target_data, outcome_index
+        context_data, masked_target_data = self.append_treatment_outcome_index_to_context_and_target(
+            context_data, masked_target_data, outcome_index, treatment_index=intervention_index
         )
         # shape of encoder_output: (batch_size, num_target + 1, num_nodes, d_model)
         encoding = self.encoder.encode(context_data, masked_target_data, variable_mask=variable_mask)

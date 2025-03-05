@@ -44,6 +44,15 @@ def sample_context_and_target(
     return context, target
 
 
+def standardize_data(data_array: np.ndarray):
+    """
+    Standardize data.
+    """
+    mean = np.mean(data_array, axis=(0, 1), keepdims=True)
+    std = np.std(data_array, axis=(0, 1), keepdims=True)
+    return (data_array - mean) / std
+
+
 def sample_outcome_index(
     variable_counts: np.ndarray,
     intvn_indices: np.ndarray,
@@ -62,6 +71,7 @@ def sample_outcome_index(
         )
     return outcome_index
 
+
 def transformer_inference_split_withpadding(
     cntxt_split: List[float],
     sample_size: int,
@@ -77,6 +87,10 @@ def transformer_inference_split_withpadding(
         intvn_indices = batch[3]
         variable_counts = batch[4]
         masks = batch[5]
+
+        # Standardize the data
+        obs_data_array = standardize_data(obs_data_array)
+        int_data_array = standardize_data(int_data_array)
 
         context, target = sample_context_and_target(
             obs_data_array,

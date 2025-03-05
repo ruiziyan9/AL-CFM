@@ -53,10 +53,10 @@ class GPFunctions:
         self,
         num_parents: int,
     ):
-        self.num_parents = num_parents
+        self.num_parents = num_parents if num_parents > 0 else 1
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
 
-        lengthscale_values = np.random.lognormal(-1, 1, size=(3, num_parents))
+        lengthscale_values = np.random.lognormal(-1, 1, size=(3, self.num_parents))
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         gamma_values = np.random.uniform(0.1, 1, size=(3,))
         self.noise_dist = th.distributions.Gamma(1, 10)
@@ -71,7 +71,6 @@ class GPFunctions:
         """
         Sample from an GPLVM.
         """
-        assert inputs.shape[-1] == self.num_parents, "Incorrect input shape!"
         with th.no_grad():
             inputs = th.from_numpy(inputs).to(self.device).to(th.float64)
             covariance = self.kernel(inputs, inputs)
@@ -91,9 +90,9 @@ class GPFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
-        else:
-            outputs = self.sample_gp(inputs)
+            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+
+        outputs = self.sample_gp(inputs)
         return outputs
 
 
@@ -102,10 +101,10 @@ class NeuralNetFunctions:
         self,
         num_parents: int,
     ):
-        self.num_parents = num_parents
+        self.num_parents = num_parents if num_parents > 0 else 1
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         self.model = th.nn.Sequential(
-            th.nn.Linear(num_parents, 128),
+            th.nn.Linear(self.num_parents, 128),
             th.nn.ReLU(),
             th.nn.Linear(128, 128),
             th.nn.ReLU(),
@@ -114,12 +113,12 @@ class NeuralNetFunctions:
         self.noise_dist = th.distributions.Gamma(1, 10)
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
-        input_num = inputs.shape[-1]
-        if input_num == 0:
-            # If there is no parent, we sample from a normal distribution.
-            outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
-            return outputs
-        else:
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                # If there is no parent, we sample from a normal distribution.
+                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
             noise_scale = self.noise_dist.sample((inputs.shape[0], 1)).to(self.device).to(th.float32)
@@ -194,6 +193,7 @@ class DataGenerator(ABC):
             obs_inputs = self._get_inputs(parents_of_i, obs_data)
             # Intervention on i we set the parents to 0
             if i == intervention_index:
+
                 variable_intvn = np.random.normal(loc=0, scale=1.0, size=(sample_size, 1))
                 obs_inputs = normalise_variable(obs_inputs)
                 variable_obs = function_for_i(obs_inputs)

@@ -141,7 +141,6 @@ class CausalInferenceTrainer:
             pass
 
     def test_single_epoch(self, test_loader, metric_dict, calc_metrics=False, num_samples=100, check_acyclic=False):
-        pass
         # with th.no_grad():
         #     self.model.to("cuda")
         #     dtype = th.float32
@@ -195,10 +194,9 @@ class CausalInferenceTrainer:
         #     dtype = th.bfloat16 if self.bfloat16 else th.float32
         #     self.model.train()
         #     self.model.to(dtype)
-            # return metric_dict
+        return metric_dict
 
     def validate_single_epoch(self, val_loader, metric_dict):
-        pass
         # self.model.eval()
         # dtype = th.float32
         # self.model.to(dtype)
@@ -235,7 +233,7 @@ class CausalInferenceTrainer:
         # dtype = th.bfloat16 if self.bfloat16 else th.float32
         # self.model.train()
         # self.model.to(dtype)
-        # return metric_dict
+        return metric_dict
 
     def train_single_epoch(
         self,
