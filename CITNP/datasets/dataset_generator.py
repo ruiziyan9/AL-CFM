@@ -137,6 +137,8 @@ class InterventionDatasetGenerator(IterableDataset):
         # TODO: Do we intervene on a variable that has no parents?
         # Choose intervention index
         intervention_index = np.random.choice(dag.shape[0])
+        # Always intervent on cause for now.
+        intervention_index = np.zeros_like(intervention_index)
         return intervention_index
 
     def pad_data(self, data: np.ndarray, current_vars: int) -> np.ndarray:

@@ -53,20 +53,20 @@ class CausalInferenceModel(torch.nn.Module):
             dtype=self.dtype,
         )
 
-        self.decoder = nn.TransformerDecoder(
-            CausalTransformerDecoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                norm_first=True,
-                batch_first=True,
-                device=device,
-                dtype=dtype,
-                bias=False,
-            ),
-            num_layers=2
-        )
+        # self.decoder = nn.TransformerDecoder(
+        #     CausalTransformerDecoderLayer(
+        #         d_model=d_model,
+        #         nhead=nhead,
+        #         dim_feedforward=dim_feedforward,
+        #         dropout=dropout,
+        #         norm_first=True,
+        #         batch_first=True,
+        #         device=device,
+        #         dtype=dtype,
+        #         bias=False,
+        #     ),
+        #     num_layers=2
+        # )
 
         self.predictor = build_mlp(
             self.d_model,
@@ -227,13 +227,13 @@ class CausalInferenceModel(torch.nn.Module):
         batch_idx = torch.arange(encoding.size(0), device=encoding.device)
         outcome_encoding = encoding[batch_idx, :, outcome_index, :]
 
-        outcome_decoder = self.decoder(
-            tgt=outcome_encoding,
-            memory=None,
-            tgt_key_padding_mask=variable_mask
-        )
+        # outcome_decoder = self.decoder(
+        #     tgt=outcome_encoding,
+        #     memory=None,
+        #     tgt_key_padding_mask=variable_mask
+        # )
 
-        pred = self.predictor(outcome_decoder)
+        pred = self.predictor(outcome_encoding)
         mean, std = pred.split(1, dim=-1)
         std = torch.nn.functional.softplus(std)
 
