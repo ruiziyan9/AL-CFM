@@ -30,14 +30,15 @@ class SinFunction:
         """
         Generate a sinusoidal function.
         """
-        input_num = inputs.shape[-1]
-        if input_num == 0:
-            # If there is no parent, we sample from a normal distribution.
-            outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
-            return outputs
-        else:
-            outputs = np.sin(inputs.sum(axis=-1) / 0.4) + np.random.normal(loc=0, scale=self.scale, size=(inputs.shape[0]))
-            return outputs[:, None]
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                # If there is no parent, we sample from a normal distribution.
+                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                return outputs
+            else:
+                outputs = np.sin(inputs.sum(axis=-1) / 0.4) + np.random.normal(loc=0, scale=self.scale, size=(inputs.shape[0]))
+                return outputs[:, None]
 
 
 class GPFunctions:

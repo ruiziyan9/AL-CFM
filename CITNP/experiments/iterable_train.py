@@ -64,7 +64,7 @@ def main(args: argparse.Namespace):
         "bfloat16": True,
         "num_workers": 0,
         "save_dir": model_save_dir,
-        "cntxt_split": [0.2, 0.8],
+        "cntxt_split": [0.2, 1.0],
         "sample_size": args.sample_size,
         "log_step": 500,
     }

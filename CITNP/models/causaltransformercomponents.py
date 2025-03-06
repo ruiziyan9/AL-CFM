@@ -1,7 +1,7 @@
 import copy
 from functools import partial
-from typing import Optional
-
+from typing import Optional, Callable
+from torch.nn import functional as F
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -84,6 +84,71 @@ class CausalInfTransformerEncoder(nn.Module):
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
                 src = src.contiguous().view(batch_size, num_samples, num_nodes, d_model)
         return src
+
+
+class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
+    """
+    Causal Transformer for Decoders. There is no memory in the decoder.
+    This will simply perform self-attention and feedforward operations.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        activation: Callable = F.relu,
+        layer_norm_eps: float = 0.00001,
+        batch_first: bool = True,
+        norm_first: bool = True,
+        bias: bool = False,
+        device=None,
+        dtype=None
+    ) -> None:
+        super(CausalTransformerDecoderLayer, self).__init__(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            layer_norm_eps=layer_norm_eps,
+            batch_first=batch_first,
+            norm_first=norm_first,
+            device=device,
+            bias=bias,
+            dtype=dtype,
+        )
+        self.dim_feedforward = dim_feedforward
+
+    def forward(
+        self,
+        tgt: Tensor,
+        memory: Optional[Tensor] = None,
+        tgt_mask: Optional[Tensor] = None,
+        memory_mask: Optional[Tensor] = None,
+        tgt_key_padding_mask: Optional[Tensor] = None,
+        memory_key_padding_mask: Optional[Tensor] = None,
+        tgt_is_causal: bool = False,
+        memory_is_causal: bool = False,
+    ) -> Tensor:
+        r"""
+        Pass the inputs (and mask) through the decoder layer.
+
+        It takes in memory but does nothing with it. This is to ensure
+        compatibility with the nn.TransformerDecoder class.
+        """
+        # see Fig. 1 of https://arxiv.org/pdf/2002.04745v1.pdf
+        assert memory is None, "Memory is not used in the decoder."
+
+        x = tgt
+        if self.norm_first:
+            x = x + self._sa_block(self.norm1(x), tgt_mask, tgt_key_padding_mask, tgt_is_causal)
+            x = x + self._ff_block(self.norm3(x))
+        else:
+            x = self.norm1(x + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal))
+            x = self.norm3(x + self._ff_block(x))
+        return x
 
 
 class CausalInfEncoder(nn.Module):
@@ -215,11 +280,10 @@ class CausalInfEncoder(nn.Module):
         mask_int = torch.zeros_like(var_emb)
         mask_outcome[batch_idx[:, None], :, outcome_indices[:, None], :] = 1.0
         mask_int[batch_idx[:, None], :, intervention_indices[:, None], :] = 1.0
-
         # Combine embeddings with a weighted sum.
         # Ensure that masks do not overlap or adjust weights appropriately if they do.
-        # embedding = var_emb * (1 - mask_outcome - mask_int) + out_emb * mask_outcome + int_emb * mask_int
-        embedding = var_emb
+        embedding = var_emb * (1 - mask_outcome - mask_int) + out_emb * mask_outcome + int_emb * mask_int
+        # embedding = var_emb
         return embedding
 
     def create_input(self, context_data, target_data):

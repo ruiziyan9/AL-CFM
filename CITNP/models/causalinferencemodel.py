@@ -4,9 +4,10 @@ File containing the CausalInferenceModel class
 from typing import Optional
 
 import torch
+import torch.nn as nn
 
-from CITNP.models.causaltransformercomponents import (CausalInfEncoder,
-                                                      build_mlp)
+from CITNP.models.causaltransformercomponents import (
+    CausalInfEncoder, CausalTransformerDecoderLayer, build_mlp)
 
 
 class CausalInferenceModel(torch.nn.Module):
@@ -50,6 +51,21 @@ class CausalInferenceModel(torch.nn.Module):
             num_nodes=self.num_nodes,
             device=self.device,
             dtype=self.dtype,
+        )
+
+        self.decoder = nn.TransformerDecoder(
+            CausalTransformerDecoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                norm_first=True,
+                batch_first=True,
+                device=device,
+                dtype=dtype,
+                bias=False,
+            ),
+            num_layers=2
         )
 
         self.predictor = build_mlp(
@@ -211,7 +227,13 @@ class CausalInferenceModel(torch.nn.Module):
         batch_idx = torch.arange(encoding.size(0), device=encoding.device)
         outcome_encoding = encoding[batch_idx, :, outcome_index, :]
 
-        pred = self.predictor(outcome_encoding)
+        outcome_decoder = self.decoder(
+            tgt=outcome_encoding,
+            memory=None,
+            tgt_key_padding_mask=variable_mask
+        )
+
+        pred = self.predictor(outcome_decoder)
         mean, std = pred.split(1, dim=-1)
         std = torch.nn.functional.softplus(std)
 
