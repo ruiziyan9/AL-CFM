@@ -11,9 +11,11 @@ from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
 from CITNP.models.causalinferencemodel import CausalInferenceModel
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.default_args import return_default_args
+from CITNP.utils.utils import set_seed
 
 
 def main(args: argparse.Namespace):
+    set_seed(args.seed)
 
     DATA_ARGS = {
         "sample_size": args.sample_size,

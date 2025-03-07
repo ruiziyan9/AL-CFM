@@ -186,7 +186,6 @@ class CausalInferenceModel(torch.nn.Module):
         """
         dtype = context_data.dtype
         batch_size = outcome_index.size(0)
-
         # Encode the treatment index with one hot encoding with -1 for
         # the treatment index and 0 for the rest of the nodes
         encoding = torch.zeros(batch_size, self.num_nodes, device=outcome_index.device)
