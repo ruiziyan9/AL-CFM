@@ -199,42 +199,51 @@ class CausalInferenceTrainer:
         return metric_dict
 
     def validate_single_epoch(self, val_loader, metric_dict):
-        # self.model.eval()
-        # dtype = th.float32
-        # self.model.to(dtype)
+        with th.no_grad():
+            self.model.eval()
+            dtype = th.float32
+            self.model.to(dtype)
 
-        # all_loss = 0
-        # all_preds = 0
-        # for i, data in enumerate(tqdm(val_loader, desc="Validation")):
-        #     # Get the inputs and targets
-        #     inputs, targets, attention_mask = data
-        #     targets = targets.to("cuda", dtype=dtype)
-        #     inputs = inputs.to("cuda", dtype=dtype)
-        #     if attention_mask is not None:
-        #         attention_mask = attention_mask.to("cuda", dtype=dtype)
-        #     inputs = (inputs - inputs.mean(dim=1, keepdim=True)) / inputs.std(dim=1, keepdim=True)
-        #     # Forward pass
-        #     adj_logit = self.model(inputs, graph=targets, is_training=False, mask=attention_mask)
+            all_loss = 0
+            for i, data in enumerate(tqdm(val_loader, desc="Validation")):
+                # Get the inputs and targets
+                context, target, intvn_indices, outcome_indices, masks = send_to_device(
+                    list(data),
+                    device="cuda",
+                )
+                context, target = send_to_device(
+                    [context, target],
+                    device=th.float32,
+                )
+                if masks is not None:
+                    masks = masks.to("cuda", dtype=dtype)
 
-        #     if isinstance(adj_logit, tuple):
-        #         adj_logit = adj_logit[0]
+                pred_mean, pred_std = self.model(
+                    context_data=context,
+                    target_data=target,
+                    intervention_index=intvn_indices,
+                    outcome_index=outcome_indices,
+                    variable_mask=masks,
+                )
+                loss = self.model.calculate_loss(
+                    pred_mean=pred_mean,
+                    pred_std=pred_std,
+                    target=target,
+                    outcome_index=outcome_indices,
+                )
 
-        #     loss = self.model.calculate_loss(adj_logit, targets)
-        #     all_loss += th.sum(loss).cpu().item()
-        #     # pred = (adj_logit > 0.5).double()
-        #     # all_preds += th.sum(pred == flat_target).cpu().item()
-        # # Log the validation loss
-        # # accuracy = all_preds / len(val_loader.dataset)
-        # loss = all_loss / len(val_loader.dataset)
-        # metric_dict.update(
-        #     {
-        #         "val_loss": loss,
-        #         # "val_accuracy": accuracy,
-        #     }
-        # )
-        # dtype = th.bfloat16 if self.bfloat16 else th.float32
-        # self.model.train()
-        # self.model.to(dtype)
+                all_loss += th.sum(loss).cpu().item()
+
+        # Log the validation loss
+        loss = all_loss / len(val_loader.dataset)
+        metric_dict.update(
+            {
+                "val_loss": loss,
+            }
+        )
+        dtype = th.bfloat16 if self.bfloat16 else th.float32
+        self.model.train()
+        self.model.to(dtype)
         return metric_dict
 
     def train_single_epoch(
