@@ -10,11 +10,16 @@ import wandb
 from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
 from CITNP.models.causalinferencemodel import CausalInferenceModel
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
-from CITNP.utils.default_args import return_default_args
+from CITNP.utils.default_args import overwrite_debug_args, parse_args
 from CITNP.utils.utils import set_seed
 
 
 def main(args: argparse.Namespace):
+
+    # If debug mode is on, overwrite the default arguments
+    if args.debug:
+        args = overwrite_debug_args(args)
+
     set_seed(args.seed)
 
     DATA_ARGS = {
@@ -60,16 +65,16 @@ def main(args: argparse.Namespace):
     model_save_dir = save_dir / f"{args.run_name}"
 
     TRAINER_ARGS = {
-        "batch_size": 32,
-        "epochs": 10,
-        "use_wandb": True,
-        "lr_warmup_ratio": 0.1,
-        "bfloat16": True,
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "use_wandb": args.use_wandb,
+        "lr_warmup_ratio": args.lr_warmup_ratio,
+        "bfloat16": args.dtype == torch.bfloat16,
         "num_workers": 0,
         "save_dir": model_save_dir,
         "cntxt_split": [0.2, 1.0],
         "sample_size": args.sample_size,
-        "log_step": 500,
+        "log_step": args.log_step,
     }
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
@@ -95,8 +100,5 @@ def main(args: argparse.Namespace):
 if __name__ == "__main__":
     wandb.login(key="bc359b26d166ea6980eb0e231060bd7b8c06925e")
     parser = argparse.ArgumentParser()
-    default_args = return_default_args()
-    for key, value in default_args.items():
-        parser.add_argument(f"--{key}", type=type(value), default=value)
-    args = parser.parse_args()
+    args = parse_args()
     main(args)
