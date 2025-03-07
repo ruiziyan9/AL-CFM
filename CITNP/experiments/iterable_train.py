@@ -62,7 +62,7 @@ def main(args: argparse.Namespace):
         "use_wandb": True,
         "lr_warmup_ratio": 0.1,
         "bfloat16": True,
-        "num_workers": 10,
+        "num_workers": 0,
         "save_dir": model_save_dir,
         "cntxt_split": [0.2, 1.0],
         "sample_size": args.sample_size,

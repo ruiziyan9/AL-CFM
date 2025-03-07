@@ -1,10 +1,11 @@
 import copy
 from functools import partial
-from typing import Optional, Callable
-from torch.nn import functional as F
+from typing import Callable, Optional
+
 import torch
 import torch.nn as nn
 from torch import Tensor
+from torch.nn import functional as F
 
 
 def build_mlp(dim_in, dim_hid, dim_out, depth):
