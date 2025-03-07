@@ -64,9 +64,9 @@ def parse_args():
     # Training args
     parser.add_argument('--epochs', type=int, default=10,
                         help='Number of epochs.')
-    parser.add_argument('--use_wandb', action='store_true',
+    parser.add_argument('--no_wandb', action='store_true',
                         default=False,
-                        help='Whether to use Weights & Biases.')
+                        help='Dont use Weights & Biases.')
     parser.add_argument('--lr_warmup_ratio', type=float, default=0.1,
                         help='Warmup ratio for learning rate.')
     parser.add_argument('--log_step', type=int, default=500,

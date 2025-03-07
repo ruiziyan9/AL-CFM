@@ -67,7 +67,7 @@ def main(args: argparse.Namespace):
     TRAINER_ARGS = {
         "batch_size": args.batch_size,
         "epochs": args.epochs,
-        "use_wandb": args.use_wandb,
+        "use_wandb": not args.no_wandb,
         "lr_warmup_ratio": args.lr_warmup_ratio,
         "bfloat16": args.dtype == torch.bfloat16,
         "num_workers": 0,
@@ -78,13 +78,16 @@ def main(args: argparse.Namespace):
     }
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
-    run = wandb.init(
-        # Set the project where this run will be logged
-        project="meta_causal_inference",
-        name=args.run_name,
-        # Track hyperparameters and run metadata
-        config=vars(args).update(TRAINER_ARGS),
-    )
+    if not args.no_wandb:
+        run = wandb.init(
+            # Set the project where this run will be logged
+            project="meta_causal_inference",
+            name=args.run_name,
+            # Track hyperparameters and run metadata
+            config={**vars(args), **TRAINER_ARGS, **MODEL_ARGS},
+        )
+    else:
+        pass
 
     trainer = CausalInferenceTrainer(
         model=model,
