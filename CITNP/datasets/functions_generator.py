@@ -25,6 +25,7 @@ class SinFunction:
     ):
         self.num_parents = num_parents
         self.scale = np.random.gamma(1, 1, size=(1))
+        self.sin_period = np.random.uniform(0.5, 10, size=(1))  # Period range from 1 to 6
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
         """
@@ -37,7 +38,8 @@ class SinFunction:
                 outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
                 return outputs
             else:
-                outputs = np.sin(inputs.sum(axis=-1) / 0.4) + np.random.normal(loc=0, scale=self.scale, size=(inputs.shape[0]))
+                outputs = np.sin((2 * np.pi / self.sin_period) * inputs.sum(axis=-1))  # Proper period scaling
+                outputs += np.random.normal(loc=0, scale=self.scale, size=(inputs.shape[0]))  # Add noise
                 return outputs[:, None]
 
 
