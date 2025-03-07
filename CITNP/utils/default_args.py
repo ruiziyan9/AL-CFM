@@ -15,6 +15,7 @@ def return_default_args():
         "dim_feedforward": 2048,
         "nhead": 8,
         "num_layers_encoder": 8,
+        "outcome_firstnode": False,
         "device": "cuda",
         "dtype": torch.bfloat16,
         "batch_size": 32,

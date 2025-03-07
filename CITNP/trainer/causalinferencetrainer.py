@@ -205,7 +205,7 @@ class CausalInferenceTrainer:
             self.model.to(dtype)
 
             all_loss = 0
-            for i, data in enumerate(tqdm(val_loader, desc="Validation")):
+            for i, data in enumerate(tqdm(val_loader, desc="Validation", leave=False)):
                 # Get the inputs and targets
                 context, target, intvn_indices, outcome_indices, masks = send_to_device(
                     list(data),

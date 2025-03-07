@@ -24,6 +24,7 @@ class CausalInferenceModel(torch.nn.Module):
         dropout,
         num_layers_encoder,
         num_nodes,
+        outcome_firstnode=False,
         device=None,
         dtype=None,
     ):
@@ -38,6 +39,7 @@ class CausalInferenceModel(torch.nn.Module):
         self.dropout = dropout
         self.num_layers_encoder = num_layers_encoder
         self.num_nodes = num_nodes
+        self.outcome_firstnode = outcome_firstnode
         self.device = device
         self.dtype = dtype
 
@@ -269,26 +271,33 @@ class CausalInferenceModel(torch.nn.Module):
         )
         # Shape of context_data: (batch_size, num_context + 1, num_nodes, 1)
         # Shape of masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
-        # context_data, masked_target_data = self.append_treatment_outcome_index_to_context_and_target(
-        #     context_data, masked_target_data, outcome_index, treatment_index=intervention_index
-        # )
-        context_data, masked_target_data = self.move_outcome_to_first_node_and_encode_treatment(
-            context_data, masked_target_data, outcome_index, treatment_index=intervention_index
-        )
+        if not self.outcome_firstnode:
+            context_data, masked_target_data = self.append_treatment_outcome_index_to_context_and_target(
+                context_data, masked_target_data, outcome_index,
+                treatment_index=intervention_index
+            )
+            outcome_indices = outcome_index
+        else:
+            context_data, masked_target_data = self.move_outcome_to_first_node_and_encode_treatment(
+                context_data, masked_target_data, outcome_index, treatment_index=intervention_index
+            )
+            outcome_indices = torch.zeros_like(outcome_index)
 
         # shape of encoder_output: (batch_size, num_target + 1, num_nodes, d_model)
         encoding = self.encoder.encode(
             context_data,
             masked_target_data,
-            outcome_indices=torch.zeros_like(outcome_index),
+            outcome_indices=outcome_indices,
             intervention_indices=intervention_index,
             variable_mask=variable_mask
         )
 
         # We want to find p(outcome | do(intervention))
-        # batch_idx = torch.arange(encoding.size(0), device=encoding.device)
-        # outcome_encoding = encoding[batch_idx, :, outcome_index, :]
-        outcome_encoding = encoding[:, 0, :]
+        if not self.outcome_firstnode:
+            batch_idx = torch.arange(encoding.size(0), device=encoding.device)
+            outcome_encoding = encoding[batch_idx, :, outcome_index, :]
+        else:
+            outcome_encoding = encoding[:, 0, :]
 
         pred = self.predictor(outcome_encoding)
         mean, std = pred.split(1, dim=-1)
