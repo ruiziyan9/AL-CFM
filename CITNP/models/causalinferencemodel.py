@@ -281,7 +281,7 @@ class CausalInferenceModel(torch.nn.Module):
         encoding = self.encoder.encode(
             context_data,
             masked_target_data,
-            outcome_indices=outcome_index,
+            outcome_indices=torch.zeros_like(outcome_index),
             intervention_indices=intervention_index,
             variable_mask=variable_mask
         )
