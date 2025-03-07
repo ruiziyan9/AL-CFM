@@ -232,7 +232,7 @@ class CausalInferenceModel(torch.nn.Module):
 
         # Calculate the loss
         distribution = torch.distributions.Normal(pred_mean, pred_std)
-        loss = - distribution.log_prob(target)
+        loss = - distribution.log_prob(target + 1e-30)
         # Mean over the samples and mean over the batch
         return loss.mean(1).mean()
 
@@ -281,6 +281,7 @@ class CausalInferenceModel(torch.nn.Module):
             context_data, masked_target_data = self.move_outcome_to_first_node_and_encode_treatment(
                 context_data, masked_target_data, outcome_index, treatment_index=intervention_index
             )
+            # We move outcome to the first node, so the outcome index is 0
             outcome_indices = torch.zeros_like(outcome_index)
 
         # shape of encoder_output: (batch_size, num_target + 1, num_nodes, d_model)
@@ -293,11 +294,8 @@ class CausalInferenceModel(torch.nn.Module):
         )
 
         # We want to find p(outcome | do(intervention))
-        if not self.outcome_firstnode:
-            batch_idx = torch.arange(encoding.size(0), device=encoding.device)
-            outcome_encoding = encoding[batch_idx, :, outcome_index, :]
-        else:
-            outcome_encoding = encoding[:, 0, :]
+        batch_idx = torch.arange(encoding.size(0), device=encoding.device)
+        outcome_encoding = encoding[batch_idx, :, outcome_indices, :]
 
         pred = self.predictor(outcome_encoding)
         mean, std = pred.split(1, dim=-1)
