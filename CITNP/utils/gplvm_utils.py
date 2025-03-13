@@ -82,3 +82,22 @@ class SumExpGammaKernels(nn.Module):
         for kernel in self.kernels:
             K += kernel(x1, x2)
         return K
+
+
+class RBFKernel(nn.Module):
+
+    def __init__(self, lengthscale=1.0):
+        super(RBFKernel, self).__init__()
+        self.lengthscale = lengthscale
+
+    def forward(self, x1, x2):
+        # Compute pairwise Euclidean distances between x1 and x2
+        # The cdist function computes the distances efficiently
+        distances = torch.cdist(x1 / self.lengthscale, x2 / self.lengthscale, p=2)
+
+        distances = torch.clamp(distances, min=1e-36)
+
+        distances = (distances + distances.T) / 2
+
+        K = torch.exp(-0.5 * (distances ** 2))
+        return K

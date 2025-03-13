@@ -105,6 +105,7 @@ def transformer_inference_split_withpadding(
 
         context = th.from_numpy(context).float().unsqueeze(-1)
         target = th.from_numpy(target).float().unsqueeze(-1)
+        causal_graphs_array = th.from_numpy(causal_graphs_array).float()
 
         if masks is not None:
             masks = th.from_numpy(masks).float()
@@ -112,6 +113,6 @@ def transformer_inference_split_withpadding(
         intvn_indices = th.from_numpy(intvn_indices).long()
         outcome_indices = th.from_numpy(outcome_indices).long()
 
-        return context, target, intvn_indices, outcome_indices, masks
+        return context, target, intvn_indices, outcome_indices, masks, causal_graphs_array
 
     return mycollate
