@@ -57,9 +57,12 @@ def main(args: argparse.Namespace):
     }
 
     model = CausalInferenceModel(**MODEL_ARGS)
-    save_dir = Path(
-        "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments/results"
-    )
+    if args.results_path is None:
+        results_path = Path.cwd()
+    else:
+        results_path = Path(args.results_path)
+    save_dir = results_path / "results"
+    save_dir.mkdir(parents=True, exist_ok=True)
     model_save_dir = save_dir / f"{args.run_name}"
 
     TRAINER_ARGS = {
@@ -101,7 +104,11 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    wandb.login(key="bc359b26d166ea6980eb0e231060bd7b8c06925e")
+    # These fixed some attention errors for me
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_math_sdp(True)
+    # wandb.login(key="bc359b26d166ea6980eb0e231060bd7b8c06925e")
     parser = argparse.ArgumentParser()
     args = parse_args()
     main(args)

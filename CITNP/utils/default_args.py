@@ -123,6 +123,12 @@ def parse_args():
         default=0.1,
         help="Warmup ratio for learning rate.",
     )
+    parser.add_argument(
+        "--results_path",
+        type=str,
+        default="./experiments",
+        help="Path where to store the results.",
+    )
     parser.add_argument("--log_step", type=int, default=500, help="Log step.")
 
     return parser.parse_args()
@@ -139,7 +145,7 @@ def overwrite_debug_args(args):
     args.dim_feedforward = 128
     args.num_layers_encoder = 2
     args.lr_warmup_ratio = 0.0
-    args.use_wandb = False
+    args.no_wandb = True
     args.run_name = "debug"
     args.nhead = 4
     return args

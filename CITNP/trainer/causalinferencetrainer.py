@@ -226,7 +226,7 @@ class CausalInferenceTrainer:
                 tqdm(val_loader, desc="Validation", leave=False)
             ):
                 # Get the inputs and targets
-                context, target, intvn_indices, outcome_indices, masks = (
+                context, target, intvn_indices, outcome_indices, masks, _ = (
                     send_to_device(
                         list(data),
                         device="cuda",
@@ -286,7 +286,7 @@ class CausalInferenceTrainer:
                 epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps
             )
             # Get the inputs and targets
-            context, target, intvn_indices, outcome_indices, masks = (
+            context, target, intvn_indices, outcome_indices, masks, _ = (
                 send_to_device(
                     list(data),
                     device="cuda",
