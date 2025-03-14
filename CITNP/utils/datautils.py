@@ -1,6 +1,7 @@
 """
 Data utilities for CITNP.
 """
+
 from typing import List
 
 import numpy as np
@@ -76,7 +77,6 @@ def transformer_inference_split_withpadding(
     cntxt_split: List[float],
     sample_size: int,
 ):
-
     min_context = int(sample_size * cntxt_split[0])
     max_context = int(sample_size * cntxt_split[1])
 
@@ -113,6 +113,13 @@ def transformer_inference_split_withpadding(
         intvn_indices = th.from_numpy(intvn_indices).long()
         outcome_indices = th.from_numpy(outcome_indices).long()
 
-        return context, target, intvn_indices, outcome_indices, masks, causal_graphs_array
+        return (
+            context,
+            target,
+            intvn_indices,
+            outcome_indices,
+            masks,
+            causal_graphs_array,
+        )
 
     return mycollate

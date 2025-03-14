@@ -1,6 +1,7 @@
 """
 File to train the transformer NP classifier model.
 """
+
 from functools import partial
 from pathlib import Path
 from typing import List
@@ -113,20 +114,29 @@ class CausalInferenceTrainer:
         # Get loaders
         persistent_workers = True if self.num_workers > 0 else False
         self.train_loader = th.utils.data.DataLoader(
-            self.train_dataset, batch_size=self.batch_size, shuffle=shuffle,
-            num_workers=self.num_workers, pin_memory=True,
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            num_workers=self.num_workers,
+            pin_memory=True,
             persistent_workers=persistent_workers,
             collate_fn=collator(),
         )
         self.val_loader = th.utils.data.DataLoader(
-            self.validation_dataset, batch_size=self.batch_size, shuffle=shuffle,
-            num_workers=self.num_workers, pin_memory=True,
+            self.validation_dataset,
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            num_workers=self.num_workers,
+            pin_memory=True,
             persistent_workers=persistent_workers,
             collate_fn=collator(),
         )
         self.test_loader = th.utils.data.DataLoader(
-            self.test_dataset, batch_size=self.batch_size, shuffle=shuffle,
-            num_workers=self.num_workers, pin_memory=True,
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            num_workers=self.num_workers,
+            pin_memory=True,
             persistent_workers=persistent_workers,
             collate_fn=collator(),
         )
@@ -142,7 +152,14 @@ class CausalInferenceTrainer:
         else:
             pass
 
-    def test_single_epoch(self, test_loader, metric_dict, calc_metrics=False, num_samples=100, check_acyclic=False):
+    def test_single_epoch(
+        self,
+        test_loader,
+        metric_dict,
+        calc_metrics=False,
+        num_samples=100,
+        check_acyclic=False,
+    ):
         # with th.no_grad():
         #     self.model.to("cuda")
         #     dtype = th.float32
@@ -205,11 +222,15 @@ class CausalInferenceTrainer:
             self.model.to(dtype)
 
             all_loss = 0
-            for i, data in enumerate(tqdm(val_loader, desc="Validation", leave=False)):
+            for i, data in enumerate(
+                tqdm(val_loader, desc="Validation", leave=False)
+            ):
                 # Get the inputs and targets
-                context, target, intvn_indices, outcome_indices, masks = send_to_device(
-                    list(data),
-                    device="cuda",
+                context, target, intvn_indices, outcome_indices, masks = (
+                    send_to_device(
+                        list(data),
+                        device="cuda",
+                    )
                 )
                 context, target = send_to_device(
                     [context, target],
@@ -265,9 +286,11 @@ class CausalInferenceTrainer:
                 epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps
             )
             # Get the inputs and targets
-            context, target, intvn_indices, outcome_indices, masks = send_to_device(
-                list(data),
-                device="cuda",
+            context, target, intvn_indices, outcome_indices, masks = (
+                send_to_device(
+                    list(data),
+                    device="cuda",
+                )
             )
             context, target = send_to_device(
                 [context, target],
@@ -301,10 +324,12 @@ class CausalInferenceTrainer:
                 metric_dict = {
                     "train loss": loss.mean().item(),
                 }
-                current_lr = self.optimizer.param_groups[0]['lr']
+                current_lr = self.optimizer.param_groups[0]["lr"]
                 metric_dict.update({"learning_rate": current_lr})
                 if i % self.log_step == 0 and i > 0:
-                    metric_dict = self.validate_single_epoch(val_loader, metric_dict)
+                    metric_dict = self.validate_single_epoch(
+                        val_loader, metric_dict
+                    )
                     metric_dict = self.test_single_epoch(test_loader, metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
@@ -323,10 +348,13 @@ class CausalInferenceTrainer:
         # Set model to train
         self.model.to("cuda")
         # Find the total number of steps for warmup
-        lr_warmup_steps = int(self.lr_warmup_ratio * len(self.train_loader) * self.epochs)
+        lr_warmup_steps = int(
+            self.lr_warmup_ratio * len(self.train_loader) * self.epochs
+        )
         for epoch in range(self.epochs):
-            metric_dict = self.train_single_epoch(
-                train_loader=self.train_loader, val_loader=self.val_loader,
+            self.train_single_epoch(
+                train_loader=self.train_loader,
+                val_loader=self.val_loader,
                 test_loader=self.test_loader,
                 epoch=epoch,
                 lr_warmup_steps=lr_warmup_steps,

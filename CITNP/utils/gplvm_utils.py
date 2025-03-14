@@ -28,7 +28,9 @@ class ExponentialGammaKernel(nn.Module):
         self.gamma = gamma
         self.lengthscale = lengthscale
         assert self.gamma > 0, "The gamma parameter must be positive."
-        assert self.gamma <= 1, "The gamma parameter must be less than or equal to 1."
+        assert self.gamma <= 1, (
+            "The gamma parameter must be less than or equal to 1."
+        )
 
     def forward(self, x1, x2):
         """
@@ -48,7 +50,9 @@ class ExponentialGammaKernel(nn.Module):
         """
         # Compute pairwise Euclidean distances between x1 and x2
         # The cdist function computes the distances efficiently
-        distances = torch.cdist(x1 / self.lengthscale, x2 / self.lengthscale, p=2)  # Euclidean distance (p=2)
+        distances = torch.cdist(
+            x1 / self.lengthscale, x2 / self.lengthscale, p=2
+        )  # Euclidean distance (p=2)
 
         # Symmetrically clip the distances to prevent numerical issues
         distances = torch.clamp(distances, min=1e-36)
@@ -56,13 +60,12 @@ class ExponentialGammaKernel(nn.Module):
         distances = (distances + distances.T) / 2
 
         # Apply the Exponential Gamma Kernel function
-        K = torch.exp(- (distances ** self.gamma))
+        K = torch.exp(-(distances**self.gamma))
 
         return K
 
 
 class SumExpGammaKernels(nn.Module):
-
     def __init__(
         self,
         num_kernels: int,
@@ -72,7 +75,9 @@ class SumExpGammaKernels(nn.Module):
         super(SumExpGammaKernels, self).__init__()
         self.kernels = nn.ModuleList(
             [
-                ExponentialGammaKernel(gamma=gamma_vals[i], lengthscale=lengthscale_vals[i])
+                ExponentialGammaKernel(
+                    gamma=gamma_vals[i], lengthscale=lengthscale_vals[i]
+                )
                 for i in range(num_kernels)
             ]
         )
@@ -85,7 +90,6 @@ class SumExpGammaKernels(nn.Module):
 
 
 class RBFKernel(nn.Module):
-
     def __init__(self, lengthscale=1.0):
         super(RBFKernel, self).__init__()
         self.lengthscale = lengthscale
@@ -99,5 +103,5 @@ class RBFKernel(nn.Module):
 
         distances = (distances + distances.T) / 2
 
-        K = torch.exp(-0.5 * (distances ** 2))
+        K = torch.exp(-0.5 * (distances**2))
         return K

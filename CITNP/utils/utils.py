@@ -1,6 +1,7 @@
 """
 File for random utility functions.
 """
+
 import random
 
 import numpy as np

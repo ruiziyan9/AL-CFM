@@ -43,7 +43,9 @@ class CausalInfTransformerEncoder(nn.Module):
     ) -> None:
         super(CausalInfTransformerEncoder, self).__init__()
         assert len(encoder_layers) > 0, "Encoder must have at least one layer."
-        assert len(encoder_layers) % 2 == 0, "Encoder must have an even number of layers."
+        assert len(encoder_layers) % 2 == 0, (
+            "Encoder must have an even number of layers."
+        )
         self.layers = encoder_layers
 
     def forward(
@@ -63,8 +65,15 @@ class CausalInfTransformerEncoder(nn.Module):
                 # shape [batch_size, num_nodes, num_samples, d_model]
                 src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_nodes, num_samples, d_model]
-                src = src.contiguous().view(batch_size * num_nodes, num_samples, d_model)
-                src = mod(src, src_mask=sample_mask, src_key_padding_mask=None, is_causal=is_causal)
+                src = src.contiguous().view(
+                    batch_size * num_nodes, num_samples, d_model
+                )
+                src = mod(
+                    src,
+                    src_mask=sample_mask,
+                    src_key_padding_mask=None,
+                    is_causal=is_causal,
+                )
                 # Reshape the tensor back to [batch_size, num_nodes, num_samples, d_model]
                 src = src.view(batch_size, num_nodes, num_samples, d_model)
             # Attention across nodes
@@ -72,18 +81,31 @@ class CausalInfTransformerEncoder(nn.Module):
                 # shape [batch_size, num_samples, num_nodes, d_model]
                 src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_samples, num_nodes, d_model]
-                src = src.contiguous().view(batch_size * num_samples, num_nodes, d_model)
+                src = src.contiguous().view(
+                    batch_size * num_samples, num_nodes, d_model
+                )
                 # Extra zeros for the query
                 node_src_key_padding_mask = variable_mask
                 if node_src_key_padding_mask is not None:
-                    node_src_key_padding_mask = node_src_key_padding_mask.contiguous().view(batch_size * num_samples, num_nodes)
-                src = mod(src, src_mask=None, src_key_padding_mask=node_src_key_padding_mask, is_causal=is_causal)
+                    node_src_key_padding_mask = (
+                        node_src_key_padding_mask.contiguous().view(
+                            batch_size * num_samples, num_nodes
+                        )
+                    )
+                src = mod(
+                    src,
+                    src_mask=None,
+                    src_key_padding_mask=node_src_key_padding_mask,
+                    is_causal=is_causal,
+                )
                 # Make masking position back to zero
                 if node_src_key_padding_mask is not None:
                     bool_pad = node_src_key_padding_mask == -float("inf")
                     src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = src.contiguous().view(batch_size, num_samples, num_nodes, d_model)
+                src = src.contiguous().view(
+                    batch_size, num_samples, num_nodes, d_model
+                )
         return src
 
 
@@ -105,7 +127,7 @@ class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
         norm_first: bool = True,
         bias: bool = False,
         device=None,
-        dtype=None
+        dtype=None,
     ) -> None:
         super(CausalTransformerDecoderLayer, self).__init__(
             d_model=d_model,
@@ -144,10 +166,15 @@ class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
 
         x = tgt
         if self.norm_first:
-            x = x + self._sa_block(self.norm1(x), tgt_mask, tgt_key_padding_mask, tgt_is_causal)
+            x = x + self._sa_block(
+                self.norm1(x), tgt_mask, tgt_key_padding_mask, tgt_is_causal
+            )
             x = x + self._ff_block(self.norm3(x))
         else:
-            x = self.norm1(x + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal))
+            x = self.norm1(
+                x
+                + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)
+            )
             x = self.norm3(x + self._ff_block(x))
         return x
 
@@ -211,7 +238,9 @@ class CausalInfEncoder(nn.Module):
         super(CausalInfEncoder, self).__init__()
         # Different MLP for context and target
         # Different embedding for everything.
-        mlp = partial(build_mlp, dim_in=1, dim_hid=d_model, dim_out=d_model, depth=emb_depth)
+        mlp = partial(
+            build_mlp, dim_in=1, dim_hid=d_model, dim_out=d_model, depth=emb_depth
+        )
         self.context_variable = mlp()
         self.context_intervention = mlp()
         self.context_outcome = mlp()
@@ -283,7 +312,11 @@ class CausalInfEncoder(nn.Module):
         mask_int[batch_idx[:, None], :, intervention_indices[:, None], :] = 1.0
         # Combine embeddings with a weighted sum.
         # Ensure that masks do not overlap or adjust weights appropriately if they do.
-        embedding = var_emb * (1 - mask_outcome - mask_int) + out_emb * mask_outcome + int_emb * mask_int
+        embedding = (
+            var_emb * (1 - mask_outcome - mask_int)
+            + out_emb * mask_outcome
+            + int_emb * mask_int
+        )
         # embedding = var_emb
         return embedding
 
@@ -304,7 +337,10 @@ class CausalInfEncoder(nn.Module):
         num_target = target_data.size(1)
         mask_size = num_context + num_target
         sample_mask = torch.zeros(
-            mask_size, mask_size, device=context_data.device, dtype=context_data.dtype
+            mask_size,
+            mask_size,
+            device=context_data.device,
+            dtype=context_data.dtype,
         ).fill_(float("-inf"))
         # Context samples can attend to itself
         # target samples can only attend to context samples
@@ -347,14 +383,14 @@ class CausalInfEncoder(nn.Module):
         )
         # shape [batch_size, num_context + num_target, num_nodes, d_model]
         full_data = self.create_input(context_embed, target_embed)
-        sample_mask, num_target = self.create_sample_mask(context_data, target_data)
+        sample_mask, num_target = self.create_sample_mask(
+            context_data, target_data
+        )
         # shape [batch_size, num_samples, num_nodes, d_model]
         # Encode the data
         # shape [batch_size, num_samples, num_nodes, d_model]
         representation = self.encoder(
-            full_data,
-            sample_mask=sample_mask,
-            variable_mask=variable_mask
+            full_data, sample_mask=sample_mask, variable_mask=variable_mask
         )
 
         # Compute the summary representation

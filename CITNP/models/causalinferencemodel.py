@@ -1,13 +1,15 @@
 """
 File containing the CausalInferenceModel class
 """
+
 from typing import Optional
 
 import torch
-import torch.nn as nn
 
 from CITNP.models.causaltransformercomponents import (
-    CausalInfEncoder, CausalTransformerDecoderLayer, build_mlp)
+    CausalInfEncoder,
+    build_mlp,
+)
 
 
 class CausalInferenceModel(torch.nn.Module):
@@ -73,7 +75,7 @@ class CausalInferenceModel(torch.nn.Module):
         self.predictor = build_mlp(
             self.d_model,
             self.d_model,
-            dim_out=2, # mean and std
+            dim_out=2,  # mean and std
             depth=2,
         )
 
@@ -103,13 +105,17 @@ class CausalInferenceModel(torch.nn.Module):
 
         # Create a tensor that lists node indices for broadcasting.
         # Shape: (1, 1, num_nodes, 1)
-        node_range = torch.arange(num_nodes, device=target_data.device).view(1, 1, num_nodes, 1)
+        node_range = torch.arange(num_nodes, device=target_data.device).view(
+            1, 1, num_nodes, 1
+        )
 
         # Reshape intervention_index to (batch_size, 1, 1, 1) for broadcasting.
         intervention_index = intervention_index.view(batch_size, 1, 1, 1)
 
         # Create a mask: for each sample, only the intervention node gets a 1; the rest are 0.
-        mask = (node_range == intervention_index).float()  # Shape: (batch_size, 1, num_nodes, 1)
+        mask = (
+            node_range == intervention_index
+        ).float()  # Shape: (batch_size, 1, num_nodes, 1)
 
         # Broadcast the mask along the num_target dimension and apply it.
         target_data = target_data * mask
@@ -143,7 +149,9 @@ class CausalInferenceModel(torch.nn.Module):
         batch_size = outcome_index.size(0)
 
         # Create a tensor of zeros with shape (batch_size, num_nodes)
-        encoding = torch.zeros(batch_size, self.num_nodes, device=outcome_index.device)
+        encoding = torch.zeros(
+            batch_size, self.num_nodes, device=outcome_index.device
+        )
 
         # Set outcome index to 1 for each batch sample
         encoding[torch.arange(batch_size), outcome_index] = 1
@@ -190,7 +198,9 @@ class CausalInferenceModel(torch.nn.Module):
         batch_size = outcome_index.size(0)
         # Encode the treatment index with one hot encoding with -1 for
         # the treatment index and 0 for the rest of the nodes
-        encoding = torch.zeros(batch_size, self.num_nodes, device=outcome_index.device)
+        encoding = torch.zeros(
+            batch_size, self.num_nodes, device=outcome_index.device
+        )
         # Set treatment index to -1 for each batch sample
         encoding[torch.arange(batch_size), treatment_index] = -1
         # Reshape to (batch_size, 1, num_nodes, 1) for concatenation
@@ -202,19 +212,33 @@ class CausalInferenceModel(torch.nn.Module):
         # Move the outcome index to the first node
         # Build new indices that move the outcome node to the first position.
         # Create a tensor for node indices [0, 1, ..., num_nodes - 1] for each batch.
-        nodes = torch.arange(self.num_nodes, device=outcome_index.device).unsqueeze(0).expand(batch_size, self.num_nodes)
+        nodes = (
+            torch.arange(self.num_nodes, device=outcome_index.device)
+            .unsqueeze(0)
+            .expand(batch_size, self.num_nodes)
+        )
         # For each batch sample, create a mask that is True for nodes that are NOT the outcome.
         mask = nodes != outcome_index.unsqueeze(1)
         # Extract the other node indices and reshape to (batch_size, num_nodes - 1)
         other_nodes = nodes[mask].view(batch_size, self.num_nodes - 1)
         # Concatenate the outcome index as the first element with the rest of the indices.
-        new_indices = torch.cat([outcome_index.unsqueeze(1), other_nodes], dim=1)  # shape: (batch_size, num_nodes)
+        new_indices = torch.cat(
+            [outcome_index.unsqueeze(1), other_nodes], dim=1
+        )  # shape: (batch_size, num_nodes)
         # Expand indices for gathering along the node dimension.
         # For context_data: shape is (batch_size, samples, num_nodes, 1)
-        new_indices_exp = new_indices.unsqueeze(1).unsqueeze(-1).expand(batch_size, context_data.shape[1], self.num_nodes, 1)
+        new_indices_exp = (
+            new_indices.unsqueeze(1)
+            .unsqueeze(-1)
+            .expand(batch_size, context_data.shape[1], self.num_nodes, 1)
+        )
         context_data = torch.gather(context_data, dim=2, index=new_indices_exp)
         # Do the same for target_data.
-        new_indices_exp = new_indices.unsqueeze(1).unsqueeze(-1).expand(batch_size, target_data.shape[1], self.num_nodes, 1)
+        new_indices_exp = (
+            new_indices.unsqueeze(1)
+            .unsqueeze(-1)
+            .expand(batch_size, target_data.shape[1], self.num_nodes, 1)
+        )
         target_data = torch.gather(target_data, dim=2, index=new_indices_exp)
 
         # Convert back to the original dtype if necessary
@@ -232,7 +256,7 @@ class CausalInferenceModel(torch.nn.Module):
 
         # Calculate the loss
         distribution = torch.distributions.Normal(pred_mean, pred_std)
-        loss = - distribution.log_prob(target + 1e-30)
+        loss = -distribution.log_prob(target + 1e-30)
         # Mean over the samples and mean over the batch
         return loss.mean(1).mean()
 
@@ -272,14 +296,23 @@ class CausalInferenceModel(torch.nn.Module):
         # Shape of context_data: (batch_size, num_context + 1, num_nodes, 1)
         # Shape of masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
         if not self.outcome_firstnode:
-            context_data, masked_target_data = self.append_treatment_outcome_index_to_context_and_target(
-                context_data, masked_target_data, outcome_index,
-                treatment_index=intervention_index
+            context_data, masked_target_data = (
+                self.append_treatment_outcome_index_to_context_and_target(
+                    context_data,
+                    masked_target_data,
+                    outcome_index,
+                    treatment_index=intervention_index,
+                )
             )
             outcome_indices = outcome_index
         else:
-            context_data, masked_target_data = self.move_outcome_to_first_node_and_encode_treatment(
-                context_data, masked_target_data, outcome_index, treatment_index=intervention_index
+            context_data, masked_target_data = (
+                self.move_outcome_to_first_node_and_encode_treatment(
+                    context_data,
+                    masked_target_data,
+                    outcome_index,
+                    treatment_index=intervention_index,
+                )
             )
             # We move outcome to the first node, so the outcome index is 0
             outcome_indices = torch.zeros_like(outcome_index)
@@ -290,7 +323,7 @@ class CausalInferenceModel(torch.nn.Module):
             masked_target_data,
             outcome_indices=outcome_indices,
             intervention_indices=intervention_index,
-            variable_mask=variable_mask
+            variable_mask=variable_mask,
         )
 
         # We want to find p(outcome | do(intervention))
