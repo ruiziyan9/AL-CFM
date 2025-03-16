@@ -12,13 +12,17 @@ from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
 from CITNP.models.causalinferencemodel import CausalInferenceModel
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.default_args import overwrite_debug_args, parse_args
-from CITNP.utils.utils import set_seed
+from CITNP.utils.utils import set_seed, _generate_experiment_name
 
 
 def main(args: argparse.Namespace):
     # If debug mode is on, overwrite the default arguments
     if args.debug:
         args = overwrite_debug_args(args)
+
+    # If run name is not set, generate random name (before setting seed)
+    if args.run_name is None:
+        args.run_name = _generate_experiment_name()
 
     set_seed(args.seed)
 
@@ -73,14 +77,15 @@ def main(args: argparse.Namespace):
         "bfloat16": args.dtype == torch.bfloat16,
         "num_workers": 0,
         "save_dir": model_save_dir,
-        "cntxt_split": [0.2, 1.0],
+        "cntxt_split": [0.2, 0.8],
         "sample_size": args.sample_size,
         "log_step": args.log_step,
+        "save_checkpoint_every": args.save_checkpoint_every,
     }
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     if not args.no_wandb:
-        wandb.init(
+        wandb.init(  # type: ignore
             # Set the entity
             entity="npcausalinf",
             # Set the project where this run will be logged

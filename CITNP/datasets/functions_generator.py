@@ -276,7 +276,7 @@ class DataGenerator(ABC):
         # Thus, we need to loop over the columns.
         loop_order = np.arange(self.number_of_variables)
 
-        # We need to make sure that the inerventions are sampled from the
+        # We need to make sure that the interventions are sampled from the
         # SAME FUNCTION!
         for i in loop_order:
             function_for_i = function_dict[i]

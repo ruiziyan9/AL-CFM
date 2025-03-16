@@ -249,7 +249,7 @@ class InterventionDatasetGenerator(IterableDataset):
             )
 
             # Generate data
-            currnet_data_generator = self.data_generator(
+            current_data_generator = self.data_generator(
                 num_variables=current_num_variables,
             )
             # Create interventional DAG
@@ -259,7 +259,7 @@ class InterventionDatasetGenerator(IterableDataset):
             (
                 obs_data,
                 intvn_data,
-            ) = currnet_data_generator.generate_data(
+            ) = current_data_generator.generate_data(
                 causal_graph=dag,
                 sample_size=self.sample_size,
                 intervention_index=intvn_index,

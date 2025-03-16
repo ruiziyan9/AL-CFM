@@ -52,10 +52,16 @@ class CausalInferenceTrainer:
         Whether to use bfloat16 precision.
     - save_dir: Path
         The directory to save the model.
+    - cntxt_split: List[float]
+        List with min and max of context proportion.
     - scheduler: th.optim.lr_scheduler
         The scheduler to use.
     - use_wandb: bool
         Whether to use wandb.
+    - log_step: int
+        Logging step.
+    - save_checkpoint_every: int
+        Number of epochs after which to save checkpoint.
     """
 
     def __init__(
@@ -76,6 +82,7 @@ class CausalInferenceTrainer:
         scheduler: th.optim.lr_scheduler = None,
         use_wandb: bool = True,
         log_step: int = 500,
+        save_checkpoint_every: int = 10,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset
@@ -93,6 +100,7 @@ class CausalInferenceTrainer:
         self.scheduler = scheduler
         self.use_wandb = use_wandb
         self.log_step = log_step
+        self.save_checkpoint_every = save_checkpoint_every
 
         self.learning_rate = self.optimizer.param_groups[0]["lr"]
 
@@ -333,6 +341,13 @@ class CausalInferenceTrainer:
                     metric_dict = self.test_single_epoch(test_loader, metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
+            if (i + 1) % self.save_checkpoint_every == 0:
+                # Save the model
+                self.save_dir.mkdir(parents=True, exist_ok=True)
+                th.save(
+                    self.model.state_dict(),
+                    self.save_dir / "model_{}.pt".format(epoch),
+                )
             pbar.set_description(
                 "Epoch: {}, Loss: {:.4f}".format(epoch, loss.mean().item())
             )

@@ -255,8 +255,9 @@ class CausalInferenceModel(torch.nn.Module):
         target = target[batch_idx, :, outcome_index, :]
 
         # Calculate the loss
-        distribution = torch.distributions.Normal(pred_mean, pred_std)
-        loss = -distribution.log_prob(target + 1e-30)
+        # TODO (cristiana): Check with Anish whether 1e-30 is for stability.
+        distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
+        loss = -distribution.log_prob(target)  # + 1e-30)
         # Mean over the samples and mean over the batch
         return loss.mean(1).mean()
 

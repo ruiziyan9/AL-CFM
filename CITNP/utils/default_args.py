@@ -104,7 +104,7 @@ def parse_args():
         "--learning_rate", type=float, default=0.0001, help="Learning rate."
     )
     parser.add_argument(
-        "--run_name", type=str, default="test", help="Name of the run."
+        "--run_name", type=str, default=None, help="Name of the run."
     )
 
     # Training args
@@ -130,6 +130,13 @@ def parse_args():
         help="Path where to store the results.",
     )
     parser.add_argument("--log_step", type=int, default=500, help="Log step.")
+
+    parser.add_argument(
+        "--save_checkpoint_every",
+        type=int,
+        default=1,
+        help="Number of epochs after which to save checkpoint.",
+    )
 
     return parser.parse_args()
 

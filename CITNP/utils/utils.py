@@ -2,6 +2,7 @@
 File for random utility functions.
 """
 
+from datetime import datetime
 import random
 
 import numpy as np
@@ -28,3 +29,60 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+
+
+def _generate_experiment_name() -> str:
+    adjectives = [
+        "swift",
+        "fierce",
+        "gentle",
+        "clever",
+        "brave",
+        "cunning",
+        "loyal",
+        "playful",
+        "quiet",
+        "bold",
+        "majestic",
+        "nimble",
+        "mighty",
+        "elegant",
+        "sly",
+        "energetic",
+        "daring",
+        "graceful",
+        "wild",
+        "fearless",
+    ]
+
+    animals = [
+        "tiger",
+        "eagle",
+        "wolf",
+        "panther",
+        "falcon",
+        "fox",
+        "bear",
+        "lion",
+        "cheetah",
+        "hawk",
+        "otter",
+        "deer",
+        "jaguar",
+        "leopard",
+        "owl",
+        "raven",
+        "buffalo",
+        "cougar",
+        "lynx",
+        "badger",
+        "doggo",
+        "squirrel",
+        "piglet",
+    ]
+
+    adjective = random.choice(adjectives)
+    animal = random.choice(animals)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+
+    return f"{adjective}-{animal}-{timestamp}"
