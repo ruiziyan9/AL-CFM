@@ -100,8 +100,9 @@ class GPFunctions:
             )
             mean = th.zeros(inputs.shape[0], device=self.device)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(
-                mean
+            output = (
+                normal_dist.sample()
+                + noise_value.flatten() * th.randn_like(mean)
             )
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
@@ -113,7 +114,9 @@ class GPFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            inputs = np.random.normal(
+                loc=0, scale=1.0, size=(inputs.shape[0], 1)
+            )
 
         outputs = self.sample_gp(inputs)
         return outputs
@@ -200,7 +203,9 @@ class SimpleGPFunctions:
             covariance = covariance + 1e-4 * th.eye(
                 inputs.shape[0], device=self.device, dtype=th.float64
             )
-            mean = th.zeros(inputs.shape[0], device=self.device, dtype=th.float64)
+            mean = th.zeros(
+                inputs.shape[0], device=self.device, dtype=th.float64
+            )
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
             noise_sample = normal_dist.sample().to(th.float64)
             output = noise_sample + noise_value.flatten() * th.randn_like(mean)
@@ -214,7 +219,9 @@ class SimpleGPFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            inputs = np.random.normal(
+                loc=0, scale=1.0, size=(inputs.shape[0], 1)
+            )
 
         outputs = self.sample_gp(inputs)
         return outputs

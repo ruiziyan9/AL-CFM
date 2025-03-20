@@ -144,7 +144,9 @@ class CausalInferenceModel(torch.nn.Module):
         batch_size = outcome_index.size(0)
 
         # Create a tensor of zeros with shape (batch_size, num_nodes)
-        encoding = torch.zeros(batch_size, self.num_nodes, device=outcome_index.device)
+        encoding = torch.zeros(
+            batch_size, self.num_nodes, device=outcome_index.device
+        )
 
         # Set outcome index to 1 for each batch sample
         encoding[torch.arange(batch_size), outcome_index] = 1
@@ -191,7 +193,9 @@ class CausalInferenceModel(torch.nn.Module):
         batch_size = outcome_index.size(0)
         # Encode the treatment index with one hot encoding with -1 for
         # the treatment index and 0 for the rest of the nodes
-        encoding = torch.zeros(batch_size, self.num_nodes, device=outcome_index.device)
+        encoding = torch.zeros(
+            batch_size, self.num_nodes, device=outcome_index.device
+        )
         # Set treatment index to -1 for each batch sample
         encoding[torch.arange(batch_size), treatment_index] = -1
         # Reshape to (batch_size, 1, num_nodes, 1) for concatenation

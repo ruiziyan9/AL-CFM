@@ -28,9 +28,9 @@ class ExponentialGammaKernel(nn.Module):
         self.gamma = gamma
         self.lengthscale = lengthscale
         assert self.gamma > 0, "The gamma parameter must be positive."
-        assert self.gamma <= 1, (
-            "The gamma parameter must be less than or equal to 1."
-        )
+        assert (
+            self.gamma <= 1
+        ), "The gamma parameter must be less than or equal to 1."
 
     def forward(self, x1, x2):
         """
@@ -97,7 +97,9 @@ class RBFKernel(nn.Module):
     def forward(self, x1, x2):
         # Compute pairwise Euclidean distances between x1 and x2
         # The cdist function computes the distances efficiently
-        distances = torch.cdist(x1 / self.lengthscale, x2 / self.lengthscale, p=2)
+        distances = torch.cdist(
+            x1 / self.lengthscale, x2 / self.lengthscale, p=2
+        )
 
         distances = torch.clamp(distances, min=1e-36)
 

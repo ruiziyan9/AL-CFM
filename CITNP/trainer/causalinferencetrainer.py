@@ -338,7 +338,9 @@ class CausalInferenceTrainer:
                     metric_dict = self.validate_single_epoch(
                         val_loader, metric_dict
                     )
-                    metric_dict = self.test_single_epoch(test_loader, metric_dict)
+                    metric_dict = self.test_single_epoch(
+                        test_loader, metric_dict
+                    )
                 if self.use_wandb:
                     wandb.log(metric_dict)
             if (i + 1) % self.save_checkpoint_every == 0:

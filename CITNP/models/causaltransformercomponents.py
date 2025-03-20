@@ -43,9 +43,9 @@ class CausalInfTransformerEncoder(nn.Module):
     ) -> None:
         super(CausalInfTransformerEncoder, self).__init__()
         assert len(encoder_layers) > 0, "Encoder must have at least one layer."
-        assert len(encoder_layers) % 2 == 0, (
-            "Encoder must have an even number of layers."
-        )
+        assert (
+            len(encoder_layers) % 2 == 0
+        ), "Encoder must have an even number of layers."
         self.layers = encoder_layers
 
     def forward(
@@ -173,7 +173,9 @@ class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
         else:
             x = self.norm1(
                 x
-                + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)
+                + self._sa_block(
+                    x, tgt_mask, tgt_key_padding_mask, tgt_is_causal
+                )
             )
             x = self.norm3(x + self._ff_block(x))
         return x
@@ -239,7 +241,11 @@ class CausalInfEncoder(nn.Module):
         # Different MLP for context and target
         # Different embedding for everything.
         mlp = partial(
-            build_mlp, dim_in=1, dim_hid=d_model, dim_out=d_model, depth=emb_depth
+            build_mlp,
+            dim_in=1,
+            dim_hid=d_model,
+            dim_out=d_model,
+            depth=emb_depth,
         )
         self.context_variable = mlp()
         self.context_intervention = mlp()
