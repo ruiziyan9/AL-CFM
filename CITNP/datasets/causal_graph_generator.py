@@ -1,6 +1,7 @@
 """
 File that contains the class that generates causal graphs.
 """
+
 import igraph as ig
 import numpy as np
 
@@ -17,6 +18,7 @@ def generate_synthetic_dag(d, s0, graph_type):
         B (np.ndarray): [d, d] binary adj matrix of DAG, where
         B[i, j] = 1 if i -> j
     """
+
     def _random_permutation(M):
         # np.random.permutation permutes first axis only
         P = np.random.permutation(np.eye(M.shape[0]))
@@ -40,7 +42,9 @@ def generate_synthetic_dag(d, s0, graph_type):
     elif graph_type == "BP":
         # Bipartite, Sec 4.1 of (Gu, Fu, Zhou, 2018)
         top = int(0.2 * d)
-        G = ig.Graph.Random_Bipartite(top, d - top, m=s0, directed=True, neimode=ig.OUT)
+        G = ig.Graph.Random_Bipartite(
+            top, d - top, m=s0, directed=True, neimode=ig.OUT
+        )
         B = _graph_to_adjmat(G)
     elif graph_type == "FC":
         # Fully connected DAG

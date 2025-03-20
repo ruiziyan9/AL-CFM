@@ -8,6 +8,7 @@ data.
 Contains:
 - GPLVMFunctionGenerator: Data is generated using a GPLVM.
 """
+
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -18,14 +19,15 @@ from CITNP.utils.processing import normalise_variable
 
 
 class SinFunction:
-
     def __init__(
         self,
         num_parents: int,
     ):
         self.num_parents = num_parents
         self.scale = np.random.gamma(1, 1, size=(1))
-        self.sin_period = np.random.uniform(0.5, 10, size=(1))  # Period range from 1 to 6
+        self.sin_period = np.random.uniform(
+            0.5, 10, size=(1)
+        )  # Period range from 1 to 6
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
         """
@@ -35,11 +37,17 @@ class SinFunction:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                outputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
                 return outputs
             else:
-                outputs = np.sin((2 * np.pi / self.sin_period) * inputs.sum(axis=-1))  # Proper period scaling
-                outputs += np.random.normal(loc=0, scale=self.scale, size=(inputs.shape[0]))  # Add noise
+                outputs = np.sin(
+                    (2 * np.pi / self.sin_period) * inputs.sum(axis=-1)
+                )  # Proper period scaling
+                outputs += np.random.normal(
+                    loc=0, scale=self.scale, size=(inputs.shape[0])
+                )  # Add noise
                 return outputs[:, None]
 
 
@@ -61,7 +69,9 @@ class GPFunctions:
 
         num_kernels = 2
 
-        lengthscale_values = np.random.lognormal(-1, 1, size=(num_kernels, self.num_parents))
+        lengthscale_values = np.random.lognormal(
+            -1, 1, size=(num_kernels, self.num_parents)
+        )
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         gamma_values = np.random.uniform(0.1, 1, size=(num_kernels,))
         self.noise_dist = th.distributions.Gamma(1, 10)
@@ -80,11 +90,19 @@ class GPFunctions:
             inputs = th.from_numpy(inputs).to(self.device).to(th.float64)
             covariance = self.kernel(inputs, inputs)
 
-            noise_value = self.noise_dist.sample((inputs.shape[0],)).to(self.device).to(th.float64)
-            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device)
+            noise_value = (
+                self.noise_dist.sample((inputs.shape[0],))
+                .to(self.device)
+                .to(th.float64)
+            )
+            covariance = covariance + 1e-4 * th.eye(
+                inputs.shape[0], device=self.device
+            )
             mean = th.zeros(inputs.shape[0], device=self.device)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(mean)
+            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(
+                mean
+            )
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
 
@@ -122,12 +140,23 @@ class NeuralNetFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                inputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
 
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
-            noise_scale = self.noise_dist.sample((inputs.shape[0], 1)).to(self.device).to(th.float32)
-            outputs = (outputs + noise_scale * th.randn_like(outputs)).cpu().numpy().astype(np.float32)
+            noise_scale = (
+                self.noise_dist.sample((inputs.shape[0], 1))
+                .to(self.device)
+                .to(th.float32)
+            )
+            outputs = (
+                (outputs + noise_scale * th.randn_like(outputs))
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
             return outputs
 
 
@@ -163,8 +192,14 @@ class SimpleGPFunctions:
             inputs = th.from_numpy(inputs).to(self.device).to(th.float64)
             covariance = self.kernel(inputs, inputs)
 
-            noise_value = self.noise_dist.sample((inputs.shape[0],)).to(self.device).to(th.float64)
-            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device, dtype=th.float64)
+            noise_value = (
+                self.noise_dist.sample((inputs.shape[0],))
+                .to(self.device)
+                .to(th.float64)
+            )
+            covariance = covariance + 1e-4 * th.eye(
+                inputs.shape[0], device=self.device, dtype=th.float64
+            )
             mean = th.zeros(inputs.shape[0], device=self.device, dtype=th.float64)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
             noise_sample = normal_dist.sample().to(th.float64)
@@ -241,7 +276,7 @@ class DataGenerator(ABC):
         # Thus, we need to loop over the columns.
         loop_order = np.arange(self.number_of_variables)
 
-        # We need to make sure that the inerventions are sampled from the
+        # We need to make sure that the interventions are sampled from the
         # SAME FUNCTION!
         for i in loop_order:
             function_for_i = function_dict[i]
@@ -252,8 +287,9 @@ class DataGenerator(ABC):
             obs_inputs = self._get_inputs(parents_of_i, obs_data)
             # Intervention on i we set the parents to 0
             if i == intervention_index:
-
-                variable_intvn = np.random.normal(loc=0, scale=1.0, size=(sample_size, 1))
+                variable_intvn = np.random.normal(
+                    loc=0, scale=1.0, size=(sample_size, 1)
+                )
                 obs_inputs = normalise_variable(obs_inputs)
                 variable_obs = function_for_i(obs_inputs)
                 variable_obs = normalise_variable(variable_obs)
@@ -273,8 +309,8 @@ class DataGenerator(ABC):
                 variable_obs = normalise_variable(variable_obs)
                 variable_intvn = normalise_variable(variable_intvn)
 
-            obs_data[:, i:i+1] = variable_obs
-            intvn_data[:, i:i+1] = variable_intvn
+            obs_data[:, i : i + 1] = variable_obs
+            intvn_data[:, i : i + 1] = variable_intvn
 
         assert not np.isnan(obs_data).any(), "Obs Data contains NaNs!"
         assert not np.isinf(obs_data).any(), "Obs Data contains infs!"
@@ -299,6 +335,7 @@ class SinusoidFunctionGenerator(DataGenerator):
     """
     Will generate data using sinusoidal functions respecting a given causal graph.
     """
+
     def generate_functions(
         self,
         causal_graph: np.ndarray,
@@ -315,9 +352,7 @@ class SinusoidFunctionGenerator(DataGenerator):
             parents_of_i = causal_graph[:, i]
             num_parents = int(np.sum(parents_of_i))
 
-            function = SinFunction(
-                num_parents=num_parents
-            )
+            function = SinFunction(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict
@@ -336,6 +371,7 @@ class GPFunctionGenerator(DataGenerator):
     num_samples : int
         Number of samples to generate.
     """
+
     def generate_functions(
         self,
         causal_graph: np.ndarray,
@@ -352,9 +388,7 @@ class GPFunctionGenerator(DataGenerator):
             parents_of_i = causal_graph[:, i]
             num_parents = int(np.sum(parents_of_i))
 
-            function = GPFunctions(
-                num_parents=num_parents
-            )
+            function = GPFunctions(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict
@@ -373,6 +407,7 @@ class NeuralNetFunctionGenerator(DataGenerator):
     num_samples : int
         Number of samples to generate.
     """
+
     def generate_functions(
         self,
         causal_graph: np.ndarray,
@@ -389,9 +424,7 @@ class NeuralNetFunctionGenerator(DataGenerator):
             parents_of_i = causal_graph[:, i]
             num_parents = int(np.sum(parents_of_i))
 
-            function = NeuralNetFunctions(
-                num_parents=num_parents
-            )
+            function = NeuralNetFunctions(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict
@@ -411,6 +444,7 @@ class SimpleGPFunctionGenerator(DataGenerator):
     num_samples : int
         Number of samples to generate.
     """
+
     def generate_functions(
         self,
         causal_graph: np.ndarray,
@@ -427,9 +461,7 @@ class SimpleGPFunctionGenerator(DataGenerator):
             parents_of_i = causal_graph[:, i]
             num_parents = int(np.sum(parents_of_i))
 
-            function = SimpleGPFunctions(
-                num_parents=num_parents
-            )
+            function = SimpleGPFunctions(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict

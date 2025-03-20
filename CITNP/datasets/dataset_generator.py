@@ -1,18 +1,20 @@
 """
 This file contains dataset generators.
 """
+
 from functools import partial
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from torch.utils.data import IterableDataset
-from tqdm import trange
 
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
-from CITNP.datasets.functions_generator import (GPFunctionGenerator,
-                                                NeuralNetFunctionGenerator,
-                                                SimpleGPFunctionGenerator,
-                                                SinusoidFunctionGenerator)
+from CITNP.datasets.functions_generator import (
+    GPFunctionGenerator,
+    NeuralNetFunctionGenerator,
+    SimpleGPFunctionGenerator,
+    SinusoidFunctionGenerator,
+)
 
 
 class InterventionDatasetGenerator(IterableDataset):
@@ -65,18 +67,22 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_type = graph_type
         self.graph_degrees = graph_degrees
 
-        self.max_num_variables = max(num_variables) if isinstance(num_variables, list) else num_variables
+        self.max_num_variables = (
+            max(num_variables)
+            if isinstance(num_variables, list)
+            else num_variables
+        )
 
         self.iterations_per_epoch = iterations_per_epoch
 
         if self.function_generator == "gp":
             self.data_generator = partial(GPFunctionGenerator)
         elif self.function_generator == "sinusoid":
-            self.data_generator = partial(SinusoidFunctionGenerator)
+            self.data_generator = partial(SinusoidFunctionGenerator)  # type: ignore[arg-type]
         elif self.function_generator == "neuralnet":
-            self.data_generator = partial(NeuralNetFunctionGenerator)
+            self.data_generator = partial(NeuralNetFunctionGenerator)  # type: ignore[arg-type]
         elif self.function_generator == "simplegp":
-            self.data_generator = partial(SimpleGPFunctionGenerator)
+            self.data_generator = partial(SimpleGPFunctionGenerator)  # type: ignore[arg-type]
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """
@@ -129,7 +135,9 @@ class InterventionDatasetGenerator(IterableDataset):
         degree = np.random.choice(self.graph_degrees)
         return degree
 
-    def randomly_intervene_on_dag(self, dag: np.ndarray) -> Tuple[np.ndarray, int]:
+    def randomly_intervene_on_dag(
+        self, dag: np.ndarray
+    ) -> Tuple[np.ndarray, int]:
         """
         Randomly intervene on a variable in the DAG.
 
@@ -161,15 +169,23 @@ class InterventionDatasetGenerator(IterableDataset):
         if current_vars == self.max_num_variables:
             return data
 
+        pad_width: Union[
+            tuple[tuple[int, int], tuple[int, int]],
+            tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+        ]
+
         # For 2D data: samples x variables
         if data.ndim == 2:
             pad_width = ((0, 0), (0, self.max_num_variables - current_vars))
         # For 3D data: variables x variables (adjacency matrix)
         elif data.ndim == 3:
-            pad_width = ((0, 0), (0, self.max_num_variables - current_vars),
-                         (0, self.max_num_variables - current_vars))
+            pad_width = (
+                (0, 0),
+                (0, self.max_num_variables - current_vars),
+                (0, self.max_num_variables - current_vars),
+            )
 
-        return np.pad(data, pad_width, mode='constant', constant_values=0)
+        return np.pad(data, pad_width, mode="constant", constant_values=0)
 
     def generate_next_dataset(
         self,
@@ -214,7 +230,6 @@ class InterventionDatasetGenerator(IterableDataset):
         variable_counts = np.zeros(self.batch_size, dtype=int)
         masks = np.zeros((self.batch_size, self.max_num_variables))
 
-
         # Each batch is a different dataset
         for b in range(self.batch_size):
             # Sample number of variables
@@ -234,7 +249,7 @@ class InterventionDatasetGenerator(IterableDataset):
             )
 
             # Generate data
-            currnet_data_generator = self.data_generator(
+            current_data_generator = self.data_generator(
                 num_variables=current_num_variables,
             )
             # Create interventional DAG
@@ -244,7 +259,7 @@ class InterventionDatasetGenerator(IterableDataset):
             (
                 obs_data,
                 intvn_data,
-            ) = currnet_data_generator.generate_data(
+            ) = current_data_generator.generate_data(
                 causal_graph=dag,
                 sample_size=self.sample_size,
                 intervention_index=intvn_index,
@@ -261,7 +276,8 @@ class InterventionDatasetGenerator(IterableDataset):
 
             # Permute data
             obs_data, intvn_data = self.permute_data(
-                obs_data, intvn_data,
+                obs_data,
+                intvn_data,
                 permutation_indices=permutation_indices,
             )
 
@@ -293,7 +309,7 @@ class InterventionDatasetGenerator(IterableDataset):
             causal_graphs_array,
             intvn_indices,
             variable_counts,
-            masks
+            masks,
         )
 
     def __iter__(self):
