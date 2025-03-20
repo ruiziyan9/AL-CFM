@@ -12,7 +12,7 @@ from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
 from CITNP.models.causalinferencemodel import CausalInferenceModel
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.default_args import overwrite_debug_args, parse_args
-from CITNP.utils.utils import set_seed, _generate_experiment_name
+from CITNP.utils.utils import _generate_experiment_name, set_seed
 
 
 def main(args: argparse.Namespace):
