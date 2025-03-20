@@ -28,9 +28,6 @@ def parse_args():
                         help='Number of attention heads.')
     parser.add_argument('--num_layers_encoder', type=int, default=8,
                         help='Number of layers in the encoder.')
-    parser.add_argument('--outcome_firstnode', action='store_true',
-                        default=False,
-                        help='Whether the outcome is the first node.')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Computation device to use (e.g., "cuda" or "cpu").')
 

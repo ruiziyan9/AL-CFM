@@ -46,7 +46,6 @@ def main(args: argparse.Namespace):
     )
 
     MODEL_ARGS = {
-        "outcome_firstnode": args.outcome_firstnode,
         "d_model": args.d_model,
         "emb_depth": args.emb_depth,
         "dim_feedforward": args.dim_feedforward,
