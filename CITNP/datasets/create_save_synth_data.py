@@ -2,6 +2,7 @@
 File to create and save synthetic training data.
 """
 
+import json
 from pathlib import Path
 from typing import List
 
@@ -11,12 +12,12 @@ from tqdm import trange
 from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
 
 
-def save_data(save_path: Path, data: dict, generator_args: dict):
-    with h5py.File(f"save_path".hdf5, "w") as f:
+def save_data(save_path: Path, data: dict):
+    with h5py.File(f"{save_path}.hdf5", "w") as f:
         for key, value in data.items():
+            if value is None:
+                continue
             f.create_dataset(key, data=value)
-        for key, value in generator_args.items():
-            f.attrs[key] = value
 
 
 def main(
@@ -28,7 +29,7 @@ def main(
     function_generator: str = "simplegplvm",
     graph_type: List[str] = ["ER"],
     batch_size: int = 50000,
-    graph_degrees: List[int] = [2],
+    graph_degrees: List[int] = [1],
 ):
 
     GENERATOR_ARGS = {
@@ -65,10 +66,11 @@ def main(
         save_folder.mkdir(exist_ok=True, parents=True)
 
         save_data(
-            save_folder / f"data_start{data_start}_end{data_end}.hdf5",
+            save_folder / f"data_idx{i}",
             all_data,
-            GENERATOR_ARGS,
         )
+    with open(save_folder / "generator_args.json", "w") as f:
+        json.dump(GENERATOR_ARGS, f)
 
 
 if __name__ == "__main__":
