@@ -37,9 +37,7 @@ class SinFunction:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
                 return outputs
             else:
                 outputs = np.sin(
@@ -95,15 +93,10 @@ class GPFunctions:
                 .to(self.device)
                 .to(th.float64)
             )
-            covariance = covariance + 1e-4 * th.eye(
-                inputs.shape[0], device=self.device
-            )
+            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device)
             mean = th.zeros(inputs.shape[0], device=self.device)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            output = (
-                normal_dist.sample()
-                + noise_value.flatten() * th.randn_like(mean)
-            )
+            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(mean)
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
 
@@ -114,9 +107,7 @@ class GPFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(
-                loc=0, scale=1.0, size=(inputs.shape[0], 1)
-            )
+            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
         outputs = self.sample_gp(inputs)
         return outputs
@@ -143,9 +134,7 @@ class NeuralNetFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
@@ -184,30 +173,32 @@ class SimpleGPFunctions:
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
         # Define the kernel
         self.kernel = RBFKernel(
-            lengthscale=th.from_numpy(lengthscale_values).to(self.device),
+            lengthscale=th.from_numpy(lengthscale_values)
+            .to(self.device)
+            .to(th.float32),
         )
 
     def sample_gp(self, inputs: np.ndarray) -> np.ndarray:
         """
-        Sample from an GPLVM.
+        Sample from a GP.
         """
         with th.no_grad():
-            inputs = th.from_numpy(inputs).to(self.device).to(th.float64)
+            inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             covariance = self.kernel(inputs, inputs)
-
             noise_value = (
                 self.noise_dist.sample((inputs.shape[0],))
                 .to(self.device)
-                .to(th.float64)
+                .to(th.float32)
             )
-            covariance = covariance + 1e-4 * th.eye(
-                inputs.shape[0], device=self.device, dtype=th.float64
+            covariance = covariance + 1e-3 * th.eye(
+                inputs.shape[0], device=self.device, dtype=th.float32
             )
-            mean = th.zeros(
-                inputs.shape[0], device=self.device, dtype=th.float64
+            covariance = (covariance + covariance.T) / 2
+            mean = th.zeros(inputs.shape[0], device=self.device, dtype=th.float32)
+            normal_dist = th.distributions.MultivariateNormal(
+                mean, covariance, validate_args=False
             )
-            normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            noise_sample = normal_dist.sample().to(th.float64)
+            noise_sample = normal_dist.sample().to(th.float32)
             output = noise_sample + noise_value.flatten() * th.randn_like(mean)
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
@@ -219,9 +210,7 @@ class SimpleGPFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(
-                loc=0, scale=1.0, size=(inputs.shape[0], 1)
-            )
+            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
         outputs = self.sample_gp(inputs)
         return outputs
@@ -238,9 +227,7 @@ class DataGenerator(ABC):
     ):
         self.number_of_variables = num_variables
 
-    def _get_inputs(
-        self, parents_of_i: np.ndarray, data: np.ndarray
-    ) -> np.ndarray:
+    def _get_inputs(self, parents_of_i: np.ndarray, data: np.ndarray) -> np.ndarray:
         """
         Get the inputs for the variable i.
         """
