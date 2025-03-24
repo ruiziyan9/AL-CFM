@@ -2,6 +2,7 @@
 File to create and save synthetic training data.
 """
 
+import argparse
 import json
 from pathlib import Path
 from typing import List
@@ -49,7 +50,7 @@ def generate_save_data(
         gt = generator_args["graph_type"]
         nv = generator_args["num_variables"]
         ss = generator_args["sample_size"]
-        save_name = f"{fn}_{gt}_{nv}_{ss}"
+        save_name = f"onlycond_{fn}_{gt}_{nv}_{ss}"
         save_folder = save_dir / save_name / folder
         save_folder.mkdir(exist_ok=True, parents=True)
 
@@ -69,7 +70,7 @@ def main(
     num_variables: List[int] = 2,
     function_generator: str = "simplegplvm",
     graph_type: List[str] = ["ER"],
-    batch_size: int = 10,
+    batch_size: int = 50000,
     graph_degrees: List[int] = [1],
 ):
 
@@ -119,7 +120,19 @@ if __name__ == "__main__":
     save_dir = Path("synth_training_data")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    data_start = 0
-    data_end = 10
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data_start",
+        type=int,
+        default=0,
+        help="Index to start saving data.",
+    )
+    parser.add_argument(
+        "--data_end",
+        type=int,
+        default=10,
+        help="Index to end saving data.",
+    )
+    args = parser.parse_args()
 
-    main(save_dir=save_dir, data_start=data_start, data_end=data_end)
+    main(save_dir=save_dir, data_start=args.data_start, data_end=args.data_end)

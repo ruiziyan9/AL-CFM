@@ -7,7 +7,11 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from CITNP.models.causaltransformercomponents import CausalInfEncoder, build_mlp
+from CITNP.models.causaltransformercomponents import (
+    CausalInfEncoder,
+    CausalTransformerDecoderLayer,
+    build_mlp,
+)
 
 
 class CausalInferenceModel(torch.nn.Module):
@@ -260,6 +264,7 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         dropout,
         num_layers_encoder,
         num_nodes,
+        decoder_depth,
         num_z_samples=10,
         use_vi=True,  # Loss is VI or ML
         device=None,
@@ -278,6 +283,23 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         )
         self.num_z_samples = num_z_samples
         self.use_vi = use_vi
+
+        self.decoder_depth = decoder_depth
+
+        self.decoder = nn.TransformerDecoder(
+            CausalTransformerDecoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                norm_first=True,
+                batch_first=True,
+                device=device,
+                dtype=dtype,
+                bias=False,
+            ),
+            num_layers=decoder_depth,
+        )
 
         self.z_param_mlp = build_mlp(
             self.d_model,
@@ -524,7 +546,22 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         # Merge outcome_rep and z_samples
         final_rep = self.merge_zsamples_rep(z_samples, outcome_x)
 
-        pred = self.predictor(final_rep)
+        if self.decoder_depth != 0:
+            batch_size, num_trgt = final_rep.size(1), final_rep.size(2)
+            final_rep_batched = final_rep.contiguous().view(
+                self.num_z_samples * batch_size, num_trgt, -1
+            )
+            decoder_rep_batched = self.decoder(
+                tgt=final_rep_batched,
+                memory=None,
+            )
+            decoder_rep = decoder_rep_batched.contiguous().view(
+                self.num_z_samples, batch_size, num_trgt, -1
+            )
+        else:
+            decoder_rep = final_rep
+
+        pred = self.predictor(decoder_rep)
         mean, std = pred.split(1, dim=-1)
         std = torch.nn.functional.softplus(std)
 

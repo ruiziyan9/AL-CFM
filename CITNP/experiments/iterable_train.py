@@ -56,6 +56,7 @@ def main(args: argparse.Namespace):
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
         "num_z_samples": 4,
+        "decoder_depth": args.decoder_depth,
         "device": args.device,
         "dtype": args.dtype,
     }
@@ -89,7 +90,7 @@ def main(args: argparse.Namespace):
             # Set the entity
             entity="npcausalinf",
             # Set the project where this run will be logged
-            project="meta_causal_inference",
+            project="zlocal",
             name=args.run_name,
             # Track hyperparameters and run metadata
             config={**vars(args), **TRAINER_ARGS, **MODEL_ARGS},
