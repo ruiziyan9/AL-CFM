@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument(
         "--dim_feedforward",
         type=int,
-        default=1024,
+        default=2048,
         help="Feedforward network dimension.",
     )
     parser.add_argument(
@@ -61,7 +61,7 @@ def parse_args():
         help='Torch data type (e.g., "bfloat16" or "float32").',
     )
 
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
     parser.add_argument(
         "--sample_size", type=int, default=1000, help="Number of samples."
     )

@@ -20,30 +20,14 @@ def save_data(save_path: Path, data: dict):
             f.create_dataset(key, data=value)
 
 
-def main(
-    save_dir: Path,
+def generate_save_data(
+    generator,
+    generator_args,
     data_start: int,
     data_end: int,
-    sample_size: int = 1000,
-    num_variables: List[int] = 2,
-    function_generator: str = "simplegplvm",
-    graph_type: List[str] = ["ER"],
-    batch_size: int = 50000,
-    graph_degrees: List[int] = [1],
+    save_dir: Path,
+    folder="train",
 ):
-
-    GENERATOR_ARGS = {
-        "sample_size": sample_size,
-        "num_variables": num_variables,
-        "function_generator": function_generator,
-        "graph_type": graph_type,
-        "graph_degrees": graph_degrees,
-        "iterations_per_epoch": 1,
-        "batch_size": batch_size,
-    }
-
-    generator = InterventionDatasetGenerator(**GENERATOR_ARGS)
-
     for i in trange(data_start, data_end):
         (
             obs_data_array,
@@ -61,8 +45,12 @@ def main(
             "variable_counts": variable_counts,
             "masks": masks,
         }
-        save_name = f"{function_generator}_{graph_type}_{num_variables}_{sample_size}"
-        save_folder = save_dir / save_name
+        fn = generator_args["function_generator"]
+        gt = generator_args["graph_type"]
+        nv = generator_args["num_variables"]
+        ss = generator_args["sample_size"]
+        save_name = f"{fn}_{gt}_{nv}_{ss}"
+        save_folder = save_dir / save_name / folder
         save_folder.mkdir(exist_ok=True, parents=True)
 
         save_data(
@@ -70,7 +58,61 @@ def main(
             all_data,
         )
     with open(save_folder / "generator_args.json", "w") as f:
-        json.dump(GENERATOR_ARGS, f)
+        json.dump(generator_args, f)
+
+
+def main(
+    save_dir: Path,
+    data_start: int,
+    data_end: int,
+    sample_size: int = 1000,
+    num_variables: List[int] = 2,
+    function_generator: str = "simplegplvm",
+    graph_type: List[str] = ["ER"],
+    batch_size: int = 10,
+    graph_degrees: List[int] = [1],
+):
+
+    GENERATOR_ARGS = {
+        "sample_size": sample_size,
+        "num_variables": num_variables,
+        "function_generator": function_generator,
+        "graph_type": graph_type,
+        "graph_degrees": graph_degrees,
+        "iterations_per_epoch": 1,
+        "batch_size": batch_size,
+    }
+
+    generator = InterventionDatasetGenerator(**GENERATOR_ARGS)
+
+    generate_save_data(
+        generator,
+        GENERATOR_ARGS,
+        data_start=data_start,
+        data_end=data_end,
+        save_dir=save_dir,
+        folder="train",
+    )
+
+    GENERATOR_ARGS["batch_size"] = 100
+    generate_save_data(
+        generator,
+        GENERATOR_ARGS,
+        data_start=0,
+        data_end=1,
+        save_dir=save_dir,
+        folder="val",
+    )
+
+    GENERATOR_ARGS["batch_size"] = 25
+    generate_save_data(
+        generator,
+        GENERATOR_ARGS,
+        data_start=0,
+        data_end=1,
+        save_dir=save_dir,
+        folder="test",
+    )
 
 
 if __name__ == "__main__":
