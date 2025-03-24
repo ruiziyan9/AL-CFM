@@ -25,12 +25,12 @@ def parse_args():
         default=False,
         help="Whether to run in debug mode.",
     )
-    parser.add_argument("--d_model", type=int, default=256, help="Model dimension.")
+    parser.add_argument("--d_model", type=int, default=512, help="Model dimension.")
     parser.add_argument("--emb_depth", type=int, default=2, help="Embedding depth.")
     parser.add_argument(
         "--dim_feedforward",
         type=int,
-        default=512,
+        default=1024,
         help="Feedforward network dimension.",
     )
     parser.add_argument(

@@ -13,6 +13,7 @@ from CITNP.datasets.functions_generator import (
     GPFunctionGenerator,
     NeuralNetFunctionGenerator,
     SimpleGPFunctionGenerator,
+    SimpleGPLVMFunctionGenerator,
     SinusoidFunctionGenerator,
 )
 
@@ -68,9 +69,7 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_degrees = graph_degrees
 
         self.max_num_variables = (
-            max(num_variables)
-            if isinstance(num_variables, list)
-            else num_variables
+            max(num_variables) if isinstance(num_variables, list) else num_variables
         )
 
         self.iterations_per_epoch = iterations_per_epoch
@@ -83,6 +82,8 @@ class InterventionDatasetGenerator(IterableDataset):
             self.data_generator = partial(NeuralNetFunctionGenerator)  # type: ignore[arg-type]
         elif self.function_generator == "simplegp":
             self.data_generator = partial(SimpleGPFunctionGenerator)  # type: ignore[arg-type]
+        elif self.function_generator == "simplegplvm":
+            self.data_generator = partial(SimpleGPLVMFunctionGenerator)
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """
@@ -102,9 +103,7 @@ class InterventionDatasetGenerator(IterableDataset):
         permuted_data = [data[:, permutation_indices] for data in args]
         return permuted_data
 
-    def permute_causal_graph(
-        self, *args, permutation_indices: np.ndarray
-    ) -> list:
+    def permute_causal_graph(self, *args, permutation_indices: np.ndarray) -> list:
         """
         Permutes the causal graph.
 
@@ -135,9 +134,7 @@ class InterventionDatasetGenerator(IterableDataset):
         degree = np.random.choice(self.graph_degrees)
         return degree
 
-    def randomly_intervene_on_dag(
-        self, dag: np.ndarray
-    ) -> Tuple[np.ndarray, int]:
+    def randomly_intervene_on_dag(self, dag: np.ndarray) -> Tuple[np.ndarray, int]:
         """
         Randomly intervene on a variable in the DAG.
 

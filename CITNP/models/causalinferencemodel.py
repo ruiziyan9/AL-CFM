@@ -368,8 +368,12 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
                 device=trgt_data.device,
                 dtype=trgt_data.dtype,
             )
-            mean = None
-            std = None
+            mean = torch.zeros(
+                batch_size, num_trgt, 1, self.d_model, device=trgt_data.device
+            )
+            std = torch.ones(
+                batch_size, num_trgt, 1, self.d_model, device=trgt_data.device
+            )
         return z_samples, mean, std
 
     def merge_zsamples_rep(self, z_samples, rep):
