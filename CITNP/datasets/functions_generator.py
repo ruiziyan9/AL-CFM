@@ -195,9 +195,7 @@ class SimpleGPFunctions:
             )
             covariance = (covariance + covariance.T) / 2
             mean = th.zeros(inputs.shape[0], device=self.device, dtype=th.float32)
-            normal_dist = th.distributions.MultivariateNormal(
-                mean, covariance, validate_args=False
-            )
+            normal_dist = th.distributions.MultivariateNormal(mean, covariance)
             noise_sample = normal_dist.sample().to(th.float32)
             output = noise_sample + noise_value.flatten() * th.randn_like(mean)
             final_output = output.detach().cpu().numpy().astype(np.float32)
