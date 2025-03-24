@@ -9,7 +9,7 @@ import torch
 import wandb
 
 from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
-from CITNP.models.causalinferencemodel import CausalInferenceModel
+from CITNP.models.causalinferencemodel import LocalLatentCausalInferenceModel
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.default_args import overwrite_debug_args, parse_args
 from CITNP.utils.utils import _generate_experiment_name, set_seed
@@ -55,11 +55,12 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
+        "num_z_samples": 4,
         "device": args.device,
         "dtype": args.dtype,
     }
 
-    model = CausalInferenceModel(**MODEL_ARGS)
+    model = LocalLatentCausalInferenceModel(**MODEL_ARGS)
     if args.results_path is None:
         results_path = Path.cwd()
     else:
@@ -109,10 +110,6 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     # These fixed some attention errors for me
-    torch.backends.cuda.enable_mem_efficient_sdp(False)
-    torch.backends.cuda.enable_flash_sdp(False)
-    torch.backends.cuda.enable_math_sdp(True)
-    # wandb.login(key="bc359b26d166ea6980eb0e231060bd7b8c06925e")
     parser = argparse.ArgumentParser()
     args = parse_args()
     main(args)

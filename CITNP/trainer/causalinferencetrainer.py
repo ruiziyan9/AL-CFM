@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 from typing import List
 
+import torch
 import torch as th
 import wandb
 from tqdm import tqdm
@@ -230,9 +231,7 @@ class CausalInferenceTrainer:
             self.model.to(dtype)
 
             all_loss = 0
-            for i, data in enumerate(
-                tqdm(val_loader, desc="Validation", leave=False)
-            ):
+            for i, data in enumerate(tqdm(val_loader, desc="Validation", leave=False)):
                 # Get the inputs and targets
                 context, target, intvn_indices, outcome_indices, masks, _ = (
                     send_to_device(
@@ -247,7 +246,7 @@ class CausalInferenceTrainer:
                 if masks is not None:
                     masks = masks.to("cuda", dtype=dtype)
 
-                pred_mean, pred_std = self.model(
+                pred_mean, pred_std, z_mean, z_std = self.model(
                     context_data=context,
                     target_data=target,
                     intervention_index=intvn_indices,
@@ -259,6 +258,8 @@ class CausalInferenceTrainer:
                     pred_std=pred_std,
                     target=target,
                     outcome_index=outcome_indices,
+                    z_mean=z_mean,
+                    z_std=z_std,
                 )
 
                 all_loss += th.sum(loss).cpu().item()
@@ -294,11 +295,9 @@ class CausalInferenceTrainer:
                 epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps
             )
             # Get the inputs and targets
-            context, target, intvn_indices, outcome_indices, masks, _ = (
-                send_to_device(
-                    list(data),
-                    device="cuda",
-                )
+            context, target, intvn_indices, outcome_indices, masks, _ = send_to_device(
+                list(data),
+                device="cuda",
             )
             context, target = send_to_device(
                 [context, target],
@@ -310,7 +309,7 @@ class CausalInferenceTrainer:
             # Zero the parameter gradients
             self.optimizer.zero_grad()
             # Forward pass
-            pred_mean, pred_std = self.model(
+            pred_mean, pred_std, z_mean, z_std = self.model(
                 context_data=context,
                 target_data=target,
                 intervention_index=intvn_indices,
@@ -322,8 +321,11 @@ class CausalInferenceTrainer:
                 pred_std=pred_std,
                 target=target,
                 outcome_index=outcome_indices,
+                z_mean=z_mean,
+                z_std=z_std,
             )
-            loss.mean().backward()
+
+            loss.backward()
             # Gradient clipping
             th.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             # Optimize
@@ -335,12 +337,8 @@ class CausalInferenceTrainer:
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 metric_dict.update({"learning_rate": current_lr})
                 if i % self.log_step == 0 and i > 0:
-                    metric_dict = self.validate_single_epoch(
-                        val_loader, metric_dict
-                    )
-                    metric_dict = self.test_single_epoch(
-                        test_loader, metric_dict
-                    )
+                    metric_dict = self.validate_single_epoch(val_loader, metric_dict)
+                    metric_dict = self.test_single_epoch(test_loader, metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
             if (i + 1) % self.save_checkpoint_every == 0:

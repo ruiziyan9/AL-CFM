@@ -42,9 +42,7 @@ def generate_synthetic_dag(d, s0, graph_type):
     elif graph_type == "BP":
         # Bipartite, Sec 4.1 of (Gu, Fu, Zhou, 2018)
         top = int(0.2 * d)
-        G = ig.Graph.Random_Bipartite(
-            top, d - top, m=s0, directed=True, neimode=ig.OUT
-        )
+        G = ig.Graph.Random_Bipartite(top, d - top, m=s0, directed=True, neimode=ig.OUT)
         B = _graph_to_adjmat(G)
     elif graph_type == "FC":
         # Fully connected DAG

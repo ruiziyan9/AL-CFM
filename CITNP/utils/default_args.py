@@ -25,16 +25,12 @@ def parse_args():
         default=False,
         help="Whether to run in debug mode.",
     )
-    parser.add_argument(
-        "--d_model", type=int, default=512, help="Model dimension."
-    )
-    parser.add_argument(
-        "--emb_depth", type=int, default=2, help="Embedding depth."
-    )
+    parser.add_argument("--d_model", type=int, default=256, help="Model dimension.")
+    parser.add_argument("--emb_depth", type=int, default=2, help="Embedding depth.")
     parser.add_argument(
         "--dim_feedforward",
         type=int,
-        default=2048,
+        default=512,
         help="Feedforward network dimension.",
     )
     parser.add_argument(
@@ -65,19 +61,17 @@ def parse_args():
         help='Torch data type (e.g., "bfloat16" or "float32").',
     )
 
-    parser.add_argument(
-        "--batch_size", type=int, default=32, help="Batch size."
-    )
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size.")
     parser.add_argument(
         "--sample_size", type=int, default=1000, help="Number of samples."
     )
     parser.add_argument(
-        "--num_variables", type=int, default=2, help="Number of variables."
+        "--num_variables", type=int, default=3, help="Number of variables."
     )
     parser.add_argument(
         "--function_generator",
         type=str,
-        default="sinusoid",
+        default="simplegp",
         help="Type of function to generate.",
     )
     parser.add_argument(
@@ -87,7 +81,7 @@ def parse_args():
         "--graph_degrees",
         nargs="+",
         type=int,
-        default=[1],
+        default=[2, 3],
         help="Degree(s) for the graph.",
     )
     parser.add_argument(
@@ -99,14 +93,10 @@ def parse_args():
     parser.add_argument(
         "--learning_rate", type=float, default=0.0001, help="Learning rate."
     )
-    parser.add_argument(
-        "--run_name", type=str, default=None, help="Name of the run."
-    )
+    parser.add_argument("--run_name", type=str, default=None, help="Name of the run.")
 
     # Training args
-    parser.add_argument(
-        "--epochs", type=int, default=10, help="Number of epochs."
-    )
+    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs.")
     parser.add_argument(
         "--no_wandb",
         action="store_true",

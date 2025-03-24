@@ -103,9 +103,7 @@ class CausalInfTransformerEncoder(nn.Module):
                     bool_pad = node_src_key_padding_mask == -float("inf")
                     src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = src.contiguous().view(
-                    batch_size, num_samples, num_nodes, d_model
-                )
+                src = src.contiguous().view(batch_size, num_samples, num_nodes, d_model)
         return src
 
 
@@ -172,10 +170,7 @@ class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
             x = x + self._ff_block(self.norm3(x))
         else:
             x = self.norm1(
-                x
-                + self._sa_block(
-                    x, tgt_mask, tgt_key_padding_mask, tgt_is_causal
-                )
+                x + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)
             )
             x = self.norm3(x + self._ff_block(x))
         return x
@@ -326,22 +321,30 @@ class CausalInfEncoder(nn.Module):
         # embedding = var_emb
         return embedding
 
-    def create_input(self, context_data, target_data):
+    def create_input(self, context_data, target_data, target_train_data):
         """
         Creates the full input by concatenating the context and target data.
         """
-        full_data = torch.cat([context_data, target_data], dim=1)
+        if self.training:
+            full_data = torch.cat([context_data, target_train_data, target_data], dim=1)
+        else:
+            full_data = torch.cat([context_data, target_data], dim=1)
         return full_data
 
-    def create_sample_mask(self, context_data, target_data):
+    def create_sample_mask(self, context_data, target_data, target_train_data):
         """
         Create mask to ensure that
         - Context samples can attend to itself
-        - Target samples only attent to the context samples
+        - Target train data can only attend to context samples
+        - Target samples only attend to the context samples
         """
         num_context = context_data.size(1)
-        num_target = target_data.size(1)
-        mask_size = num_context + num_target
+        num_target = target_data.size(1) - 1
+        # If training then target_train_data is not None
+        if target_train_data is not None:
+            mask_size = num_context + num_target + (num_target + 1)
+        else:
+            mask_size = num_context + (num_target + 1)
         sample_mask = torch.zeros(
             mask_size,
             mask_size,
@@ -358,6 +361,7 @@ class CausalInfEncoder(nn.Module):
         self,
         context_data: Tensor,
         target_data: Tensor,
+        target_train_data: Tensor,
         outcome_indices: Tensor,
         intervention_indices: Tensor,
         variable_mask: Optional[Tensor] = None,
@@ -366,14 +370,17 @@ class CausalInfEncoder(nn.Module):
         Args:
         -----
         - context_data (torch.Tensor): The context data with shape
-        [batch_size, num_context, num_nodes, 1].
+            [batch_size, num_context, num_nodes, 1].
         - target_data (torch.Tensor): The target data with shape
-        [batch_size, num_target, num_nodes, 1]. This should be all zeros
-        except for node that is meant to be the interventional variable.
+            [batch_size, num_target, num_nodes, 1]. This should be all zeros
+            except for node that is meant to be the interventional variable.
+        - target_train_data (torch.Tensor): The target data with shape
+            [batch_size, num_target, num_nodes, 1]. This should be the same
+            as target_data but with the true values of the outcome variable.
         - outcome_indices (torch.Tensor, optional): The indices of the outcome
-        with shape [batch_size]. Defaults to None.
+            with shape [batch_size]. Defaults to None.
         - variable_mask (torch.Tensor, optional): The mask that allows for
-        different number of variables. Defaults to None.
+            different number of variables. Defaults to None.
         """
         context_embed = self.embed(
             data=context_data,
@@ -387,10 +394,19 @@ class CausalInfEncoder(nn.Module):
             intervention_indices=intervention_indices,
             context=False,
         )
-        # shape [batch_size, num_context + num_target, num_nodes, d_model]
-        full_data = self.create_input(context_embed, target_embed)
+        if self.training:
+            target_train_embed = self.embed(
+                data=target_train_data,
+                outcome_indices=outcome_indices,
+                intervention_indices=intervention_indices,
+                context=False,
+            )
+        else:
+            target_train_embed = None
+        # shape [batch_size, num_context + num_target + 1, num_nodes, d_model]
+        full_data = self.create_input(context_embed, target_embed, target_train_embed)
         sample_mask, num_target = self.create_sample_mask(
-            context_data, target_data
+            context_data, target_data, target_train_data
         )
         # shape [batch_size, num_samples, num_nodes, d_model]
         # Encode the data
@@ -401,5 +417,4 @@ class CausalInfEncoder(nn.Module):
 
         # Compute the summary representation
         # shape [batch_size, num_target, num_nodes, d_model]
-        summary_rep = representation[:, -num_target:, :, :]
-        return summary_rep
+        return representation, num_target
