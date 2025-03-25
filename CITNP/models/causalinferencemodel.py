@@ -265,7 +265,8 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         num_layers_encoder,
         num_nodes,
         decoder_depth,
-        num_z_samples=10,
+        num_z_samples_train=10,
+        num_z_samples_eval=100,
         use_vi=True,  # Loss is VI or ML
         device=None,
         dtype=None,
@@ -281,7 +282,8 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             device,
             dtype,
         )
-        self.num_z_samples = num_z_samples
+        self.num_z_samples = num_z_samples_train
+        self.num_z_samples_eval = num_z_samples_eval
         self.use_vi = use_vi
 
         self.decoder_depth = decoder_depth
@@ -383,7 +385,7 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             batch_size = trgt_data.size(0)
             num_trgt = trgt_data.size(1) - 1
             z_samples = torch.randn(
-                self.num_z_samples,
+                self.num_z_samples_eval,
                 batch_size,
                 num_trgt,
                 self.d_model,
@@ -409,7 +411,7 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         """
         num_z_samples, batch_size, num_trgt, d_model = z_samples.shape
         # shape rep_expand: (num_z_samples, batch_size, num_trgt, d_model)
-        rep_expand = rep.unsqueeze(0).expand(self.num_z_samples, -1, -1, -1)
+        rep_expand = rep.unsqueeze(0).expand(num_z_samples, -1, -1, -1)
 
         # shape rep_batched: (num_z_samples * batch_size, num_trgt, d_model)
         rep_batched = rep_expand.contiguous().view(
@@ -547,16 +549,20 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         final_rep = self.merge_zsamples_rep(z_samples, outcome_x)
 
         if self.decoder_depth != 0:
-            batch_size, num_trgt = final_rep.size(1), final_rep.size(2)
+            num_z_samples, batch_size, num_trgt = (
+                final_rep.size(0),
+                final_rep.size(1),
+                final_rep.size(2),
+            )
             final_rep_batched = final_rep.contiguous().view(
-                self.num_z_samples * batch_size, num_trgt, -1
+                num_z_samples * batch_size, num_trgt, -1
             )
             decoder_rep_batched = self.decoder(
                 tgt=final_rep_batched,
                 memory=None,
             )
             decoder_rep = decoder_rep_batched.contiguous().view(
-                self.num_z_samples, batch_size, num_trgt, -1
+                num_z_samples, batch_size, num_trgt, -1
             )
         else:
             decoder_rep = final_rep
@@ -571,18 +577,35 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         """
         Calculate the loss for the model.
         """
-        # Data term
-        distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
-        neglikelihood = -distribution.log_prob(trgt_outcome)
-        neglikelihood_z_meaned = neglikelihood.mean(0)
-        neglikelihood_fullmeaned = neglikelihood_z_meaned.mean(1).mean()
+        if self.training:
+            # Data term
+            distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
+            neglikelihood = -distribution.log_prob(trgt_outcome)
+            neglikelihood_z_meaned = neglikelihood.mean(0)
+            neglikelihood_fullmeaned = neglikelihood_z_meaned.mean(1).mean()
 
-        # KL term
-        q_z = torch.distributions.Normal(z_mean, z_std)
-        p_z = torch.distributions.Normal(0, 1)
-        kl = torch.distributions.kl_divergence(q_z, p_z)
-        kl_meaned = kl.mean(-1).mean(1).mean(0)
-        return neglikelihood_fullmeaned + kl_meaned
+            # KL term
+            q_z = torch.distributions.Normal(z_mean, z_std)
+            p_z = torch.distributions.Normal(0, 1)
+            kl = torch.distributions.kl_divergence(q_z, p_z)
+            kl_meaned = kl.mean(-1).mean(1).mean(0)
+            return neglikelihood_fullmeaned + kl_meaned
+        else:
+            # During evaluation we only care about the predictive likelihood
+            distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
+            neglikelihood = -distribution.log_prob(trgt_outcome)
+            neglikelihood_sample_mean = neglikelihood.mean(2)
+            neglikelihood_z_meaned = torch.logsumexp(
+                neglikelihood_sample_mean, dim=0
+            ) - torch.log(
+                torch.tensor(
+                    self.num_z_samples_eval,
+                    device=neglikelihood.device,
+                    dtype=neglikelihood.dtype,
+                )
+            )
+            neglikelihood_fullmeaned = neglikelihood_z_meaned.mean(1).mean()
+            return neglikelihood_fullmeaned
 
     def calculate_loss(self, pred_mean, pred_std, target, outcome_index, z_mean, z_std):
         """

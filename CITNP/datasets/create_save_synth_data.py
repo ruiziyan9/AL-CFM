@@ -96,6 +96,7 @@ def main(
     )
 
     GENERATOR_ARGS["batch_size"] = 100
+    generator = InterventionDatasetGenerator(**GENERATOR_ARGS)
     generate_save_data(
         generator,
         GENERATOR_ARGS,
@@ -106,6 +107,7 @@ def main(
     )
 
     GENERATOR_ARGS["batch_size"] = 25
+    generator = InterventionDatasetGenerator(**GENERATOR_ARGS)
     generate_save_data(
         generator,
         GENERATOR_ARGS,

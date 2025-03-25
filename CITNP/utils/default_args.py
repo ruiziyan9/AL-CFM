@@ -17,6 +17,19 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--work_dir",
+        type=str,
+        default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
+        help="Path to the working directory.",
+    )
+    parser.add_argument(
+        "--data_file",
+        type=str,
+        default="onlycond_simplegplvm_['ER']_2_1000",
+        help="Name of the data file to use.",
+    )
+
+    parser.add_argument(
         "--seed", type=int, default=0, help="Seed for random number generation."
     )
     parser.add_argument(
@@ -31,7 +44,7 @@ def parse_args():
     parser.add_argument(
         "--dim_feedforward",
         type=int,
-        default=2048,
+        default=1024,
         help="Feedforward network dimension.",
     )
     parser.add_argument(
@@ -97,7 +110,7 @@ def parse_args():
     parser.add_argument("--run_name", type=str, default=None, help="Name of the run.")
 
     # Training args
-    parser.add_argument("--epochs", type=int, default=10, help="Number of epochs.")
+    parser.add_argument("--epochs", type=int, default=2, help="Number of epochs.")
     parser.add_argument(
         "--no_wandb",
         action="store_true",
@@ -116,7 +129,7 @@ def parse_args():
         default="./experiments",
         help="Path where to store the results.",
     )
-    parser.add_argument("--log_step", type=int, default=500, help="Log step.")
+    parser.add_argument("--log_step", type=int, default=200, help="Log step.")
 
     parser.add_argument(
         "--save_checkpoint_every",
