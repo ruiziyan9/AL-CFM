@@ -4,7 +4,7 @@ File to train the transformer NP classifier model.
 
 from functools import partial
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Optional
 
 import torch
 import torch as th
@@ -84,6 +84,7 @@ class CausalInferenceTrainer:
         use_wandb: bool = True,
         log_step: int = 500,
         save_checkpoint_every: int = 10,
+        callback: Optional[Callable] = None,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset
@@ -102,6 +103,7 @@ class CausalInferenceTrainer:
         self.use_wandb = use_wandb
         self.log_step = log_step
         self.save_checkpoint_every = save_checkpoint_every
+        self.callback = callback
 
         self.learning_rate = self.optimizer.param_groups[0]["lr"]
 
@@ -339,6 +341,8 @@ class CausalInferenceTrainer:
                 if i % self.log_step == 0 and i > 0:
                     metric_dict = self.validate_single_epoch(val_loader, metric_dict)
                     metric_dict = self.test_single_epoch(test_loader, metric_dict)
+                    for callback in self.callback:
+                        metric_dict = callback(metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
             if (i + 1) % self.save_checkpoint_every == 0:

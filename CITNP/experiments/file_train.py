@@ -10,6 +10,7 @@ import wandb
 
 from CITNP.models.causalinferencemodel import LocalLatentCausalInferenceModel
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
+from CITNP.utils.callbacks import GradientChecker
 from CITNP.utils.datautils import MultipleFileDataset
 from CITNP.utils.default_args import overwrite_debug_args, parse_args
 from CITNP.utils.utils import _generate_experiment_name, set_seed
@@ -95,12 +96,27 @@ def main(args: argparse.Namespace):
     else:
         pass
 
+    callback = [
+        GradientChecker(
+            model,
+            watched_layers=[
+                "decoder.layers.0.linear1.weight",
+                "encoder.context_outcome.0.weight",
+                "encoder.encoder.layers.0.linear1.weight",
+                "encoder.encoder.layers.7.linear1.weight",
+                "z_rep_merger.out_proj.weight",
+                "z_param_mlp.0.0..weight",
+            ],
+        )
+    ]
+
     trainer = CausalInferenceTrainer(
         model=model,
         train_dataset=train_dataset,
         validation_dataset=val_dataset,
         test_dataset=test_dataset,
         optimizer=optimizer,
+        callback=callback,
         **TRAINER_ARGS,
     )
     trainer.train()
