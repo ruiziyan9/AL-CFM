@@ -84,7 +84,7 @@ class CausalInferenceTrainer:
         use_wandb: bool = True,
         log_step: int = 500,
         save_checkpoint_every: int = 10,
-        callback: Optional[Callable] = None,
+        callback: Optional[List[Callable]] = None,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset

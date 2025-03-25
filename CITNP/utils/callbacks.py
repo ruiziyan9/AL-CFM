@@ -1,7 +1,6 @@
 from typing import List
 
 import torch
-import wandb
 
 
 class GradientChecker:
@@ -17,8 +16,6 @@ class GradientChecker:
     def __call__(self, metric_dict: dict):
 
         grad_stats = self.check_grads()
-        if self.log_to_wandb:
-            wandb.log(grad_stats)
 
         # Optionally update metrics dict if needed
         metric_dict.update(grad_stats)
