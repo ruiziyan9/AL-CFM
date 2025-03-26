@@ -65,13 +65,12 @@ class CausalInferenceModel(torch.nn.Module):
             depth=2,
         )
 
-    def calculate_loss(self, pred_mean, pred_std, target, outcome_index):
+    def calculate_loss(self, pred_mean, pred_std, target, outcome_index, **kwargs):
         """
         Calculate the loss for the model.
         """
         # Get the outcome
-        batch_idx = torch.arange(target.size(0), device=target.device)
-        target = target[batch_idx, :, outcome_index, :]
+        target = gather_by_node(target, outcome_index)
 
         # Calculate the loss
         # TODO (cristiana): Check with Anish whether 1e-30 is for stability.
@@ -79,6 +78,23 @@ class CausalInferenceModel(torch.nn.Module):
         loss = -distribution.log_prob(target)  # + 1e-30)
         # Mean over the samples and mean over the batch
         return loss.mean(1).mean()
+
+    def encode_inputs(
+        self, context_data, target_data, intervention_index, outcome_index
+    ):
+        # Shape context_data: (batch_size, num_context + 1, num_nodes, 1)
+        # Shape masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
+        encoded_cntxt = append_treatment_outcome_index_to_data(
+            data=context_data,
+            outcome_index=outcome_index,
+            treatment_index=intervention_index,
+        )
+        encoded_trgt = append_treatment_outcome_index_to_data(
+            data=target_data,
+            outcome_index=outcome_index,
+            treatment_index=intervention_index,
+        )
+        return encoded_cntxt, encoded_trgt
 
     def forward(
         self,
@@ -113,28 +129,21 @@ class CausalInferenceModel(torch.nn.Module):
         masked_target_data = set_all_except_batchindex_to_zero(
             data=target_data, batch_index=intervention_index
         )
-        # Shape context_data: (batch_size, num_context + 1, num_nodes, 1)
-        # Shape masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
-        encoded_cntxt = append_treatment_outcome_index_to_data(
-            data=context_data,
-            outcome_index=outcome_index,
-            treatment_index=intervention_index,
-        )
-        encoded_trgt = append_treatment_outcome_index_to_data(
-            data=masked_target_data,
-            outcome_index=outcome_index,
-            treatment_index=intervention_index,
+
+        encoded_cntxt, encoded_trgt = self.encode_inputs(
+            context_data, masked_target_data, intervention_index, outcome_index
         )
 
         # shape encoding: (batch_size, num_target + 1, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
             encoded_cntxt,
             encoded_trgt,
+            target_train_data=None,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
         )
-        encoding = rep[:, -num_trgt:]
+        encoding = rep[:, -(num_trgt + 1) : -1]
 
         # We want to find p(outcome | do(intervention))
         outcome_encoding = gather_by_node(encoding, outcome_index)
@@ -143,10 +152,7 @@ class CausalInferenceModel(torch.nn.Module):
         mean, std = pred.split(1, dim=-1)
         std = torch.nn.functional.softplus(std)
 
-        # Get rid of the extra sample for the outcome index
-        mean = mean[:, :-1]
-        std = std[:, :-1]
-        return mean, std
+        return mean, std, None, None
 
 
 class LocalLatentCausalInferenceModel(CausalInferenceModel):
@@ -227,23 +233,6 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         else:
             masked_trgt_train = None
         return masked_trgt_train
-
-    def encode_inputs(
-        self, context_data, target_data, intervention_index, outcome_index
-    ):
-        # Shape context_data: (batch_size, num_context + 1, num_nodes, 1)
-        # Shape masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
-        encoded_ctnxt = append_treatment_outcome_index_to_data(
-            data=context_data,
-            outcome_index=outcome_index,
-            treatment_index=intervention_index,
-        )
-        encoded_trgt = append_treatment_outcome_index_to_data(
-            data=target_data,
-            outcome_index=outcome_index,
-            treatment_index=intervention_index,
-        )
-        return encoded_ctnxt, encoded_trgt
 
     def extract_representation(
         self,

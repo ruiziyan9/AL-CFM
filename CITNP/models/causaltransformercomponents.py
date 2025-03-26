@@ -364,7 +364,7 @@ class CausalInfEncoder(nn.Module):
         """
         Creates the full input by concatenating the context and target data.
         """
-        if self.training:
+        if self.training and target_train_data is not None:
             full_data = torch.cat([context_data, target_train_data, target_data], dim=1)
         else:
             full_data = torch.cat([context_data, target_data], dim=1)
@@ -400,9 +400,9 @@ class CausalInfEncoder(nn.Module):
         self,
         context_data: Tensor,
         target_data: Tensor,
-        target_train_data: Tensor,
         outcome_indices: Tensor,
         intervention_indices: Tensor,
+        target_train_data: Optional[Tensor] = None,
         variable_mask: Optional[Tensor] = None,
     ):
         """
@@ -433,7 +433,7 @@ class CausalInfEncoder(nn.Module):
             intervention_indices=intervention_indices,
             context=False,
         )
-        if self.training:
+        if self.training and target_train_data is not None:
             target_train_embed = self.embed(
                 data=target_train_data,
                 outcome_indices=outcome_indices,
