@@ -5,7 +5,7 @@ import torch
 
 
 @dataclass
-class CausalInfModel:
+class CausalInfModelConfig:
     d_model: int
     emb_depth: int
     dim_feedforward: int

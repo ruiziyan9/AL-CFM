@@ -11,9 +11,10 @@ from CITNP.models.causaltransformercomponents import (
     MHCA,
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
+    FlashMHCA,
     build_mlp,
 )
-from CITNP.utils.configs import CausalInfModel, LocalLatentConfig
+from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.loss import NLLLoss, VILoss
 from CITNP.utils.sampler import EvalZSampler, TrainZSampler
 from CITNP.utils.utils import (
@@ -30,7 +31,7 @@ class CausalInferenceModel(torch.nn.Module):
 
     def __init__(
         self,
-        config: CausalInfModel,
+        config: CausalInfModelConfig,
     ):
         """
         Constructor for the CausalInferenceModel class
@@ -76,8 +77,8 @@ class CausalInferenceModel(torch.nn.Module):
         # TODO (cristiana): Check with Anish whether 1e-30 is for stability.
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
         loss = -distribution.log_prob(target)  # + 1e-30)
-        # Mean over the samples and mean over the batch
-        return loss.mean(1).mean()
+        # Sum over the samples and mean over the batch
+        return loss.sum(1).mean()
 
     def encode_inputs(
         self, context_data, target_data, intervention_index, outcome_index
@@ -161,7 +162,7 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         self,
         config: LocalLatentConfig,
     ):
-        causalconfig = CausalInfModel(
+        causalconfig = CausalInfModelConfig(
             d_model=config.d_model,
             emb_depth=config.emb_depth,
             dim_feedforward=config.dim_feedforward,
@@ -201,11 +202,9 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             depth=2,
         )
 
-        self.z_rep_merger = MHCA(
+        self.z_rep_merger = FlashMHCA(
             d_model=self.d_model,
             nhead=config.nhead,
-            dim_feedforward=self.dim_feedforward,
-            norm_first=True,
             batch_first=True,
             device=self.device,
             dtype=self.dtype,

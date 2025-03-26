@@ -14,7 +14,7 @@ from CITNP.models.causalinferencemodel import (
 )
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.callbacks import GradientChecker
-from CITNP.utils.configs import CausalInfModel, LocalLatentConfig
+from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.datautils import MultipleFileDataset
 from CITNP.utils.default_args import overwrite_debug_args, parse_args
 from CITNP.utils.utils import _generate_experiment_name, set_seed
@@ -56,18 +56,18 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
-        # "num_z_samples_train": 8,
-        # "num_z_samples_eval": 8,
-        # "decoder_depth": args.decoder_depth,
+        "num_z_samples_train": 32,
+        "num_z_samples_eval": 32,
+        "decoder_depth": args.decoder_depth,
         "device": args.device,
         "dtype": args.dtype,
     }
 
-    # locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
-    # model = LocalLatentCausalInferenceModel(locallatentconfig)
+    locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
+    model = LocalLatentCausalInferenceModel(locallatentconfig)
 
-    config = CausalInfModel(**MODEL_ARGS)
-    model = CausalInferenceModel(config)
+    # config = CausalInfModelConfig(**MODEL_ARGS)
+    # model = CausalInferenceModel(config)
 
     if args.results_path is None:
         results_path = Path.cwd()
@@ -133,6 +133,8 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     # These fixed some attention errors for me
+    torch.backends.cuda.enable_flash_sdp(True)
+
     parser = argparse.ArgumentParser()
     args = parse_args()
     main(args)

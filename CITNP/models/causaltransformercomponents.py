@@ -9,24 +9,75 @@ from torch.nn import functional as F
 
 
 def build_mlp(dim_in, dim_hid, dim_out, depth):
-    if dim_in == dim_hid:
-        modules = [
-            nn.Sequential(
-                nn.Linear(dim_in, dim_hid, bias=True),
-                nn.ReLU(),
-            )
-        ]
-    else:
-        modules = [nn.Linear(dim_in, dim_hid, bias=True), nn.ReLU()]
-    for _ in range(int(depth) - 2):
-        modules.append(
-            nn.Sequential(
-                nn.Linear(dim_hid, dim_hid, bias=True),
-                nn.ReLU(),
-            )
-        )
-    modules.append(nn.Linear(dim_hid, dim_out, bias=True))
-    return nn.Sequential(*modules)
+    assert depth >= 2, "MLP depth must be at least 2."
+    layers = [nn.Linear(dim_in, dim_hid), nn.GELU()]
+    for _ in range(depth - 2):
+        layers += [nn.Linear(dim_hid, dim_hid), nn.GELU()]
+    layers.append(nn.Linear(dim_hid, dim_out))
+    return nn.Sequential(*layers)
+
+
+class FlashMHCA(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        batch_first: bool = True,
+        bias: bool = False,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+        assert batch_first, "FlashMHCA only supports batch_first=True for now"
+        assert d_model % nhead == 0, "d_model must be divisible by nhead"
+
+        self.d_model = d_model
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+
+        self.layernormQ = nn.LayerNorm(d_model, **factory_kwargs)
+        self.layernormK = nn.LayerNorm(d_model, **factory_kwargs)
+        self.layernormV = nn.LayerNorm(d_model, **factory_kwargs)
+
+        self.q_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+        self.k_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+        self.v_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+
+        self.out_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+
+    def forward(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+        -----
+        - query, key, value: shape [batch_size, seq_len, d_model]
+
+        Returns:
+        --------
+        - output: shape [batch_size, seq_len, d_model]
+        """
+        B, T, _ = query.shape  # batch size, sequence length, embedding
+
+        query = self.layernormQ(query)
+        key = self.layernormK(key)
+        value = self.layernormV(value)
+
+        q = (
+            self.q_proj(query).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+        )  # [B, H, T, D]
+        k = self.k_proj(key).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+        v = self.v_proj(value).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+
+        attn_output = F.scaled_dot_product_attention(
+            q, k, v, is_causal=False
+        )  # [B, H, T, D]
+
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, self.d_model)
+        return self.out_proj(attn_output)
 
 
 class MHCA(nn.Module):
@@ -35,10 +86,7 @@ class MHCA(nn.Module):
         self,
         d_model: int,
         nhead: int,
-        dim_feedforward: int,
-        activation: Callable = F.relu,
         batch_first: bool = True,
-        norm_first: bool = True,
         bias: bool = False,
         device=None,
         dtype=None,
@@ -81,6 +129,22 @@ class MHCA(nn.Module):
         return output
 
 
+def _reshape_for_sample_attention(src, B, S, N, D):
+    return src.permute(0, 2, 1, 3).reshape(B * N, S, D)
+
+
+def _reshape_back_sample_attention(src, B, S, N, D):
+    return src.reshape(B, N, S, D).permute(0, 2, 1, 3)
+
+
+def _reshape_for_node_attention(src, B, S, N, D):
+    return src.reshape(B * S, N, D)
+
+
+def _reshape_back_node_attention(src, B, S, N, D):
+    return src.reshape(B, S, N, D)
+
+
 class CausalInfTransformerEncoder(nn.Module):
     """
     Causal Inference Transformer that alternates attention between samples and nodes.
@@ -114,24 +178,26 @@ class CausalInfTransformerEncoder(nn.Module):
         for idx_layer, mod in enumerate(self.layers):
             # Attention across samples
             if idx_layer % 2 == 0:
-                # shape [batch_size, num_nodes, num_samples, d_model]
-                src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_nodes, num_samples, d_model]
-                src = src.reshape(batch_size * num_nodes, num_samples, d_model)
+                src = _reshape_for_sample_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
+                )
                 src = mod(
                     src,
                     src_mask=sample_mask,
                     src_key_padding_mask=None,
                     is_causal=is_causal,
                 )
-                # Reshape the tensor back to [batch_size, num_nodes, num_samples, d_model]
-                src = src.reshape(batch_size, num_nodes, num_samples, d_model)
+                # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
+                src = _reshape_back_sample_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
+                )
             # Attention across nodes
             else:
-                # shape [batch_size, num_samples, num_nodes, d_model]
-                src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_samples, num_nodes, d_model]
-                src = src.reshape(batch_size * num_samples, num_nodes, d_model)
+                src = _reshape_for_node_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
+                )
                 # Extra zeros for the query
                 node_src_key_padding_mask = variable_mask
                 if node_src_key_padding_mask is not None:
@@ -149,7 +215,9 @@ class CausalInfTransformerEncoder(nn.Module):
                     bool_pad = node_src_key_padding_mask == -float("inf")
                     src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = src.reshape(batch_size, num_samples, num_nodes, d_model)
+                src = _reshape_back_node_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
+                )
         return src
 
 
@@ -295,7 +363,8 @@ class CausalInfEncoder(nn.Module):
         self.target_intervention = mlp()
         self.target_outcome = mlp()
 
-        module = nn.TransformerEncoderLayer(
+        module = partial(
+            nn.TransformerEncoderLayer,
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
@@ -305,10 +374,9 @@ class CausalInfEncoder(nn.Module):
             norm_first=True,
             device=device,
             dtype=dtype,
+            activation=F.gelu,
         )
-        encoderlayers = nn.ModuleList(
-            [copy.deepcopy(module) for i in range(num_layers)]
-        )
+        encoderlayers = nn.ModuleList([module() for i in range(num_layers)])
         self.encoder = CausalInfTransformerEncoder(
             encoder_layers=encoderlayers,
         )

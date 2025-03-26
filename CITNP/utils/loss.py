@@ -36,18 +36,18 @@ class NLLLoss(BaseLoss):
         num_z_samples = pred_mean.size(0)
         # During evaluation we only care about the predictive likelihood
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
+
         neglikelihood = -distribution.log_prob(target)
-        neglikelihood_sample_mean = neglikelihood.mean(2)
-        neglikelihood_z_meaned = torch.logsumexp(
-            neglikelihood_sample_mean, dim=0
-        ) - torch.log(
+        logL = torch.log(
             torch.tensor(
                 num_z_samples,
                 device=neglikelihood.device,
                 dtype=neglikelihood.dtype,
             )
         )
-        neglikelihood_fullmeaned = neglikelihood_z_meaned.mean(0).mean()
+        neglikelihood_z_meaned = torch.logsumexp(neglikelihood, dim=0) - logL
+        neglikelihood_allsample_mean = neglikelihood_z_meaned.sum(1)
+        neglikelihood_fullmeaned = neglikelihood_allsample_mean.mean(0).mean()
         return neglikelihood_fullmeaned
 
 
@@ -68,12 +68,12 @@ class VILoss(BaseLoss):
         # Data term
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
         neglikelihood = -distribution.log_prob(target)
-        neglikelihood_z_meaned = neglikelihood.mean(0)
-        neglikelihood_fullmeaned = neglikelihood_z_meaned.mean(1).mean()
+        neglikelihood_allsamples = neglikelihood.sum(-1).sum(2)
+        neglikelihood_z_meaned = neglikelihood_allsamples.mean(0)
 
         # KL term
         q_z = torch.distributions.Normal(z_mean, z_std)
         p_z = torch.distributions.Normal(0, 1)
         kl = torch.distributions.kl_divergence(q_z, p_z)
-        kl_meaned = kl.mean(-1).mean(1).mean(0)
-        return neglikelihood_fullmeaned + kl_meaned
+        kl_allsamples = kl.sum(2).sum(1)
+        return (neglikelihood_z_meaned + kl_allsamples).mean()
