@@ -29,6 +29,58 @@ def build_mlp(dim_in, dim_hid, dim_out, depth):
     return nn.Sequential(*modules)
 
 
+class MHCA(nn.Module):
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int,
+        activation: Callable = F.relu,
+        batch_first: bool = True,
+        norm_first: bool = True,
+        bias: bool = False,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+        self.layernormQ = nn.LayerNorm(d_model)
+        self.layernormK = nn.LayerNorm(d_model)
+        self.layernormV = nn.LayerNorm(d_model)
+
+        self.z_rep_merger = nn.MultiheadAttention(
+            d_model,
+            nhead,
+            batch_first=batch_first,
+            bias=bias,
+            device=device,
+            dtype=dtype,
+        )
+
+    def forward(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+        -----
+        - query: torch.Tensor, shape [batch_size, num_samples, d_model]
+        - key: torch.Tensor, shape [batch_size, num_samples, d_model]
+        - value: torch.Tensor, shape [batch_size, num_samples, d_model]
+
+        Returns:
+        --------
+        - torch.Tensor, shape [batch_size, num_samples, d_model]
+        """
+        # shape batch_size, num_samples, d_model]
+        query = self.layernormQ(query)
+        key = self.layernormK(key)
+        value = self.layernormV(value)
+        # shape [batch_size, num_samples, d_model]
+        output, _ = self.z_rep_merger(query, key, value)
+        return output
+
+
 class CausalInfTransformerEncoder(nn.Module):
     """
     Causal Inference Transformer that alternates attention between samples and nodes.
@@ -65,9 +117,7 @@ class CausalInfTransformerEncoder(nn.Module):
                 # shape [batch_size, num_nodes, num_samples, d_model]
                 src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_nodes, num_samples, d_model]
-                src = src.contiguous().view(
-                    batch_size * num_nodes, num_samples, d_model
-                )
+                src = src.reshape(batch_size * num_nodes, num_samples, d_model)
                 src = mod(
                     src,
                     src_mask=sample_mask,
@@ -75,22 +125,18 @@ class CausalInfTransformerEncoder(nn.Module):
                     is_causal=is_causal,
                 )
                 # Reshape the tensor back to [batch_size, num_nodes, num_samples, d_model]
-                src = src.view(batch_size, num_nodes, num_samples, d_model)
+                src = src.reshape(batch_size, num_nodes, num_samples, d_model)
             # Attention across nodes
             else:
                 # shape [batch_size, num_samples, num_nodes, d_model]
                 src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_samples, num_nodes, d_model]
-                src = src.contiguous().view(
-                    batch_size * num_samples, num_nodes, d_model
-                )
+                src = src.reshape(batch_size * num_samples, num_nodes, d_model)
                 # Extra zeros for the query
                 node_src_key_padding_mask = variable_mask
                 if node_src_key_padding_mask is not None:
-                    node_src_key_padding_mask = (
-                        node_src_key_padding_mask.contiguous().view(
-                            batch_size * num_samples, num_nodes
-                        )
+                    node_src_key_padding_mask = node_src_key_padding_mask.reshape(
+                        batch_size * num_samples, num_nodes
                     )
                 src = mod(
                     src,
@@ -103,7 +149,7 @@ class CausalInfTransformerEncoder(nn.Module):
                     bool_pad = node_src_key_padding_mask == -float("inf")
                     src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = src.contiguous().view(batch_size, num_samples, num_nodes, d_model)
+                src = src.reshape(batch_size, num_samples, num_nodes, d_model)
         return src
 
 
@@ -265,13 +311,6 @@ class CausalInfEncoder(nn.Module):
         )
         self.encoder = CausalInfTransformerEncoder(
             encoder_layers=encoderlayers,
-        )
-        self.representation = nn.MultiheadAttention(
-            d_model,
-            nhead,
-            batch_first=True,
-            device=device,
-            dtype=dtype,
         )
 
     def embed(self, data, outcome_indices, intervention_indices, context=True):

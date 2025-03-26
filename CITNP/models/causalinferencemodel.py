@@ -8,9 +8,18 @@ import torch
 import torch.nn as nn
 
 from CITNP.models.causaltransformercomponents import (
+    MHCA,
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
     build_mlp,
+)
+from CITNP.utils.configs import CausalInfModel, LocalLatentConfig
+from CITNP.utils.loss import NLLLoss, VILoss
+from CITNP.utils.sampler import EvalZSampler, TrainZSampler
+from CITNP.utils.utils import (
+    append_treatment_outcome_index_to_data,
+    gather_by_node,
+    set_all_except_batchindex_to_zero,
 )
 
 
@@ -21,29 +30,21 @@ class CausalInferenceModel(torch.nn.Module):
 
     def __init__(
         self,
-        d_model,
-        emb_depth,
-        dim_feedforward,
-        nhead,
-        dropout,
-        num_layers_encoder,
-        num_nodes,
-        device=None,
-        dtype=None,
+        config: CausalInfModel,
     ):
         """
         Constructor for the CausalInferenceModel class
         """
         super(CausalInferenceModel, self).__init__()
-        self.d_model = d_model
-        self.emb_depth = emb_depth
-        self.dim_feedforward = dim_feedforward
-        self.nhead = nhead
-        self.dropout = dropout
-        self.num_layers_encoder = num_layers_encoder
-        self.num_nodes = num_nodes
-        self.device = device
-        self.dtype = dtype
+        self.d_model = config.d_model
+        self.emb_depth = config.emb_depth
+        self.dim_feedforward = config.dim_feedforward
+        self.nhead = config.nhead
+        self.dropout = config.dropout
+        self.num_layers_encoder = config.num_layers_encoder
+        self.num_nodes = config.num_nodes
+        self.device = config.device
+        self.dtype = config.dtype
 
         self.encoder = CausalInfEncoder(
             d_model=self.d_model,
@@ -57,118 +58,12 @@ class CausalInferenceModel(torch.nn.Module):
             dtype=self.dtype,
         )
 
-        # self.decoder = nn.TransformerDecoder(
-        #     CausalTransformerDecoderLayer(
-        #         d_model=d_model,
-        #         nhead=nhead,
-        #         dim_feedforward=dim_feedforward,
-        #         dropout=dropout,
-        #         norm_first=True,
-        #         batch_first=True,
-        #         device=device,
-        #         dtype=dtype,
-        #         bias=False,
-        #     ),
-        #     num_layers=2
-        # )
-
         self.predictor = build_mlp(
             self.d_model,
             self.d_model,
             dim_out=2,  # mean and std
             depth=2,
         )
-
-    def set_nonintervention_targets_to_zero(
-        self,
-        target_data: torch.Tensor,
-        intervention_index: torch.Tensor,
-    ):
-        """
-        Sets all target values corresponding to non-intervention nodes to zero.
-
-        Args:
-        -----
-        - target_data (torch.Tensor): Tensor of shape
-            (batch_size, num_target, num_nodes, 1) containing target values.
-        - intervention_index (torch.Tensor): Tensor of shape (batch_size,) with the index
-             of the intervention node for each sample.
-
-        Returns:
-        --------
-            torch.Tensor: Modified target_data with non-intervention targets set to zero.
-        """
-        device = target_data.device
-        dtype = target_data.dtype
-        target_data = target_data.clone().to(device)
-        batch_size, num_target, num_nodes, _ = target_data.shape
-
-        # Create a tensor that lists node indices for broadcasting.
-        # Shape: (1, 1, num_nodes, 1)
-        node_range = torch.arange(num_nodes, device=target_data.device).view(
-            1, 1, num_nodes, 1
-        )
-
-        # Reshape intervention_index to (batch_size, 1, 1, 1) for broadcasting.
-        intervention_index = intervention_index.view(batch_size, 1, 1, 1)
-
-        # Create a mask: for each sample, only the intervention node gets a 1; the rest are 0.
-        mask = (
-            node_range == intervention_index
-        ).float()  # Shape: (batch_size, 1, num_nodes, 1)
-
-        # Broadcast the mask along the num_target dimension and apply it.
-        target_data = target_data * mask
-        target_data = target_data.to(dtype)
-        return target_data
-
-    def append_treatment_outcome_index_to_context_and_target(
-        self,
-        context_data: torch.Tensor,
-        target_data: torch.Tensor,
-        outcome_index: torch.Tensor,
-        treatment_index: torch.Tensor,
-    ):
-        """
-        Appends the treatment and outcome index to the context and target data.
-        The outcome is encoded by the value 1 and the treatment is encoded by
-        the value -1. The rest of the nodes are encoded by 0.
-
-        Args:
-        -----
-        - context_data (torch.Tensor): Context data tensor with shape
-            (batch_size, num_context, num_nodes, 1)
-        - target_data (torch.Tensor): Target data tensor with shape
-            (batch_size, num_target, num_nodes, 1)
-        - outcome_index (torch.Tensor): Outcome index tensor with shape
-            (batch_size)
-        - treatment_index (torch.Tensor): Treatment index tensor with shape
-            (batch_size)
-        """
-        dtype = context_data.dtype
-        batch_size = outcome_index.size(0)
-
-        # Create a tensor of zeros with shape (batch_size, num_nodes)
-        encoding = torch.zeros(batch_size, self.num_nodes, device=outcome_index.device)
-
-        # Set outcome index to 1 for each batch sample
-        encoding[torch.arange(batch_size), outcome_index] = 1
-
-        # Set treatment index to -1 for each batch sample
-        encoding[torch.arange(batch_size), treatment_index] = -1
-
-        # Reshape to (batch_size, 1, num_nodes, 1) for concatenation
-        encoding = encoding.unsqueeze(1).unsqueeze(-1)
-
-        # Concatenate the single encoding tensor along the channel dimension
-        context_data = torch.cat([context_data, encoding], dim=1)
-        target_data = torch.cat([target_data, encoding], dim=1)
-
-        # Convert back to the original dtype if necessary
-        context_data = context_data.to(dtype)
-        target_data = target_data.to(dtype)
-
-        return context_data, target_data
 
     def calculate_loss(self, pred_mean, pred_std, target, outcome_index):
         """
@@ -215,24 +110,26 @@ class CausalInferenceModel(torch.nn.Module):
         - outcome_index (torch.Tensor): Outcome index tensor with shape
             (batch_size)
         """
-        masked_target_data = self.set_nonintervention_targets_to_zero(
-            target_data, intervention_index
+        masked_target_data = set_all_except_batchindex_to_zero(
+            data=target_data, batch_index=intervention_index
         )
         # Shape context_data: (batch_size, num_context + 1, num_nodes, 1)
         # Shape masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
-        context_data, masked_target_data = (
-            self.append_treatment_outcome_index_to_context_and_target(
-                context_data,
-                masked_target_data,
-                outcome_index,
-                treatment_index=intervention_index,
-            )
+        encoded_cntxt = append_treatment_outcome_index_to_data(
+            data=context_data,
+            outcome_index=outcome_index,
+            treatment_index=intervention_index,
+        )
+        encoded_trgt = append_treatment_outcome_index_to_data(
+            data=masked_target_data,
+            outcome_index=outcome_index,
+            treatment_index=intervention_index,
         )
 
         # shape encoding: (batch_size, num_target + 1, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            context_data,
-            masked_target_data,
+            encoded_cntxt,
+            encoded_trgt,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
@@ -240,8 +137,7 @@ class CausalInferenceModel(torch.nn.Module):
         encoding = rep[:, -num_trgt:]
 
         # We want to find p(outcome | do(intervention))
-        batch_idx = torch.arange(encoding.size(0), device=encoding.device)
-        outcome_encoding = encoding[batch_idx, :, outcome_index, :]
+        outcome_encoding = gather_by_node(encoding, outcome_index)
 
         pred = self.predictor(outcome_encoding)
         mean, std = pred.split(1, dim=-1)
@@ -257,215 +153,96 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
 
     def __init__(
         self,
-        d_model,
-        emb_depth,
-        dim_feedforward,
-        nhead,
-        dropout,
-        num_layers_encoder,
-        num_nodes,
-        decoder_depth,
-        num_z_samples_train=10,
-        num_z_samples_eval=100,
-        use_vi=True,  # Loss is VI or ML
-        device=None,
-        dtype=None,
+        config: LocalLatentConfig,
     ):
-        super().__init__(
-            d_model,
-            emb_depth,
-            dim_feedforward,
-            nhead,
-            dropout,
-            num_layers_encoder,
-            num_nodes,
-            device,
-            dtype,
+        causalconfig = CausalInfModel(
+            d_model=config.d_model,
+            emb_depth=config.emb_depth,
+            dim_feedforward=config.dim_feedforward,
+            nhead=config.nhead,
+            dropout=config.dropout,
+            num_layers_encoder=config.num_layers_encoder,
+            num_nodes=config.num_nodes,
+            device=config.device,
+            dtype=config.dtype,
         )
-        self.num_z_samples = num_z_samples_train
-        self.num_z_samples_eval = num_z_samples_eval
-        self.use_vi = use_vi
+        super().__init__(causalconfig)
+        self.num_z_samples = config.num_z_samples_train
+        self.num_z_samples_eval = config.num_z_samples_eval
+        self.use_vi = config.use_vi
 
-        self.decoder_depth = decoder_depth
+        self.decoder_depth = config.decoder_depth
 
         self.decoder = nn.TransformerDecoder(
             CausalTransformerDecoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
+                d_model=config.d_model,
+                nhead=config.nhead,
+                dim_feedforward=config.dim_feedforward,
+                dropout=config.dropout,
                 norm_first=True,
                 batch_first=True,
-                device=device,
-                dtype=dtype,
+                device=config.device,
+                dtype=config.dtype,
                 bias=False,
             ),
-            num_layers=decoder_depth,
+            num_layers=config.decoder_depth,
         )
 
         self.z_param_mlp = build_mlp(
             self.d_model,
             self.d_model,
-            dim_out=2 * d_model,  # mean and std
+            dim_out=2 * config.d_model,  # mean and std
             depth=2,
         )
 
-        self.z_rep_merger = nn.MultiheadAttention(
-            d_model,
-            nhead,
+        self.z_rep_merger = MHCA(
+            d_model=self.d_model,
+            nhead=config.nhead,
+            dim_feedforward=self.dim_feedforward,
+            norm_first=True,
             batch_first=True,
-            device=device,
-            dtype=dtype,
+            device=self.device,
+            dtype=self.dtype,
+            bias=False,
         )
 
-    def append_query_vector(self, cntxt_data, trgt_data):
-        """
-        Appends a query vector of zeros to the data tensor in the sample
-        axis. Also appends an indicator variable to the data tensor in the
-        node axis.
-
-        Args:
-        -----
-        - cntxt_data (torch.Tensor): Data tensor with shape
-            (batch_size, num_samples, num_nodes, d_model)
-
-        Returns:
-        --------
-        - query_data (torch.Tensor): Data tensor with shape
-            (batch_size, num_samples + 1, num_nodes + 1, d_model)
-        """
-        dtype = cntxt_data.dtype
-        device = cntxt_data.device
-        batch_size, num_cntxt, _, d_model = cntxt_data.shape
-        _, num_trgt, _, _ = trgt_data.shape
-
-        # Create a tensor of zeros with shape (batch_size, 1, d_model)
-        query_vector = torch.zeros(batch_size, 1, d_model, device=device, dtype=dtype)
-
-        # Create a tensor of zeros with shape (batch_size, num_samples + 1, 1)
-        indicator_vector = torch.zeros(
-            batch_size, num_cntxt + 1, 1, device=device, dtype=dtype
+        self.train_z_sampler = TrainZSampler(
+            self.z_param_mlp, self.d_model, self.num_z_samples
         )
-        indicator_vector[:, 0] = 1
+        self.eval_z_sampler = EvalZSampler(self.d_model, self.num_z_samples_eval)
 
-        trgt_indicator_vector = torch.zeros(
-            batch_size, num_trgt, 1, device=device, dtype=dtype
-        )
+        self.loss = NLLLoss() if not self.use_vi else VILoss()
 
-        # Concatenate the query vector along the sample axis
-        query_cntxt = torch.cat([query_vector, cntxt_data], dim=1)
-
-        # Concatenate the indicator vector along the node axis
-        query_cntxt = torch.cat([indicator_vector, query_cntxt], dim=2)
-        query_trgt = torch.cat([trgt_indicator_vector, trgt_data], dim=2)
-
-        return query_cntxt, query_trgt
-
-    def sample_z(self, outcome_yx, trgt_data):
-        """
-        Args:
-        -----
-        - outcome_yx (torch.Tensor): Tensor of shape (batch_size, num_trgt, d_model)
-            containing the parameters of the distribution of z.
-
-        Returns:
-        --------
-        - z_samples (torch.Tensor): Tensor of shape (num_z_samples, batch_size, d_model)
-        """
-        # shape z: (batch_size, num_trgt, 1, 2*d_model)
+    def extract_training_target(self, target_data, intervention_index, outcome_index):
         if self.training:
-            z = self.z_param_mlp(outcome_yx)
-            mean, std = z.split(self.d_model, dim=-1)
-            std = torch.nn.functional.softplus(std)
-            z_samples = torch.distributions.Normal(mean, std).rsample(
-                (self.num_z_samples,)
+            # During training we want the true outcome.
+            only_intvn_trgt = set_all_except_batchindex_to_zero(
+                data=target_data, batch_index=intervention_index
             )
+            only_outcome_trgt = set_all_except_batchindex_to_zero(
+                data=target_data, batch_index=outcome_index
+            )
+            masked_trgt_train = only_intvn_trgt + only_outcome_trgt
         else:
-            # Sample from standard normal
-            batch_size = trgt_data.size(0)
-            num_trgt = trgt_data.size(1) - 1
-            z_samples = torch.randn(
-                self.num_z_samples_eval,
-                batch_size,
-                num_trgt,
-                self.d_model,
-                device=trgt_data.device,
-                dtype=trgt_data.dtype,
-            )
-            mean = torch.zeros(
-                batch_size, num_trgt, 1, self.d_model, device=trgt_data.device
-            )
-            std = torch.ones(
-                batch_size, num_trgt, 1, self.d_model, device=trgt_data.device
-            )
-        return z_samples, mean, std
+            masked_trgt_train = None
+        return masked_trgt_train
 
-    def merge_zsamples_rep(self, z_samples, rep):
-        """
-        Args:
-        -----
-        - z_samples (torch.Tensor): Tensor of shape
-            (num_z_samples, batch_size, num_trgt, d_model)
-        - rep (torch.Tensor): Tensor of shape
-            (batch_size, num_trgt, d_model)
-        """
-        num_z_samples, batch_size, num_trgt, d_model = z_samples.shape
-        # shape rep_expand: (num_z_samples, batch_size, num_trgt, d_model)
-        rep_expand = rep.unsqueeze(0).expand(num_z_samples, -1, -1, -1)
-
-        # shape rep_batched: (num_z_samples * batch_size, num_trgt, d_model)
-        rep_batched = rep_expand.contiguous().view(
-            num_z_samples * batch_size, num_trgt, d_model
+    def encode_inputs(
+        self, context_data, target_data, intervention_index, outcome_index
+    ):
+        # Shape context_data: (batch_size, num_context + 1, num_nodes, 1)
+        # Shape masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
+        encoded_ctnxt = append_treatment_outcome_index_to_data(
+            data=context_data,
+            outcome_index=outcome_index,
+            treatment_index=intervention_index,
         )
-        z_batched = z_samples.contiguous().view(
-            num_z_samples * batch_size, num_trgt, d_model
+        encoded_trgt = append_treatment_outcome_index_to_data(
+            data=target_data,
+            outcome_index=outcome_index,
+            treatment_index=intervention_index,
         )
-
-        # Cross attention
-        z_rep = self.z_rep_merger(
-            query=rep_batched,
-            key=z_batched,
-            value=z_batched,
-        )[0]
-        z_rep_unbatched = z_rep.view(num_z_samples, batch_size, -1, d_model)
-        return z_rep_unbatched
-
-    def only_intervention_outcome(self, target_data, intervention_index, outcome_index):
-        """
-        Set everything that is not the intervention node and outcome node to zero.
-
-        Args:
-        -----
-        - target_data (torch.Tensor): Tensor of shape
-            (batch_size, num_target, num_nodes, 1) containing target values.
-        - intervention_index (torch.Tensor): Tensor of shape (batch_size,) with the index
-             of the intervention node for each sample.
-        - outcome_index (torch.Tensor): Tensor of shape (batch_size,)
-            with the index of the outcome node for each sample.
-
-        Returns:
-        --------
-        - torch.Tensor: Modified target_data with non-intervention and non-outcome nodes zeroed out.
-        """
-        batch_size, num_target, num_nodes, _ = target_data.shape
-
-        # Create a mask of shape (batch_size, num_nodes) where True means keep
-        keep_mask = torch.zeros(
-            (batch_size, num_nodes), dtype=torch.bool, device=target_data.device
-        )
-
-        # Mark intervention and outcome nodes as True
-        keep_mask.scatter_(1, intervention_index.unsqueeze(1), True)
-        keep_mask.scatter_(1, outcome_index.unsqueeze(1), True)
-
-        # Expand the mask to match target_data shape
-        # (batch_size, 1, num_nodes, 1) -> broadcast to (batch_size, num_target, num_nodes, 1)
-        expanded_mask = keep_mask[:, None, :, None]
-
-        # Zero out everything not in the mask
-        target_data = target_data * expanded_mask
-
-        return target_data
+        return encoded_ctnxt, encoded_trgt
 
     def extract_representation(
         self,
@@ -491,6 +268,55 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             R_yx = None
         return R_x, R_yx
 
+    def sample_z(self, outcome_yx, trgt_data):
+        """
+        Args:
+        -----
+        - outcome_yx (torch.Tensor): Tensor of shape (batch_size, num_trgt, d_model)
+            containing the parameters of the distribution of z.
+
+        Returns:
+        --------
+        - z_samples (torch.Tensor): Tensor of shape (num_z_samples, batch_size, d_model)
+        """
+        # shape z: (batch_size, num_trgt, 1, 2*d_model)
+        if self.training:
+            zsamples, mean, std = self.train_z_sampler.sample(
+                outcome_yx, num_samples=self.num_z_samples
+            )
+        else:
+            zsamples, mean, std = self.eval_z_sampler.sample(
+                trgt_data, num_samples=self.num_z_samples_eval
+            )
+
+        return zsamples, mean, std
+
+    def merge_zsamples_rep(self, z_samples, rep):
+        """
+        Args:
+        -----
+        - z_samples (torch.Tensor): Tensor of shape
+            (num_z_samples, batch_size, num_trgt, d_model)
+        - rep (torch.Tensor): Tensor of shape
+            (batch_size, num_trgt, d_model)
+        """
+        num_z_samples, batch_size, num_trgt, d_model = z_samples.shape
+        # shape rep_expand: (num_z_samples, batch_size, num_trgt, d_model)
+        rep_expand = rep.unsqueeze(0).expand_as(z_samples)
+
+        # shape rep_batched: (num_z_samples * batch_size, num_trgt, d_model)
+        rep_batched = rep_expand.reshape(num_z_samples * batch_size, num_trgt, d_model)
+        z_batched = z_samples.reshape(num_z_samples * batch_size, num_trgt, d_model)
+
+        # Cross attention
+        z_rep = self.z_rep_merger(
+            query=rep_batched,
+            key=z_batched,
+            value=z_batched,
+        )
+        z_rep_unbatched = z_rep.reshape(num_z_samples, batch_size, num_trgt, d_model)
+        return z_rep_unbatched
+
     def forward(
         self,
         context_data,
@@ -499,33 +325,23 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         outcome_index,
         variable_mask=None,
     ):
-        if self.training:
-            # During training we want the true outcome.
-            masked_intvn_outcome = self.only_intervention_outcome(
-                target_data, intervention_index, outcome_index
-            )
-        else:
-            masked_intvn_outcome = None
-
-        masked_target_data = self.set_nonintervention_targets_to_zero(
-            target_data, intervention_index
+        masked_trgt_train = self.extract_training_target(
+            target_data, intervention_index, outcome_index
         )
-        # Shape context_data: (batch_size, num_context + 1, num_nodes, 1)
-        # Shape masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
-        context_data, masked_target_data = (
-            self.append_treatment_outcome_index_to_context_and_target(
-                context_data,
-                masked_target_data,
-                outcome_index,
-                treatment_index=intervention_index,
-            )
+
+        masked_target_data = set_all_except_batchindex_to_zero(
+            data=target_data, batch_index=intervention_index
+        )
+
+        encoded_ctnxt, encoded_trgt = self.encode_inputs(
+            context_data, masked_target_data, intervention_index, outcome_index
         )
 
         # shape rep: (batch_size, num_samples + 2, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            context_data=context_data,
-            target_data=masked_target_data,
-            target_train_data=masked_intvn_outcome,
+            context_data=encoded_ctnxt,
+            target_data=encoded_trgt,
+            target_train_data=masked_trgt_train,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
@@ -534,11 +350,10 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         R_x, R_yx = self.extract_representation(rep, num_trgt)
 
         # We want to find p(outcome | do(intervention))
-        batch_idx = torch.arange(R_x.size(0), device=R_x.device)
         # shape outcome_encoding: (batch_size, num_trgt, d_model)
-        outcome_x = R_x[batch_idx, :, outcome_index, :]
+        outcome_x = gather_by_node(R_x, outcome_index)
         if self.training:
-            outcome_yx = R_yx[batch_idx, :, outcome_index, :]
+            outcome_yx = gather_by_node(R_yx, outcome_index)
         else:
             outcome_yx = None
 
@@ -549,19 +364,15 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         final_rep = self.merge_zsamples_rep(z_samples, outcome_x)
 
         if self.decoder_depth != 0:
-            num_z_samples, batch_size, num_trgt = (
-                final_rep.size(0),
-                final_rep.size(1),
-                final_rep.size(2),
-            )
-            final_rep_batched = final_rep.contiguous().view(
+            num_z_samples, batch_size, num_trgt, _ = final_rep.shape
+            final_rep_batched = final_rep.reshape(
                 num_z_samples * batch_size, num_trgt, -1
             )
             decoder_rep_batched = self.decoder(
                 tgt=final_rep_batched,
                 memory=None,
             )
-            decoder_rep = decoder_rep_batched.contiguous().view(
+            decoder_rep = decoder_rep_batched.reshape(
                 num_z_samples, batch_size, num_trgt, -1
             )
         else:
@@ -572,40 +383,6 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         std = torch.nn.functional.softplus(std)
 
         return mean, std, z_mean, z_std
-
-    def vi_loss(self, pred_mean, pred_std, trgt_outcome, z_mean, z_std):
-        """
-        Calculate the loss for the model.
-        """
-        if self.training:
-            # Data term
-            distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
-            neglikelihood = -distribution.log_prob(trgt_outcome)
-            neglikelihood_z_meaned = neglikelihood.mean(0)
-            neglikelihood_fullmeaned = neglikelihood_z_meaned.mean(1).mean()
-
-            # KL term
-            q_z = torch.distributions.Normal(z_mean, z_std)
-            p_z = torch.distributions.Normal(0, 1)
-            kl = torch.distributions.kl_divergence(q_z, p_z)
-            kl_meaned = kl.mean(-1).mean(1).mean(0)
-            return neglikelihood_fullmeaned + kl_meaned
-        else:
-            # During evaluation we only care about the predictive likelihood
-            distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
-            neglikelihood = -distribution.log_prob(trgt_outcome)
-            neglikelihood_sample_mean = neglikelihood.mean(2)
-            neglikelihood_z_meaned = torch.logsumexp(
-                neglikelihood_sample_mean, dim=0
-            ) - torch.log(
-                torch.tensor(
-                    self.num_z_samples_eval,
-                    device=neglikelihood.device,
-                    dtype=neglikelihood.dtype,
-                )
-            )
-            neglikelihood_fullmeaned = neglikelihood_z_meaned.mean(1).mean()
-            return neglikelihood_fullmeaned
 
     def calculate_loss(self, pred_mean, pred_std, target, outcome_index, z_mean, z_std):
         """
@@ -628,11 +405,11 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             (batch_size, num_trgt, 1, d_model) containing the std of the
             z distribution.
         """
-        batch_idx = torch.arange(target.size(0), device=target.device)
-        trgt_outcome = target[batch_idx, :, outcome_index, :]
-
-        if self.use_vi:
-            loss = self.vi_loss(pred_mean, pred_std, trgt_outcome, z_mean, z_std)
-        else:
-            raise NotImplementedError("ML loss not implemented yet.")
-        return loss
+        trgt_outcome = gather_by_node(target, outcome_index)
+        return self.loss.calculate_loss(
+            pred_mean=pred_mean,
+            pred_std=pred_std,
+            target=trgt_outcome,
+            z_mean=z_mean,
+            z_std=z_std,
+        )
