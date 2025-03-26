@@ -33,6 +33,7 @@ class NLLLoss(BaseLoss):
         z_std: Optional[torch.Tensor] = None,
         **kwargs
     ) -> torch.Tensor:
+        num_z_samples = pred_mean.size(0)
         # During evaluation we only care about the predictive likelihood
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
         neglikelihood = -distribution.log_prob(target)
@@ -41,7 +42,7 @@ class NLLLoss(BaseLoss):
             neglikelihood_sample_mean, dim=0
         ) - torch.log(
             torch.tensor(
-                self.num_z_samples_eval,
+                num_z_samples,
                 device=neglikelihood.device,
                 dtype=neglikelihood.dtype,
             )

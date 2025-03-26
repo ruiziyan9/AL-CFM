@@ -76,7 +76,7 @@ def main(args: argparse.Namespace):
         "use_wandb": not args.no_wandb,
         "lr_warmup_ratio": args.lr_warmup_ratio,
         "bfloat16": args.dtype == torch.bfloat16,
-        "num_workers": 15,
+        "num_workers": args.num_workers,
         "save_dir": model_save_dir,
         "cntxt_split": [0.2, 0.8],
         "sample_size": args.sample_size,

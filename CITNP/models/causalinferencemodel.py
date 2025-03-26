@@ -212,6 +212,7 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         self.eval_z_sampler = EvalZSampler(self.d_model, self.num_z_samples_eval)
 
         self.loss = NLLLoss() if not self.use_vi else VILoss()
+        self.eval_loss = NLLLoss()
 
     def extract_training_target(self, target_data, intervention_index, outcome_index):
         if self.training:
@@ -406,10 +407,19 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             z distribution.
         """
         trgt_outcome = gather_by_node(target, outcome_index)
-        return self.loss.calculate_loss(
-            pred_mean=pred_mean,
-            pred_std=pred_std,
-            target=trgt_outcome,
-            z_mean=z_mean,
-            z_std=z_std,
-        )
+        if self.training:
+            return self.loss.calculate_loss(
+                pred_mean=pred_mean,
+                pred_std=pred_std,
+                target=trgt_outcome,
+                z_mean=z_mean,
+                z_std=z_std,
+            )
+        else:
+            return self.eval_loss.calculate_loss(
+                pred_mean=pred_mean,
+                pred_std=pred_std,
+                target=trgt_outcome,
+                z_mean=z_mean,
+                z_std=z_std,
+            )

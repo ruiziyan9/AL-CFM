@@ -33,7 +33,7 @@ class EvalZSampler(LatentSampler):
         self.num_samples_eval = num_samples_eval
 
     def sample(self, trgt_data: torch.Tensor, **kwargs):
-        batch_size, num_trgt = trgt_data.size(0), trgt_data.size(1) - 1
+        batch_size, num_trgt = trgt_data.size(0), trgt_data.size(1)
         z_samples = torch.randn(
             self.num_samples_eval,
             batch_size,

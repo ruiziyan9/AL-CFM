@@ -137,6 +137,12 @@ def parse_args():
         default=1,
         help="Number of epochs after which to save checkpoint.",
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=15,
+        help="Number of workers for data loading.",
+    )
 
     return parser.parse_args()
 
