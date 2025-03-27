@@ -8,6 +8,8 @@ import h5py
 import numpy as np
 import torch as th
 
+from CITNP.utils.processing import normalise_variable
+
 
 def stack_list_of_arrays(list_of_arrays):
     """
@@ -44,15 +46,6 @@ def sample_context_and_target(
     context = np.take(obs_data_array, context_idx, axis=1)
     target = np.take(intvn_data_array, target_idx, axis=1)
     return context, target
-
-
-def standardize_data(data_array: np.ndarray):
-    """
-    Standardize data.
-    """
-    mean = np.mean(data_array, axis=(0, 1), keepdims=True)
-    std = np.std(data_array, axis=(0, 1), keepdims=True)
-    return (data_array - mean) / std
 
 
 def sample_outcome_index(
@@ -99,8 +92,8 @@ def transformer_inference_split_withpadding(
             masks = batch[5]
 
         # Standardize the data
-        obs_data_array = standardize_data(obs_data_array)
-        int_data_array = standardize_data(int_data_array)
+        obs_data_array = normalise_variable(obs_data_array, axis=1)
+        int_data_array = normalise_variable(int_data_array, axis=1)
 
         context, target = sample_context_and_target(
             obs_data_array,

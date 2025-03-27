@@ -347,24 +347,24 @@ class DataGenerator(ABC):
                 variable_intvn = np.random.normal(
                     loc=0, scale=1.0, size=(sample_size, 1)
                 )
-                obs_inputs = normalise_variable(obs_inputs)
+                obs_inputs = normalise_variable(obs_inputs, axis=0)
                 variable_obs = function_for_i(obs_inputs)
-                variable_obs = normalise_variable(variable_obs)
+                variable_obs = normalise_variable(variable_obs, axis=0)
             else:
                 intvn_parents_of_i = parents_of_i
                 intvn_inputs = self._get_inputs(intvn_parents_of_i, intvn_data)
-                obs_inputs = normalise_variable(obs_inputs)
+                obs_inputs = normalise_variable(obs_inputs, axis=0)
                 intvn_inputs = normalise_variable(intvn_inputs)
                 full_inputs = np.concatenate([obs_inputs, intvn_inputs], axis=0)
                 # Pass the inputs to the function
-                full_inputs = normalise_variable(full_inputs)
+                full_inputs = normalise_variable(full_inputs, axis=0)
                 variable = function_for_i(full_inputs)
 
                 variable_obs = variable[:sample_size]
                 variable_intvn = variable[sample_size:]
 
-                variable_obs = normalise_variable(variable_obs)
-                variable_intvn = normalise_variable(variable_intvn)
+                variable_obs = normalise_variable(variable_obs, axis=0)
+                variable_intvn = normalise_variable(variable_intvn, axis=0)
 
             obs_data[:, i : i + 1] = variable_obs
             intvn_data[:, i : i + 1] = variable_intvn
