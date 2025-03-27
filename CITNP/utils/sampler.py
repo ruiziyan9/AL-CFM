@@ -1,6 +1,22 @@
 from typing import Tuple
 
 import torch
+import torch.nn as nn
+
+
+def init_mean_mlp(m):
+    if isinstance(m, nn.Linear):
+        # Small weights: mean 0, std ~ 0.1
+        nn.init.normal_(m.weight, mean=0.0, std=1e-5)
+        nn.init.constant_(m.bias, torch.tensor(0.0))
+
+
+def init_std_mlp(m):
+    if isinstance(m, nn.Linear):
+        # Small weights: mean 0, std ~ 0.1
+        nn.init.normal_(m.weight, mean=0.0, std=1e-5)
+        final_bias = torch.log(torch.exp(torch.tensor(1)) - 1)
+        nn.init.constant_(m.bias, final_bias)
 
 
 class LatentSampler:
@@ -12,14 +28,17 @@ class LatentSampler:
 
 class TrainZSampler(LatentSampler):
 
-    def __init__(self, mlp, d_model, num_samples):
-        self.mlp = mlp
+    def __init__(self, mean_mlp, std_mlp, d_model, num_samples):
+        self.mean_mlp = mean_mlp
+        self.std_mlp = std_mlp
         self.d_model = d_model
         self.num_samples = num_samples
+        init_mean_mlp(self.mean_mlp[-1])
+        init_std_mlp(self.std_mlp[-1])
 
     def sample(self, outcome_yx: torch.Tensor, **kwargs):
-        z_params = self.mlp(outcome_yx)
-        mean, std = z_params.split(self.d_model, dim=-1)
+        mean = self.mean_mlp(outcome_yx)
+        std = self.std_mlp(outcome_yx)
         std = torch.nn.functional.softplus(std)
 
         z_samples = torch.distributions.Normal(mean, std).rsample((self.num_samples,))

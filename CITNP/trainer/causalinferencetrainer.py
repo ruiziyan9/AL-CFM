@@ -326,6 +326,11 @@ class CausalInferenceTrainer:
                 z_mean=z_mean,
                 z_std=z_std,
             )
+            if isinstance(loss, tuple):
+                data_loss, kl = loss
+                loss = data_loss + kl
+            else:
+                data_loss, kl = None, None
 
             loss.backward()
             # Gradient clipping
@@ -336,6 +341,10 @@ class CausalInferenceTrainer:
                 metric_dict = {
                     "train loss": loss.mean().item(),
                 }
+                if data_loss is not None:
+                    metric_dict.update({"data loss": data_loss.mean().item()})
+                if kl is not None:
+                    metric_dict.update({"kl": kl.mean().item()})
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 metric_dict.update({"learning_rate": current_lr})
                 if i % self.log_step == 0 and i > 0:

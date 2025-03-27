@@ -68,12 +68,12 @@ class VILoss(BaseLoss):
         # Data term
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
         neglikelihood = -distribution.log_prob(target)
-        neglikelihood_allsamples = neglikelihood.sum(-1).sum(2)
-        neglikelihood_z_meaned = neglikelihood_allsamples.mean(0)
+        neglikelihood_z_meaned = neglikelihood.mean(0)
+        neglikelihood_allsamples = neglikelihood_z_meaned.sum(1).sum(-1)
 
         # KL term
         q_z = torch.distributions.Normal(z_mean, z_std)
         p_z = torch.distributions.Normal(0, 1)
         kl = torch.distributions.kl_divergence(q_z, p_z)
         kl_allsamples = kl.sum(2).sum(1)
-        return (neglikelihood_z_meaned + kl_allsamples).mean()
+        return neglikelihood_allsamples.mean(), kl_allsamples.mean()

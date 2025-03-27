@@ -195,10 +195,16 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             num_layers=config.decoder_depth,
         )
 
-        self.z_param_mlp = build_mlp(
+        self.z_param_mean_mlp = build_mlp(
             self.d_model,
             self.d_model,
-            dim_out=2 * config.d_model,  # mean and std
+            dim_out=config.d_model,  # mean and std
+            depth=2,
+        )
+        self.z_param_std_mlp = build_mlp(
+            self.d_model,
+            self.d_model,
+            dim_out=config.d_model,  # mean and std
             depth=2,
         )
 
@@ -212,7 +218,10 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         )
 
         self.train_z_sampler = TrainZSampler(
-            self.z_param_mlp, self.d_model, self.num_z_samples
+            self.z_param_mean_mlp,
+            self.z_param_std_mlp,
+            self.d_model,
+            self.num_z_samples,
         )
         self.eval_z_sampler = EvalZSampler(self.d_model, self.num_z_samples_eval)
 
