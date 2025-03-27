@@ -4,6 +4,7 @@ Data utilities for CITNP.
 
 from typing import List
 
+import h5py
 import numpy as np
 import torch as th
 
@@ -81,12 +82,21 @@ def transformer_inference_split_withpadding(
     max_context = int(sample_size * cntxt_split[1])
 
     def mycollate(batch):
-        obs_data_array = batch[0]
-        int_data_array = batch[1]
-        causal_graphs_array = batch[2]
-        intvn_indices = batch[3]
-        variable_counts = batch[4]
-        masks = batch[5]
+        # There are two modes
+        if len(batch[0]) == 6:
+            obs_data_array = stack_list_of_arrays([i[0] for i in batch])
+            int_data_array = stack_list_of_arrays([i[1] for i in batch])
+            causal_graphs_array = stack_list_of_arrays([i[2] for i in batch])
+            intvn_indices = stack_list_of_arrays([i[3] for i in batch])
+            variable_counts = stack_list_of_arrays([i[4] for i in batch])
+            masks = stack_list_of_arrays([i[5] for i in batch])
+        else:
+            obs_data_array = batch[0]
+            int_data_array = batch[1]
+            causal_graphs_array = batch[2]
+            intvn_indices = batch[3]
+            variable_counts = batch[4]
+            masks = batch[5]
 
         # Standardize the data
         obs_data_array = standardize_data(obs_data_array)
@@ -123,3 +133,60 @@ def transformer_inference_split_withpadding(
         )
 
     return mycollate
+
+
+class MultipleFileDataset(th.utils.data.Dataset):
+    def __init__(self, file_list: list):
+        super().__init__()
+        self.all_obs_data = []
+        self.all_int_data = []
+        self.all_graphs = []
+        self.all_intvn_indices = []
+        self.all_variable_counts = []
+        self.all_masks = []
+
+        for idx, file in enumerate(file_list):
+            f = h5py.File(file, "r")
+            self.all_obs_data.append(f["obs_data"])
+            self.all_int_data.append(f["int_data"])
+            self.all_graphs.append(f["causal_graphs"])
+            self.all_intvn_indices.append(f["intvn_indices"])
+            self.all_variable_counts.append(f["variable_counts"])
+            if "masks" in f:
+                self.all_masks.append(f["masks"])
+            else:
+                self.all_masks.append(None)
+        # Assume all datasets have the same size
+        self.size_each_dataset = self.all_obs_data[0].shape[0]
+
+    def load_data(self, data_idx, file_counter):
+        obs_data = self.all_obs_data[file_counter][data_idx]
+        int_data = self.all_int_data[file_counter][data_idx]
+        causal_graph = self.all_graphs[file_counter][data_idx]
+        intvn_indices = self.all_intvn_indices[file_counter][data_idx]
+        variable_counts = self.all_variable_counts[file_counter][data_idx]
+
+        if self.all_masks[file_counter] is not None:
+            masks = self.all_masks[file_counter][data_idx]
+        else:
+            masks = None
+
+        yield (
+            obs_data,
+            int_data,
+            causal_graph,
+            intvn_indices,
+            variable_counts,
+            masks,
+        )
+
+    def __getitem__(self, idx):
+        # Make sure the same item is not returned twice in parallel
+        file_counter = idx // self.size_each_dataset
+        data_idx = idx % self.size_each_dataset
+
+        all_data = next(self.load_data(data_idx, file_counter))
+        return all_data
+
+    def __len__(self):
+        return sum([i.shape[0] for i in self.all_obs_data])

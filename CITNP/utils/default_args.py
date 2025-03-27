@@ -17,6 +17,19 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--work_dir",
+        type=str,
+        default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
+        help="Path to the working directory.",
+    )
+    parser.add_argument(
+        "--data_file",
+        type=str,
+        default="onlycond_simplegplvm_['ER']_2_1000",
+        help="Name of the data file to use.",
+    )
+
+    parser.add_argument(
         "--seed", type=int, default=0, help="Seed for random number generation."
     )
     parser.add_argument(
@@ -25,16 +38,13 @@ def parse_args():
         default=False,
         help="Whether to run in debug mode.",
     )
-    parser.add_argument(
-        "--d_model", type=int, default=512, help="Model dimension."
-    )
-    parser.add_argument(
-        "--emb_depth", type=int, default=2, help="Embedding depth."
-    )
+    parser.add_argument("--d_model", type=int, default=256, help="Model dimension.")
+    parser.add_argument("--emb_depth", type=int, default=2, help="Embedding depth.")
+    parser.add_argument("--decoder_depth", type=int, default=0, help="Decoder depth.")
     parser.add_argument(
         "--dim_feedforward",
         type=int,
-        default=2048,
+        default=1024,
         help="Feedforward network dimension.",
     )
     parser.add_argument(
@@ -46,6 +56,26 @@ def parse_args():
         default=8,
         help="Number of layers in the encoder.",
     )
+    parser.add_argument(
+        "--mean_loss_across_samples",
+        action="store_true",
+        default=False,
+        help="Whether to average the loss across samples.",
+    )
+    # Local VI args
+    parser.add_argument(
+        "--num_z_samples_train",
+        type=int,
+        default=16,
+        help="Number of z samples for training.",
+    )
+    parser.add_argument(
+        "--num_z_samples_eval",
+        type=int,
+        default=16,
+        help="Number of z samples for evaluation.",
+    )
+
     parser.add_argument(
         "--device",
         type=str,
@@ -65,9 +95,7 @@ def parse_args():
         help='Torch data type (e.g., "bfloat16" or "float32").',
     )
 
-    parser.add_argument(
-        "--batch_size", type=int, default=32, help="Batch size."
-    )
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size.")
     parser.add_argument(
         "--sample_size", type=int, default=1000, help="Number of samples."
     )
@@ -77,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "--function_generator",
         type=str,
-        default="sinusoid",
+        default="simplegplvm",
         help="Type of function to generate.",
     )
     parser.add_argument(
@@ -99,14 +127,10 @@ def parse_args():
     parser.add_argument(
         "--learning_rate", type=float, default=0.0001, help="Learning rate."
     )
-    parser.add_argument(
-        "--run_name", type=str, default=None, help="Name of the run."
-    )
+    parser.add_argument("--run_name", type=str, default=None, help="Name of the run.")
 
     # Training args
-    parser.add_argument(
-        "--epochs", type=int, default=10, help="Number of epochs."
-    )
+    parser.add_argument("--epochs", type=int, default=2, help="Number of epochs.")
     parser.add_argument(
         "--no_wandb",
         action="store_true",
@@ -125,13 +149,19 @@ def parse_args():
         default="./experiments",
         help="Path where to store the results.",
     )
-    parser.add_argument("--log_step", type=int, default=500, help="Log step.")
+    parser.add_argument("--log_step", type=int, default=200, help="Log step.")
 
     parser.add_argument(
         "--save_checkpoint_every",
         type=int,
         default=1,
         help="Number of epochs after which to save checkpoint.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=15,
+        help="Number of workers for data loading.",
     )
 
     return parser.parse_args()

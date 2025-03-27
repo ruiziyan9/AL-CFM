@@ -4,24 +4,16 @@ File to train the transformer NP classifier model.
 
 from functools import partial
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Optional
 
+import torch
 import torch as th
 import wandb
 from tqdm import tqdm
 
 from CITNP.utils.datautils import transformer_inference_split_withpadding
-
-
-def send_to_device(data, device):
-    if isinstance(data, th.Tensor):
-        return data.to(device)
-    elif isinstance(data, list):
-        return [send_to_device(d, device) for d in data]
-    elif isinstance(data, dict):
-        return {k: send_to_device(v, device) for k, v in data.items()}
-    else:
-        return data
+from CITNP.utils.plotting import plot_predictions_to_wandb
+from CITNP.utils.utils import send_to_device
 
 
 class CausalInferenceTrainer:
@@ -83,6 +75,7 @@ class CausalInferenceTrainer:
         use_wandb: bool = True,
         log_step: int = 500,
         save_checkpoint_every: int = 10,
+        callback: Optional[List[Callable]] = None,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset
@@ -101,6 +94,7 @@ class CausalInferenceTrainer:
         self.use_wandb = use_wandb
         self.log_step = log_step
         self.save_checkpoint_every = save_checkpoint_every
+        self.callback = callback
 
         self.learning_rate = self.optimizer.param_groups[0]["lr"]
 
@@ -133,7 +127,7 @@ class CausalInferenceTrainer:
         self.val_loader = th.utils.data.DataLoader(
             self.validation_dataset,
             batch_size=self.batch_size,
-            shuffle=shuffle,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=persistent_workers,
@@ -142,7 +136,7 @@ class CausalInferenceTrainer:
         self.test_loader = th.utils.data.DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
-            shuffle=shuffle,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=persistent_workers,
@@ -230,9 +224,7 @@ class CausalInferenceTrainer:
             self.model.to(dtype)
 
             all_loss = 0
-            for i, data in enumerate(
-                tqdm(val_loader, desc="Validation", leave=False)
-            ):
+            for i, data in enumerate(tqdm(val_loader, desc="Validation", leave=False)):
                 # Get the inputs and targets
                 context, target, intvn_indices, outcome_indices, masks, _ = (
                     send_to_device(
@@ -247,7 +239,7 @@ class CausalInferenceTrainer:
                 if masks is not None:
                     masks = masks.to("cuda", dtype=dtype)
 
-                pred_mean, pred_std = self.model(
+                pred_mean, pred_std, z_mean, z_std = self.model(
                     context_data=context,
                     target_data=target,
                     intervention_index=intvn_indices,
@@ -259,9 +251,20 @@ class CausalInferenceTrainer:
                     pred_std=pred_std,
                     target=target,
                     outcome_index=outcome_indices,
+                    z_mean=z_mean,
+                    z_std=z_std,
                 )
 
                 all_loss += th.sum(loss).cpu().item()
+
+        if self.use_wandb:
+            metric_dict = plot_predictions_to_wandb(
+                metric_dict=metric_dict,
+                model=self.model,
+                loader=val_loader,
+                num_plots=10,
+                device="cuda",
+            )
 
         # Log the validation loss
         loss = all_loss / len(val_loader.dataset)
@@ -294,11 +297,9 @@ class CausalInferenceTrainer:
                 epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps
             )
             # Get the inputs and targets
-            context, target, intvn_indices, outcome_indices, masks, _ = (
-                send_to_device(
-                    list(data),
-                    device="cuda",
-                )
+            context, target, intvn_indices, outcome_indices, masks, _ = send_to_device(
+                list(data),
+                device="cuda",
             )
             context, target = send_to_device(
                 [context, target],
@@ -310,7 +311,7 @@ class CausalInferenceTrainer:
             # Zero the parameter gradients
             self.optimizer.zero_grad()
             # Forward pass
-            pred_mean, pred_std = self.model(
+            pred_mean, pred_std, z_mean, z_std = self.model(
                 context_data=context,
                 target_data=target,
                 intervention_index=intvn_indices,
@@ -322,8 +323,16 @@ class CausalInferenceTrainer:
                 pred_std=pred_std,
                 target=target,
                 outcome_index=outcome_indices,
+                z_mean=z_mean,
+                z_std=z_std,
             )
-            loss.mean().backward()
+            if isinstance(loss, tuple):
+                data_loss, kl = loss
+                loss = data_loss + kl
+            else:
+                data_loss, kl = None, None
+
+            loss.backward()
             # Gradient clipping
             th.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             # Optimize
@@ -332,15 +341,17 @@ class CausalInferenceTrainer:
                 metric_dict = {
                     "train loss": loss.mean().item(),
                 }
+                if data_loss is not None:
+                    metric_dict.update({"data loss": data_loss.mean().item()})
+                if kl is not None:
+                    metric_dict.update({"kl": kl.mean().item()})
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 metric_dict.update({"learning_rate": current_lr})
                 if i % self.log_step == 0 and i > 0:
-                    metric_dict = self.validate_single_epoch(
-                        val_loader, metric_dict
-                    )
-                    metric_dict = self.test_single_epoch(
-                        test_loader, metric_dict
-                    )
+                    metric_dict = self.validate_single_epoch(val_loader, metric_dict)
+                    metric_dict = self.test_single_epoch(test_loader, metric_dict)
+                    for callback in self.callback:
+                        metric_dict = callback(metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
             if (i + 1) % self.save_checkpoint_every == 0:

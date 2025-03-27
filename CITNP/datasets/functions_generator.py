@@ -37,9 +37,7 @@ class SinFunction:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
                 return outputs
             else:
                 outputs = np.sin(
@@ -95,15 +93,10 @@ class GPFunctions:
                 .to(self.device)
                 .to(th.float64)
             )
-            covariance = covariance + 1e-4 * th.eye(
-                inputs.shape[0], device=self.device
-            )
+            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device)
             mean = th.zeros(inputs.shape[0], device=self.device)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            output = (
-                normal_dist.sample()
-                + noise_value.flatten() * th.randn_like(mean)
-            )
+            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(mean)
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
 
@@ -114,9 +107,7 @@ class GPFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(
-                loc=0, scale=1.0, size=(inputs.shape[0], 1)
-            )
+            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
         outputs = self.sample_gp(inputs)
         return outputs
@@ -143,9 +134,7 @@ class NeuralNetFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
@@ -178,36 +167,36 @@ class SimpleGPFunctions:
     ):
         self.num_parents = num_parents if num_parents > 0 else 1
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+        self.dtype = th.float64
 
         lengthscale_values = np.random.lognormal(-1, 1, size=(self.num_parents))
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
         # Define the kernel
         self.kernel = RBFKernel(
-            lengthscale=th.from_numpy(lengthscale_values).to(self.device),
+            lengthscale=th.from_numpy(lengthscale_values)
+            .to(self.device)
+            .to(th.float32),
         )
 
     def sample_gp(self, inputs: np.ndarray) -> np.ndarray:
         """
-        Sample from an GPLVM.
+        Sample from a GP.
         """
         with th.no_grad():
-            inputs = th.from_numpy(inputs).to(self.device).to(th.float64)
+            inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
             covariance = self.kernel(inputs, inputs)
-
             noise_value = (
                 self.noise_dist.sample((inputs.shape[0],))
                 .to(self.device)
-                .to(th.float64)
+                .to(self.dtype)
             )
             covariance = covariance + 1e-4 * th.eye(
-                inputs.shape[0], device=self.device, dtype=th.float64
+                inputs.shape[0], device=self.device, dtype=self.dtype
             )
-            mean = th.zeros(
-                inputs.shape[0], device=self.device, dtype=th.float64
-            )
+            mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            noise_sample = normal_dist.sample().to(th.float64)
+            noise_sample = normal_dist.sample().to(self.dtype)
             output = noise_sample + noise_value.flatten() * th.randn_like(mean)
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
@@ -219,11 +208,74 @@ class SimpleGPFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(
-                loc=0, scale=1.0, size=(inputs.shape[0], 1)
-            )
+            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
         outputs = self.sample_gp(inputs)
+        return outputs
+
+
+class SimpleGPLVMFunctions:
+    """
+    Helper class to sample from GPLVM.
+
+    If no parents are given, we sample from a normal distribution.
+    If parents are given, we sample from a GP with a sum of exponential
+    gamma kernels.
+    """
+
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents if num_parents > 0 else 1
+        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+        self.dtype = th.float64
+
+        lengthscale_values = np.random.lognormal(-1, 1, size=(self.num_parents + 1))
+        lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
+        self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
+        # Define the kernel
+        self.kernel = RBFKernel(
+            lengthscale=th.from_numpy(lengthscale_values)
+            .to(self.device)
+            .to(self.dtype),
+        )
+
+    def sample_gplvm(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Sample from a GPLVM.
+        """
+        with th.no_grad():
+            inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
+            covariance = self.kernel(inputs, inputs)
+            noise_value = (
+                self.noise_dist.sample((inputs.shape[0],))
+                .to(self.device)
+                .to(self.dtype)
+            )
+            covariance = covariance + 1e-4 * th.eye(
+                inputs.shape[0], device=self.device, dtype=self.dtype
+            )
+            mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
+            normal_dist = th.distributions.MultivariateNormal(mean, covariance)
+            noise_sample = normal_dist.sample().to(self.dtype)
+            output = noise_sample + noise_value.flatten() * th.randn_like(mean)
+            final_output = output.detach().cpu().numpy().astype(np.float32)
+            return final_output[:, None]
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Samples from GP given kernel and mean.
+        """
+        input_num = inputs.shape[-1]
+        if input_num == 0:
+            # If there is no parent, we sample from a normal distribution.
+            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+        else:
+            latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            inputs = np.concatenate([inputs, latent], axis=-1)
+
+        outputs = self.sample_gplvm(inputs)
         return outputs
 
 
@@ -238,9 +290,7 @@ class DataGenerator(ABC):
     ):
         self.number_of_variables = num_variables
 
-    def _get_inputs(
-        self, parents_of_i: np.ndarray, data: np.ndarray
-    ) -> np.ndarray:
+    def _get_inputs(self, parents_of_i: np.ndarray, data: np.ndarray) -> np.ndarray:
         """
         Get the inputs for the variable i.
         """
@@ -469,6 +519,43 @@ class SimpleGPFunctionGenerator(DataGenerator):
             num_parents = int(np.sum(parents_of_i))
 
             function = SimpleGPFunctions(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class SimpleGPLVMFunctionGenerator(DataGenerator):
+    """
+    Will generate data using GPLVM model priors
+    respecting a given causal graph. These functions will have a simple
+    kernel.
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function = SimpleGPLVMFunctions(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict

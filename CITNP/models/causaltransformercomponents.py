@@ -9,24 +9,140 @@ from torch.nn import functional as F
 
 
 def build_mlp(dim_in, dim_hid, dim_out, depth):
-    if dim_in == dim_hid:
-        modules = [
-            nn.Sequential(
-                nn.Linear(dim_in, dim_hid, bias=True),
-                nn.ReLU(),
-            )
-        ]
-    else:
-        modules = [nn.Linear(dim_in, dim_hid, bias=True), nn.ReLU()]
-    for _ in range(int(depth) - 2):
-        modules.append(
-            nn.Sequential(
-                nn.Linear(dim_hid, dim_hid, bias=True),
-                nn.ReLU(),
-            )
+    assert depth >= 2, "MLP depth must be at least 2."
+    layers = [nn.Linear(dim_in, dim_hid), nn.GELU()]
+    for _ in range(depth - 2):
+        layers += [nn.Linear(dim_hid, dim_hid), nn.GELU()]
+    layers.append(nn.Linear(dim_hid, dim_out))
+    return nn.Sequential(*layers)
+
+
+class FlashMHCA(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        batch_first: bool = True,
+        bias: bool = False,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+        assert batch_first, "FlashMHCA only supports batch_first=True for now"
+        assert d_model % nhead == 0, "d_model must be divisible by nhead"
+
+        self.d_model = d_model
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+
+        self.layernormQ = nn.LayerNorm(d_model, **factory_kwargs)
+        self.layernormK = nn.LayerNorm(d_model, **factory_kwargs)
+        self.layernormV = nn.LayerNorm(d_model, **factory_kwargs)
+
+        self.q_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+        self.k_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+        self.v_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+
+        self.out_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
+
+    def forward(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+        -----
+        - query, key, value: shape [batch_size, seq_len, d_model]
+
+        Returns:
+        --------
+        - output: shape [batch_size, seq_len, d_model]
+        """
+        B, T, _ = query.shape  # batch size, sequence length, embedding
+
+        query = self.layernormQ(query)
+        key = self.layernormK(key)
+        value = self.layernormV(value)
+
+        q = (
+            self.q_proj(query).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+        )  # [B, H, T, D]
+        k = self.k_proj(key).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+        v = self.v_proj(value).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+
+        attn_output = F.scaled_dot_product_attention(
+            q, k, v, is_causal=False
+        )  # [B, H, T, D]
+
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, self.d_model)
+        return self.out_proj(attn_output)
+
+
+class MHCA(nn.Module):
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        batch_first: bool = True,
+        bias: bool = False,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+        self.layernormQ = nn.LayerNorm(d_model)
+        self.layernormK = nn.LayerNorm(d_model)
+        self.layernormV = nn.LayerNorm(d_model)
+
+        self.z_rep_merger = nn.MultiheadAttention(
+            d_model,
+            nhead,
+            batch_first=batch_first,
+            bias=bias,
+            device=device,
+            dtype=dtype,
         )
-    modules.append(nn.Linear(dim_hid, dim_out, bias=True))
-    return nn.Sequential(*modules)
+
+    def forward(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+        -----
+        - query: torch.Tensor, shape [batch_size, num_samples, d_model]
+        - key: torch.Tensor, shape [batch_size, num_samples, d_model]
+        - value: torch.Tensor, shape [batch_size, num_samples, d_model]
+
+        Returns:
+        --------
+        - torch.Tensor, shape [batch_size, num_samples, d_model]
+        """
+        # shape batch_size, num_samples, d_model]
+        query = self.layernormQ(query)
+        key = self.layernormK(key)
+        value = self.layernormV(value)
+        # shape [batch_size, num_samples, d_model]
+        output, _ = self.z_rep_merger(query, key, value)
+        return output
+
+
+def _reshape_for_sample_attention(src, B, S, N, D):
+    return src.permute(0, 2, 1, 3).reshape(B * N, S, D)
+
+
+def _reshape_back_sample_attention(src, B, S, N, D):
+    return src.reshape(B, N, S, D).permute(0, 2, 1, 3)
+
+
+def _reshape_for_node_attention(src, B, S, N, D):
+    return src.reshape(B * S, N, D)
+
+
+def _reshape_back_node_attention(src, B, S, N, D):
+    return src.reshape(B, S, N, D)
 
 
 class CausalInfTransformerEncoder(nn.Module):
@@ -62,11 +178,9 @@ class CausalInfTransformerEncoder(nn.Module):
         for idx_layer, mod in enumerate(self.layers):
             # Attention across samples
             if idx_layer % 2 == 0:
-                # shape [batch_size, num_nodes, num_samples, d_model]
-                src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_nodes, num_samples, d_model]
-                src = src.contiguous().view(
-                    batch_size * num_nodes, num_samples, d_model
+                src = _reshape_for_sample_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
                 )
                 src = mod(
                     src,
@@ -74,23 +188,21 @@ class CausalInfTransformerEncoder(nn.Module):
                     src_key_padding_mask=None,
                     is_causal=is_causal,
                 )
-                # Reshape the tensor back to [batch_size, num_nodes, num_samples, d_model]
-                src = src.view(batch_size, num_nodes, num_samples, d_model)
+                # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
+                src = _reshape_back_sample_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
+                )
             # Attention across nodes
             else:
-                # shape [batch_size, num_samples, num_nodes, d_model]
-                src = src.permute(0, 2, 1, 3)
                 # shape [batch_size * num_samples, num_nodes, d_model]
-                src = src.contiguous().view(
-                    batch_size * num_samples, num_nodes, d_model
+                src = _reshape_for_node_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
                 )
                 # Extra zeros for the query
                 node_src_key_padding_mask = variable_mask
                 if node_src_key_padding_mask is not None:
-                    node_src_key_padding_mask = (
-                        node_src_key_padding_mask.contiguous().view(
-                            batch_size * num_samples, num_nodes
-                        )
+                    node_src_key_padding_mask = node_src_key_padding_mask.reshape(
+                        batch_size * num_samples, num_nodes
                     )
                 src = mod(
                     src,
@@ -103,8 +215,8 @@ class CausalInfTransformerEncoder(nn.Module):
                     bool_pad = node_src_key_padding_mask == -float("inf")
                     src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = src.contiguous().view(
-                    batch_size, num_samples, num_nodes, d_model
+                src = _reshape_back_node_attention(
+                    src, batch_size, num_samples, num_nodes, d_model
                 )
         return src
 
@@ -172,10 +284,7 @@ class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
             x = x + self._ff_block(self.norm3(x))
         else:
             x = self.norm1(
-                x
-                + self._sa_block(
-                    x, tgt_mask, tgt_key_padding_mask, tgt_is_causal
-                )
+                x + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)
             )
             x = self.norm3(x + self._ff_block(x))
         return x
@@ -254,7 +363,8 @@ class CausalInfEncoder(nn.Module):
         self.target_intervention = mlp()
         self.target_outcome = mlp()
 
-        module = nn.TransformerEncoderLayer(
+        module = partial(
+            nn.TransformerEncoderLayer,
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
@@ -264,19 +374,11 @@ class CausalInfEncoder(nn.Module):
             norm_first=True,
             device=device,
             dtype=dtype,
+            activation=F.gelu,
         )
-        encoderlayers = nn.ModuleList(
-            [copy.deepcopy(module) for i in range(num_layers)]
-        )
+        encoderlayers = nn.ModuleList([module() for i in range(num_layers)])
         self.encoder = CausalInfTransformerEncoder(
             encoder_layers=encoderlayers,
-        )
-        self.representation = nn.MultiheadAttention(
-            d_model,
-            nhead,
-            batch_first=True,
-            device=device,
-            dtype=dtype,
         )
 
     def embed(self, data, outcome_indices, intervention_indices, context=True):
@@ -326,22 +428,30 @@ class CausalInfEncoder(nn.Module):
         # embedding = var_emb
         return embedding
 
-    def create_input(self, context_data, target_data):
+    def create_input(self, context_data, target_data, target_train_data):
         """
         Creates the full input by concatenating the context and target data.
         """
-        full_data = torch.cat([context_data, target_data], dim=1)
+        if self.training and target_train_data is not None:
+            full_data = torch.cat([context_data, target_train_data, target_data], dim=1)
+        else:
+            full_data = torch.cat([context_data, target_data], dim=1)
         return full_data
 
-    def create_sample_mask(self, context_data, target_data):
+    def create_sample_mask(self, context_data, target_data, target_train_data):
         """
         Create mask to ensure that
         - Context samples can attend to itself
-        - Target samples only attent to the context samples
+        - Target train data can only attend to context samples
+        - Target samples only attend to the context samples
         """
         num_context = context_data.size(1)
-        num_target = target_data.size(1)
-        mask_size = num_context + num_target
+        num_target = target_data.size(1) - 1
+        # If training then target_train_data is not None
+        if target_train_data is not None:
+            mask_size = num_context + num_target + (num_target + 1)
+        else:
+            mask_size = num_context + (num_target + 1)
         sample_mask = torch.zeros(
             mask_size,
             mask_size,
@@ -360,20 +470,24 @@ class CausalInfEncoder(nn.Module):
         target_data: Tensor,
         outcome_indices: Tensor,
         intervention_indices: Tensor,
+        target_train_data: Optional[Tensor] = None,
         variable_mask: Optional[Tensor] = None,
     ):
         """
         Args:
         -----
         - context_data (torch.Tensor): The context data with shape
-        [batch_size, num_context, num_nodes, 1].
+            [batch_size, num_context, num_nodes, 1].
         - target_data (torch.Tensor): The target data with shape
-        [batch_size, num_target, num_nodes, 1]. This should be all zeros
-        except for node that is meant to be the interventional variable.
+            [batch_size, num_target, num_nodes, 1]. This should be all zeros
+            except for node that is meant to be the interventional variable.
+        - target_train_data (torch.Tensor): The target data with shape
+            [batch_size, num_target, num_nodes, 1]. This should be the same
+            as target_data but with the true values of the outcome variable.
         - outcome_indices (torch.Tensor, optional): The indices of the outcome
-        with shape [batch_size]. Defaults to None.
+            with shape [batch_size]. Defaults to None.
         - variable_mask (torch.Tensor, optional): The mask that allows for
-        different number of variables. Defaults to None.
+            different number of variables. Defaults to None.
         """
         context_embed = self.embed(
             data=context_data,
@@ -387,10 +501,19 @@ class CausalInfEncoder(nn.Module):
             intervention_indices=intervention_indices,
             context=False,
         )
-        # shape [batch_size, num_context + num_target, num_nodes, d_model]
-        full_data = self.create_input(context_embed, target_embed)
+        if self.training and target_train_data is not None:
+            target_train_embed = self.embed(
+                data=target_train_data,
+                outcome_indices=outcome_indices,
+                intervention_indices=intervention_indices,
+                context=False,
+            )
+        else:
+            target_train_embed = None
+        # shape [batch_size, num_context + num_target + 1, num_nodes, d_model]
+        full_data = self.create_input(context_embed, target_embed, target_train_embed)
         sample_mask, num_target = self.create_sample_mask(
-            context_data, target_data
+            context_data, target_data, target_train_data
         )
         # shape [batch_size, num_samples, num_nodes, d_model]
         # Encode the data
@@ -401,5 +524,4 @@ class CausalInfEncoder(nn.Module):
 
         # Compute the summary representation
         # shape [batch_size, num_target, num_nodes, d_model]
-        summary_rep = representation[:, -num_target:, :, :]
-        return summary_rep
+        return representation, num_target
