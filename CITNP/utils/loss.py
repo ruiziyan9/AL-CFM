@@ -21,7 +21,8 @@ class BaseLoss(ABC):
 
 class NLLLoss(BaseLoss):
 
-    def __init__(self):
+    def __init__(self, mean_loss_across_samples: bool):
+        self.mean_loss_across_samples = mean_loss_across_samples
         pass
 
     def calculate_loss(
@@ -46,14 +47,18 @@ class NLLLoss(BaseLoss):
             )
         )
         neglikelihood_z_meaned = torch.logsumexp(neglikelihood, dim=0) - logL
-        neglikelihood_allsample_mean = neglikelihood_z_meaned.sum(1)
-        neglikelihood_fullmeaned = neglikelihood_allsample_mean.mean(0).mean()
+        if self.mean_loss_across_samples:
+            neglikelihood_allsample = neglikelihood_z_meaned.mean(1).sum(-1)
+        else:
+            neglikelihood_allsample = neglikelihood_z_meaned.sum(1).sum(-1)
+        neglikelihood_fullmeaned = neglikelihood_allsample.mean(0).mean()
         return neglikelihood_fullmeaned
 
 
 class VILoss(BaseLoss):
 
-    def __init__(self):
+    def __init__(self, mean_loss_across_samples: bool):
+        self.mean_loss_across_samples = mean_loss_across_samples
         pass
 
     def calculate_loss(
@@ -69,11 +74,18 @@ class VILoss(BaseLoss):
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
         neglikelihood = -distribution.log_prob(target)
         neglikelihood_z_meaned = neglikelihood.mean(0)
-        neglikelihood_allsamples = neglikelihood_z_meaned.sum(1).sum(-1)
+        if self.mean_loss_across_samples:
+            neglikelihood_allsamples = neglikelihood_z_meaned.mean(1).sum(-1)
+        else:
+            neglikelihood_allsamples = neglikelihood_z_meaned.sum(1).sum(-1)
 
         # KL term
         q_z = torch.distributions.Normal(z_mean, z_std)
         p_z = torch.distributions.Normal(0, 1)
         kl = torch.distributions.kl_divergence(q_z, p_z)
-        kl_allsamples = kl.sum(2).sum(1)
+        kl_dim = kl.sum(2)
+        if self.mean_loss_across_samples:
+            kl_allsamples = kl_dim.mean(1)
+        else:
+            kl_allsamples = kl_dim.sum(1)
         return neglikelihood_allsamples.mean(), kl_allsamples.mean()

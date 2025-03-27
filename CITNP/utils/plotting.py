@@ -1,11 +1,14 @@
-from io import BytesIO
 from typing import List
+
+import matplotlib
+
+matplotlib.use("Agg")  # Non-interactive backend
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch as th
 import wandb
-from PIL import Image
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 from CITNP.utils.utils import send_to_device
 
@@ -83,11 +86,14 @@ def plot_context_target_predictions(
 
 
 def fig_to_wandb_image(fig):
-    buf = BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    buf.seek(0)
-    image = Image.open(buf)  # Convert to PIL Image
-    return wandb.Image(image)
+    # Attach a canvas to the figure if it doesn't have one
+    canvas = FigureCanvas(fig)
+    canvas.draw()
+    width, height = canvas.get_width_height()
+    image_np = np.frombuffer(canvas.buffer_rgba(), dtype="uint8").reshape(
+        (height, width, 4)
+    )[:, :, :3]
+    return wandb.Image(image_np)
 
 
 def take_single_dataset(list_tensors: List[th.Tensor], idx: int):
@@ -101,6 +107,7 @@ def take_single_dataset(list_tensors: List[th.Tensor], idx: int):
 
 
 def plot_predictions_to_wandb(
+    metric_dict: dict,
     model: th.nn.Module,
     loader: th.utils.data.DataLoader,
     num_plots: int = 10,
@@ -109,7 +116,7 @@ def plot_predictions_to_wandb(
     model.eval()
     model.to(device)
     plots_logged = 0
-
+    wandb_images = []
     with th.no_grad():
         for batch in loader:
             if plots_logged >= num_plots:
@@ -151,6 +158,9 @@ def plot_predictions_to_wandb(
                     return_fig=True,
                 )
 
-                wandb.log({f"prediction/plot_{plots_logged}": fig_to_wandb_image(fig)})
+                wandb_images.append(fig_to_wandb_image(fig))
+
                 plt.close(fig)
                 plots_logged += 1
+    metric_dict["prediction/plots"] = wandb_images
+    return metric_dict

@@ -177,6 +177,7 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         self.num_z_samples = config.num_z_samples_train
         self.num_z_samples_eval = config.num_z_samples_eval
         self.use_vi = config.use_vi
+        self.mean_loss_across_samples = config.mean_loss_across_samples
 
         self.decoder_depth = config.decoder_depth
 
@@ -225,8 +226,12 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         )
         self.eval_z_sampler = EvalZSampler(self.d_model, self.num_z_samples_eval)
 
-        self.loss = NLLLoss() if not self.use_vi else VILoss()
-        self.eval_loss = NLLLoss()
+        self.loss = (
+            NLLLoss(mean_loss_across_samples=self.mean_loss_across_samples)
+            if not self.use_vi
+            else VILoss(mean_loss_across_samples=self.mean_loss_across_samples)
+        )
+        self.eval_loss = NLLLoss(mean_loss_across_samples=self.mean_loss_across_samples)
 
     def extract_training_target(self, target_data, intervention_index, outcome_index):
         if self.training:

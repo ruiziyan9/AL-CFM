@@ -57,6 +57,26 @@ def parse_args():
         help="Number of layers in the encoder.",
     )
     parser.add_argument(
+        "--mean_loss_across_samples",
+        action="store_true",
+        default=False,
+        help="Whether to average the loss across samples.",
+    )
+    # Local VI args
+    parser.add_argument(
+        "--num_z_samples_train",
+        type=int,
+        default=16,
+        help="Number of z samples for training.",
+    )
+    parser.add_argument(
+        "--num_z_samples_eval",
+        type=int,
+        default=16,
+        help="Number of z samples for evaluation.",
+    )
+
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",

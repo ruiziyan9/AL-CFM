@@ -29,6 +29,7 @@ class LocalLatentConfig:
     decoder_depth: int
     num_z_samples_train: int
     num_z_samples_eval: int
+    mean_loss_across_samples: bool
     use_vi: bool = True
     device: Optional[str] = None
     dtype: Optional[torch.dtype] = None

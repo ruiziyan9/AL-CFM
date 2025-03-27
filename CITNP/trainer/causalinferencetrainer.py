@@ -258,7 +258,8 @@ class CausalInferenceTrainer:
                 all_loss += th.sum(loss).cpu().item()
 
         if self.use_wandb:
-            plot_predictions_to_wandb(
+            metric_dict = plot_predictions_to_wandb(
+                metric_dict=metric_dict,
                 model=self.model,
                 loader=val_loader,
                 num_plots=10,
