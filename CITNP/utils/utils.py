@@ -9,6 +9,17 @@ import numpy as np
 import torch
 
 
+def send_to_device(data, device):
+    if isinstance(data, torch.Tensor):
+        return data.to(device)
+    elif isinstance(data, list):
+        return [send_to_device(d, device) for d in data]
+    elif isinstance(data, dict):
+        return {k: send_to_device(v, device) for k, v in data.items()}
+    else:
+        return data
+
+
 def set_seed(seed: int):
     """
     Set the seed for generating random numbers to ensure reproducibility.

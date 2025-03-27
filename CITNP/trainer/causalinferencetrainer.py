@@ -12,17 +12,8 @@ import wandb
 from tqdm import tqdm
 
 from CITNP.utils.datautils import transformer_inference_split_withpadding
-
-
-def send_to_device(data, device):
-    if isinstance(data, th.Tensor):
-        return data.to(device)
-    elif isinstance(data, list):
-        return [send_to_device(d, device) for d in data]
-    elif isinstance(data, dict):
-        return {k: send_to_device(v, device) for k, v in data.items()}
-    else:
-        return data
+from CITNP.utils.plotting import plot_predictions_to_wandb
+from CITNP.utils.utils import send_to_device
 
 
 class CausalInferenceTrainer:
@@ -136,7 +127,7 @@ class CausalInferenceTrainer:
         self.val_loader = th.utils.data.DataLoader(
             self.validation_dataset,
             batch_size=self.batch_size,
-            shuffle=shuffle,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=persistent_workers,
@@ -145,7 +136,7 @@ class CausalInferenceTrainer:
         self.test_loader = th.utils.data.DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
-            shuffle=shuffle,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=persistent_workers,
@@ -265,6 +256,14 @@ class CausalInferenceTrainer:
                 )
 
                 all_loss += th.sum(loss).cpu().item()
+
+        if self.use_wandb:
+            plot_predictions_to_wandb(
+                model=self.model,
+                loader=val_loader,
+                num_plots=10,
+                device="cuda",
+            )
 
         # Log the validation loss
         loss = all_loss / len(val_loader.dataset)

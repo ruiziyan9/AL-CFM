@@ -4,17 +4,22 @@ import torch
 import torch.nn as nn
 
 
+def get_last_linear_layer(model):
+    layers = [module for module in model.modules() if isinstance(module, nn.Linear)]
+    return layers[-1] if layers else None
+
+
 def init_mean_mlp(m):
     if isinstance(m, nn.Linear):
         # Small weights: mean 0, std ~ 0.1
-        nn.init.normal_(m.weight, mean=0.0, std=1e-5)
+        nn.init.normal_(m.weight, mean=0.0, std=0.001)
         nn.init.constant_(m.bias, torch.tensor(0.0))
 
 
 def init_std_mlp(m):
     if isinstance(m, nn.Linear):
         # Small weights: mean 0, std ~ 0.1
-        nn.init.normal_(m.weight, mean=0.0, std=1e-5)
+        nn.init.normal_(m.weight, mean=0.0, std=0.001)
         final_bias = torch.log(torch.exp(torch.tensor(1)) - 1)
         nn.init.constant_(m.bias, final_bias)
 
@@ -33,8 +38,8 @@ class TrainZSampler(LatentSampler):
         self.std_mlp = std_mlp
         self.d_model = d_model
         self.num_samples = num_samples
-        init_mean_mlp(self.mean_mlp[-1])
-        init_std_mlp(self.std_mlp[-1])
+        init_mean_mlp(get_last_linear_layer(self.mean_mlp))
+        init_std_mlp(get_last_linear_layer(self.std_mlp))
 
     def sample(self, outcome_yx: torch.Tensor, **kwargs):
         mean = self.mean_mlp(outcome_yx)
