@@ -246,6 +246,11 @@ class SimpleGPLVMFunctions:
         Sample from a GPLVM.
         """
         with th.no_grad():
+            if inputs.shape[-1] > 1:
+                mean = th.from_numpy(inputs[:, -1]).to(self.device).to(self.dtype)
+            else:
+                mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
+
             inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
             covariance = self.kernel(inputs, inputs)
             noise_value = (
@@ -256,7 +261,6 @@ class SimpleGPLVMFunctions:
             covariance = covariance + 1e-4 * th.eye(
                 inputs.shape[0], device=self.device, dtype=self.dtype
             )
-            mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
             noise_sample = normal_dist.sample().to(self.dtype)
             output = noise_sample + noise_value.flatten() * th.randn_like(mean)
@@ -270,9 +274,11 @@ class SimpleGPLVMFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            inputs = np.random.uniform(-1, 1, size=(inputs.shape[0], 1))
+            # inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
         else:
-            latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            latent = np.random.uniform(-1, 1, size=(inputs.shape[0], 1))
+            # latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
             inputs = np.concatenate([inputs, latent], axis=-1)
 
         outputs = self.sample_gplvm(inputs)
@@ -354,7 +360,7 @@ class DataGenerator(ABC):
                 intvn_parents_of_i = parents_of_i
                 intvn_inputs = self._get_inputs(intvn_parents_of_i, intvn_data)
                 obs_inputs = normalise_variable(obs_inputs, axis=0)
-                intvn_inputs = normalise_variable(intvn_inputs)
+                intvn_inputs = normalise_variable(intvn_inputs, axis=0)
                 full_inputs = np.concatenate([obs_inputs, intvn_inputs], axis=0)
                 # Pass the inputs to the function
                 full_inputs = normalise_variable(full_inputs, axis=0)

@@ -50,7 +50,7 @@ def generate_save_data(
         gt = generator_args["graph_type"]
         nv = generator_args["num_variables"]
         ss = generator_args["sample_size"]
-        save_name = f"onlycond_{fn}_{gt}_{nv}_{ss}"
+        save_name = f"{fn}_{gt}_{nv}_{ss}"
         save_folder = save_dir / save_name / folder
         save_folder.mkdir(exist_ok=True, parents=True)
 
