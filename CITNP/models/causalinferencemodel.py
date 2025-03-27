@@ -8,20 +8,14 @@ import torch
 import torch.nn as nn
 
 from CITNP.models.causaltransformercomponents import (
-    MHCA,
-    CausalInfEncoder,
-    CausalTransformerDecoderLayer,
-    FlashMHCA,
-    build_mlp,
-)
+    MHCA, CausalInfEncoder, CausalTransformerDecoderLayer, FlashMHCA,
+    build_mlp)
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.loss import NLLLoss, VILoss
 from CITNP.utils.sampler import EvalZSampler, TrainZSampler
-from CITNP.utils.utils import (
-    append_treatment_outcome_index_to_data,
-    gather_by_node,
-    set_all_except_batchindex_to_zero,
-)
+from CITNP.utils.utils import (append_treatment_outcome_index_to_data,
+                               gather_by_node,
+                               set_all_except_batchindex_to_zero)
 
 
 class CausalInferenceModel(torch.nn.Module):
@@ -44,6 +38,7 @@ class CausalInferenceModel(torch.nn.Module):
         self.dropout = config.dropout
         self.num_layers_encoder = config.num_layers_encoder
         self.num_nodes = config.num_nodes
+        self.mean_loss_across_samples = config.mean_loss_across_samples
         self.device = config.device
         self.dtype = config.dtype
 
@@ -78,7 +73,11 @@ class CausalInferenceModel(torch.nn.Module):
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
         loss = -distribution.log_prob(target)  # + 1e-30)
         # Sum over the samples and mean over the batch
-        return loss.sum(1).mean()
+        if self.mean_loss_across_samples:
+            loss_all_samples = loss.mean(1)
+        else:
+            loss_all_samples = loss.sum(1)
+        return loss_all_samples.mean()
 
     def encode_inputs(
         self, context_data, target_data, intervention_index, outcome_index

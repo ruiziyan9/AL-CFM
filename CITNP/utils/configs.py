@@ -13,6 +13,7 @@ class CausalInfModelConfig:
     dropout: float
     num_layers_encoder: int
     num_nodes: int
+    mean_loss_across_samples: bool
     device: Optional[str] = None
     dtype: Optional[torch.dtype] = None
 
