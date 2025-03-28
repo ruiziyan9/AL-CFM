@@ -269,8 +269,6 @@ class InterventionDatasetGenerator(IterableDataset):
                 dag,
                 permutation_indices=permutation_indices,
             )[0]
-            # Swap intervention indices
-            intvn_index = (intvn_index + 1) % 2
             # find the index of the intervened variable post permutation
             intvn_index = np.where(permutation_indices == intvn_index)[0][0]
 
