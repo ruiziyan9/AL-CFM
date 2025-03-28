@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument(
         "--data_file",
         type=str,
-        default="onlycond_simplegplvm_['ER']_2_1000",
+        default="anticausal_simplegplvm_['ER']_2_1000",
         help="Name of the data file to use.",
     )
 

@@ -8,14 +8,20 @@ import torch
 import torch.nn as nn
 
 from CITNP.models.causaltransformercomponents import (
-    MHCA, CausalInfEncoder, CausalTransformerDecoderLayer, FlashMHCA,
-    build_mlp)
+    MHCA,
+    CausalInfEncoder,
+    CausalTransformerDecoderLayer,
+    FlashMHCA,
+    build_mlp,
+)
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.loss import NLLLoss, VILoss
 from CITNP.utils.sampler import EvalZSampler, TrainZSampler
-from CITNP.utils.utils import (append_treatment_outcome_index_to_data,
-                               gather_by_node,
-                               set_all_except_batchindex_to_zero)
+from CITNP.utils.utils import (
+    append_treatment_outcome_index_to_data,
+    gather_by_node,
+    set_all_except_batchindex_to_zero,
+)
 
 
 class CausalInferenceModel(torch.nn.Module):
@@ -168,6 +174,7 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             nhead=config.nhead,
             dropout=config.dropout,
             num_layers_encoder=config.num_layers_encoder,
+            mean_loss_across_samples=config.mean_loss_across_samples,
             num_nodes=config.num_nodes,
             device=config.device,
             dtype=config.dtype,
