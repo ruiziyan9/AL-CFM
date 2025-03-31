@@ -122,7 +122,7 @@ class CausalInferenceTrainer:
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=persistent_workers,
-            collate_fn=collator(),
+            collate_fn=collator(is_training=True),
         )
         self.val_loader = th.utils.data.DataLoader(
             self.validation_dataset,

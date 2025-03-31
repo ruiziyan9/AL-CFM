@@ -59,20 +59,20 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
-        # "num_z_samples_train": 16,
-        # "num_z_samples_eval": 16,
-        # "decoder_depth": args.decoder_depth,
+        "num_z_samples_train": 16,
+        "num_z_samples_eval": 16,
+        "decoder_depth": args.decoder_depth,
         "mean_loss_across_samples": args.mean_loss_across_samples,
         "device": args.device,
         "dtype": args.dtype,
     }
 
-    # locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
-    # model = LocalLatentCausalInferenceModel(locallatentconfig)
+    locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
+    model = LocalLatentCausalInferenceModel(locallatentconfig)
 
-    config = CausalInfModelConfig(**MODEL_ARGS)
-    model = CausalInferenceModel(config)
-
+    # config = CausalInfModelConfig(**MODEL_ARGS)
+    # model = CausalInferenceModel(config)
+    #
     if args.results_path is None:
         results_path = Path.cwd()
     else:
