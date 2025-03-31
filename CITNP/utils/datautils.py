@@ -33,6 +33,7 @@ def sample_context_and_target(
     sample_size: int,
     max_context: int,
     min_context: int,
+    is_training: bool = False,
 ):
     """
     Sample context and target from dataset
@@ -40,8 +41,13 @@ def sample_context_and_target(
     context_size = sample_context_size(min_context, max_context)
     target_size = sample_size - context_size
 
-    context_idx = np.random.choice(sample_size, context_size, replace=False)
-    target_idx = np.random.choice(sample_size, target_size, replace=False)
+    if is_training:
+        context_idx = np.random.choice(sample_size, context_size, replace=False)
+        target_idx = np.random.choice(sample_size, target_size, replace=False)
+    else:
+        # Deterministic sampling
+        context_idx = np.arange(context_size)
+        target_idx = np.arange(target_size)
 
     context = np.take(obs_data_array, context_idx, axis=1)
     target = np.take(intvn_data_array, target_idx, axis=1)
@@ -70,9 +76,14 @@ def sample_outcome_index(
 def transformer_inference_split_withpadding(
     cntxt_split: List[float],
     sample_size: int,
+    is_training: bool = False,
 ):
-    min_context = int(sample_size * cntxt_split[0])
-    max_context = int(sample_size * cntxt_split[1])
+    if is_training:
+        min_context = int(sample_size * cntxt_split[0])
+        max_context = int(sample_size * cntxt_split[1])
+    else:
+        min_context = int(sample_size / 2)
+        max_context = int(sample_size / 2)
 
     def mycollate(batch):
         # There are two modes
@@ -101,6 +112,7 @@ def transformer_inference_split_withpadding(
             sample_size,
             max_context,
             min_context,
+            is_training=is_training,
         )
 
         # Randomly sample an outcome index

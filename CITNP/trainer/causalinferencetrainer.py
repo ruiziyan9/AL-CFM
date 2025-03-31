@@ -131,7 +131,7 @@ class CausalInferenceTrainer:
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=persistent_workers,
-            collate_fn=collator(),
+            collate_fn=collator(is_training=False),
         )
         self.test_loader = th.utils.data.DataLoader(
             self.test_dataset,
@@ -140,7 +140,7 @@ class CausalInferenceTrainer:
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=persistent_workers,
-            collate_fn=collator(),
+            collate_fn=collator(is_training=False),
         )
 
     def apply_learning_rate_warmup(self, epoch, step, lr_warmup_steps):
