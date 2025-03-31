@@ -18,6 +18,34 @@ from CITNP.utils.gplvm_utils import RBFKernel, SumExpGammaKernels
 from CITNP.utils.processing import normalise_variable
 
 
+class UniformLinear:
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents
+        self.scale = np.random.gamma(1, 1, size=(1))
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Generate a uniform noise function.
+        """
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                # If there is no parent, we sample from a normal distribution.
+                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                return outputs
+            else:
+                weight = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[1], 1))
+                weight = np.clip(weight, -1, 1)
+                feature = np.dot(inputs, weight)
+                outputs = feature + np.random.uniform(
+                    low=-self.scale, high=self.scale, size=(inputs.shape[0], 1)
+                )
+                return outputs
+
+
 class SinFunction:
     def __init__(
         self,
@@ -562,6 +590,40 @@ class SimpleGPLVMFunctionGenerator(DataGenerator):
             num_parents = int(np.sum(parents_of_i))
 
             function = SimpleGPLVMFunctions(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class UniformLinearFunctionGenerator(DataGenerator):
+    """
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function = UniformLinear(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict

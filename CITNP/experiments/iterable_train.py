@@ -9,8 +9,12 @@ import torch
 import wandb
 
 from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
-from CITNP.models.causalinferencemodel import LocalLatentCausalInferenceModel
+from CITNP.models.causalinferencemodel import (
+    CausalInferenceModel,
+    LocalLatentCausalInferenceModel,
+)
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
+from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.default_args import overwrite_debug_args, parse_args
 from CITNP.utils.utils import _generate_experiment_name, set_seed
 
@@ -55,13 +59,16 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
-        "num_z_samples": 4,
+        "num_z_samples_train": 16,
+        "num_z_samples_eval": 16,
         "decoder_depth": args.decoder_depth,
+        "mean_loss_across_samples": args.mean_loss_across_samples,
         "device": args.device,
         "dtype": args.dtype,
     }
 
-    model = LocalLatentCausalInferenceModel(**MODEL_ARGS)
+    locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
+    model = LocalLatentCausalInferenceModel(locallatentconfig)
     if args.results_path is None:
         results_path = Path.cwd()
     else:

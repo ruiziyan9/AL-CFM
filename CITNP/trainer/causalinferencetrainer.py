@@ -350,8 +350,9 @@ class CausalInferenceTrainer:
                 if i % self.log_step == 0 and i > 0:
                     metric_dict = self.validate_single_epoch(val_loader, metric_dict)
                     metric_dict = self.test_single_epoch(test_loader, metric_dict)
-                    for callback in self.callback:
-                        metric_dict = callback(metric_dict)
+                    if self.callback is not None:
+                        for callback in self.callback:
+                            metric_dict = callback(metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
             if (i + 1) % self.save_checkpoint_every == 0:

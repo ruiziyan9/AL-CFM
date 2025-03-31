@@ -15,6 +15,7 @@ from CITNP.datasets.functions_generator import (
     SimpleGPFunctionGenerator,
     SimpleGPLVMFunctionGenerator,
     SinusoidFunctionGenerator,
+    UniformLinearFunctionGenerator,
 )
 
 
@@ -84,6 +85,8 @@ class InterventionDatasetGenerator(IterableDataset):
             self.data_generator = partial(SimpleGPFunctionGenerator)  # type: ignore[arg-type]
         elif self.function_generator == "simplegplvm":
             self.data_generator = partial(SimpleGPLVMFunctionGenerator)
+        elif self.function_generator == "uniformlinear":
+            self.data_generator = partial(UniformLinearFunctionGenerator)
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """

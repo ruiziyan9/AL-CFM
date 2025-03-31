@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "--function_generator",
         type=str,
-        default="simplegplvm",
+        default="uniformlinear",
         help="Type of function to generate.",
     )
     parser.add_argument(
