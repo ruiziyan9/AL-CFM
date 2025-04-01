@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 
 from CITNP.models.causaltransformercomponents import (
-    MHCA,
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
     FlashMHCA,
@@ -85,23 +84,6 @@ class CausalInferenceModel(torch.nn.Module):
             loss_all_samples = loss.sum(1)
         return loss_all_samples.mean()
 
-    def encode_inputs(
-        self, context_data, target_data, intervention_index, outcome_index
-    ):
-        # Shape context_data: (batch_size, num_context + 1, num_nodes, 1)
-        # Shape masked_target_data: (batch_size, num_target + 1, num_nodes, 1)
-        encoded_cntxt = append_treatment_outcome_index_to_data(
-            data=context_data,
-            outcome_index=outcome_index,
-            treatment_index=intervention_index,
-        )
-        encoded_trgt = append_treatment_outcome_index_to_data(
-            data=target_data,
-            outcome_index=outcome_index,
-            treatment_index=intervention_index,
-        )
-        return encoded_cntxt, encoded_trgt
-
     def forward(
         self,
         context_data: torch.Tensor,
@@ -136,27 +118,23 @@ class CausalInferenceModel(torch.nn.Module):
             data=target_data, batch_index=intervention_index
         )
 
-        encoded_cntxt, encoded_trgt = self.encode_inputs(
-            context_data, masked_target_data, intervention_index, outcome_index
-        )
-
-        # shape encoding: (batch_size, num_target + 1, num_nodes, d_model)
+        # shape encoding: (batch_size, num_target, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            encoded_cntxt,
-            encoded_trgt,
+            context_data=context_data,
+            target_data=masked_target_data,
             target_train_data=None,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
         )
-        encoding = rep[:, -(num_trgt + 1) : -1]
+        encoding = rep[:, -num_trgt:]
 
         # We want to find p(outcome | do(intervention))
         outcome_encoding = gather_by_node(encoding, outcome_index)
 
         pred = self.predictor(outcome_encoding)
-        mean, std = pred.split(1, dim=-1)
-        std = torch.nn.functional.softplus(std)
+        mean, log_var = pred.split(1, dim=-1)
+        std = torch.exp(0.5 * log_var)
 
         return mean, std, None, None
 
@@ -268,9 +246,9 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         - R_yx (torch.Tensor): Tensor of shape (batch_size, num_trgt, d_model)
             containing the representation of the target nodes with the outcome node.
         """
-        R_x = representation[:, -(num_trgt + 1) : -1]
+        R_x = representation[:, -num_trgt:]
         if self.training:
-            start_index = -(2 * num_trgt + 1)
+            start_index = -(2 * num_trgt)
             end_index = start_index + num_trgt
             R_yx = representation[:, start_index:end_index]
         else:
@@ -342,20 +320,16 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             data=target_data, batch_index=intervention_index
         )
 
-        encoded_ctnxt, encoded_trgt = self.encode_inputs(
-            context_data, masked_target_data, intervention_index, outcome_index
-        )
-
-        # shape rep: (batch_size, num_samples + 2, num_nodes, d_model)
+        # shape rep: (batch_size, num_samples, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            context_data=encoded_ctnxt,
-            target_data=encoded_trgt,
+            context_data=context_data,
+            target_data=masked_target_data,
             target_train_data=masked_trgt_train,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
         )
-        # shape encoding: (batch_size, num_trgt + 1, num_nodes, d_model)
+        # shape encoding: (batch_size, num_trgt, num_nodes, d_model)
         R_x, R_yx = self.extract_representation(rep, num_trgt)
 
         # We want to find p(outcome | do(intervention))

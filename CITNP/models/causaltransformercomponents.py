@@ -446,12 +446,12 @@ class CausalInfEncoder(nn.Module):
         - Target samples only attend to the context samples
         """
         num_context = context_data.size(1)
-        num_target = target_data.size(1) - 1
+        num_target = target_data.size(1)
         # If training then target_train_data is not None
         if target_train_data is not None:
-            mask_size = num_context + num_target + (num_target + 1)
+            mask_size = num_context + num_target + (num_target)
         else:
-            mask_size = num_context + (num_target + 1)
+            mask_size = num_context + (num_target)
         sample_mask = torch.zeros(
             mask_size,
             mask_size,
