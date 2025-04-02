@@ -1,4 +1,3 @@
-import copy
 from functools import partial
 from typing import Callable, Optional
 
@@ -7,126 +6,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 
-
-def build_mlp(dim_in, dim_hid, dim_out, depth):
-    assert depth >= 2, "MLP depth must be at least 2."
-    layers = [nn.Linear(dim_in, dim_hid), nn.GELU()]
-    for _ in range(depth - 2):
-        layers += [nn.Linear(dim_hid, dim_hid), nn.GELU()]
-    layers.append(nn.Linear(dim_hid, dim_out))
-    return nn.Sequential(*layers)
-
-
-class FlashMHCA(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        batch_first: bool = True,
-        bias: bool = False,
-        device=None,
-        dtype=None,
-    ):
-        super().__init__()
-
-        assert batch_first, "FlashMHCA only supports batch_first=True for now"
-        assert d_model % nhead == 0, "d_model must be divisible by nhead"
-
-        self.d_model = d_model
-        self.nhead = nhead
-        self.head_dim = d_model // nhead
-
-        factory_kwargs = {"device": device, "dtype": dtype}
-
-        self.layernormQ = nn.LayerNorm(d_model, **factory_kwargs)
-        self.layernormK = nn.LayerNorm(d_model, **factory_kwargs)
-        self.layernormV = nn.LayerNorm(d_model, **factory_kwargs)
-
-        self.q_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
-        self.k_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
-        self.v_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
-
-        self.out_proj = nn.Linear(d_model, d_model, bias=bias, **factory_kwargs)
-
-    def forward(
-        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Args:
-        -----
-        - query, key, value: shape [batch_size, seq_len, d_model]
-
-        Returns:
-        --------
-        - output: shape [batch_size, seq_len, d_model]
-        """
-        B, T, _ = query.shape  # batch size, sequence length, embedding
-
-        query = self.layernormQ(query)
-        key = self.layernormK(key)
-        value = self.layernormV(value)
-
-        q = (
-            self.q_proj(query).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
-        )  # [B, H, T, D]
-        k = self.k_proj(key).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.v_proj(value).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
-
-        attn_output = F.scaled_dot_product_attention(
-            q, k, v, is_causal=False
-        )  # [B, H, T, D]
-
-        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, self.d_model)
-        return self.out_proj(attn_output)
-
-
-class MHCA(nn.Module):
-
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        batch_first: bool = True,
-        bias: bool = False,
-        device=None,
-        dtype=None,
-    ):
-        super().__init__()
-
-        self.layernormQ = nn.LayerNorm(d_model)
-        self.layernormK = nn.LayerNorm(d_model)
-        self.layernormV = nn.LayerNorm(d_model)
-
-        self.z_rep_merger = nn.MultiheadAttention(
-            d_model,
-            nhead,
-            batch_first=batch_first,
-            bias=bias,
-            device=device,
-            dtype=dtype,
-        )
-
-    def forward(
-        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Args:
-        -----
-        - query: torch.Tensor, shape [batch_size, num_samples, d_model]
-        - key: torch.Tensor, shape [batch_size, num_samples, d_model]
-        - value: torch.Tensor, shape [batch_size, num_samples, d_model]
-
-        Returns:
-        --------
-        - torch.Tensor, shape [batch_size, num_samples, d_model]
-        """
-        # shape batch_size, num_samples, d_model]
-        query = self.layernormQ(query)
-        key = self.layernormK(key)
-        value = self.layernormV(value)
-        # shape [batch_size, num_samples, d_model]
-        output, _ = self.z_rep_merger(query, key, value)
-        return output
+from CITNP.models.nncomponents import build_mlp
 
 
 def _reshape_for_sample_attention(src, B, S, N, D):
@@ -510,7 +390,7 @@ class CausalInfEncoder(nn.Module):
             )
         else:
             target_train_embed = None
-        # shape [batch_size, num_context + num_target + 1, num_nodes, d_model]
+        # shape [batch_size, num_context + num_target, num_nodes, d_model]
         full_data = self.create_input(context_embed, target_embed, target_train_embed)
         sample_mask, num_target = self.create_sample_mask(
             context_data, target_data, target_train_data

@@ -10,17 +10,12 @@ import torch.nn as nn
 from CITNP.models.causaltransformercomponents import (
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
-    FlashMHCA,
-    build_mlp,
 )
+from CITNP.models.nncomponents import FlashMHCA, build_mlp, build_residual_network
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.loss import NLLLoss, VILoss
 from CITNP.utils.sampler import EvalZSampler, TrainZSampler
-from CITNP.utils.utils import (
-    append_treatment_outcome_index_to_data,
-    gather_by_node,
-    set_all_except_batchindex_to_zero,
-)
+from CITNP.utils.utils import gather_by_node, set_all_except_batchindex_to_zero
 
 
 class CausalInferenceModel(torch.nn.Module):
@@ -180,33 +175,30 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             num_layers=config.decoder_depth,
         )
 
-        self.z_param_mean_mlp = build_mlp(
-            self.d_model,
-            self.d_model,
-            dim_out=config.d_model,  # mean and std
-            depth=2,
-        )
-        self.z_param_std_mlp = build_mlp(
-            self.d_model,
-            self.d_model,
-            dim_out=config.d_model,  # mean and std
-            depth=2,
-        )
-
-        self.z_rep_merger = FlashMHCA(
-            d_model=self.d_model,
-            nhead=config.nhead,
-            batch_first=True,
+        self.z_encoder = build_residual_network(
+            num_blocks=self.emb_depth,
+            input_dim=self.d_model,
+            hidden_dim=self.d_model,
+            output_dim=self.d_model,
             device=self.device,
             dtype=self.dtype,
-            bias=False,
+        )
+
+        self.z_rep_merger = build_residual_network(
+            num_blocks=self.emb_depth,
+            input_dim=self.d_model * 2,
+            hidden_dim=self.d_model,
+            output_dim=self.d_model,
+            device=self.device,
+            dtype=self.dtype,
         )
 
         self.train_z_sampler = TrainZSampler(
-            self.z_param_mean_mlp,
-            self.z_param_std_mlp,
-            self.d_model,
-            self.num_z_samples,
+            encoder=self.z_encoder,
+            d_model=self.d_model,
+            num_samples=self.num_z_samples,
+            device=self.device,
+            dtype=self.dtype,
         )
         self.eval_z_sampler = EvalZSampler(self.d_model, self.num_z_samples_eval)
 
@@ -295,12 +287,11 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         rep_batched = rep_expand.reshape(num_z_samples * batch_size, num_trgt, d_model)
         z_batched = z_samples.reshape(num_z_samples * batch_size, num_trgt, d_model)
 
-        # Cross attention
-        z_rep = self.z_rep_merger(
-            query=rep_batched,
-            key=z_batched,
-            value=z_batched,
-        )
+        # concatenate along the last dimension
+        # shape z_rep_batched: (num_z_samples * batch_size, num_trgt, 2*d_model)
+        z_rep_batched = torch.cat((z_batched, rep_batched), dim=-1)
+
+        z_rep = self.z_rep_merger(z_rep_batched)
         z_rep_unbatched = z_rep.reshape(num_z_samples, batch_size, num_trgt, d_model)
         return z_rep_unbatched
 

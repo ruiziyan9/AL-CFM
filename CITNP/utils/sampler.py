@@ -2,27 +2,23 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
-
-
-def get_last_linear_layer(model):
-    layers = [module for module in model.modules() if isinstance(module, nn.Linear)]
-    return layers[-1] if layers else None
+import torch.nn.functional as F
 
 
 def init_mean_mlp(m):
     if isinstance(m, nn.Linear):
         # Small weights: mean 0, very small std
-        nn.init.normal_(m.weight, mean=0.0, std=1e-3)
+        nn.init.kaiming_normal_(m.weight)
+        m.weight.data[:] *= 0.01
         nn.init.constant_(m.bias, 0.0)  # μ ≈ 0
 
 
 def init_std_mlp(m):
     if isinstance(m, nn.Linear):
         # Small weights: mean 0, very small std
-        nn.init.normal_(m.weight, mean=0.0, std=1e-3)
-
-        target_std = -0.1
-        nn.init.constant_(m.bias, target_std)
+        nn.init.kaiming_normal_(m.weight)
+        m.weight.data[:] *= 0.01
+        nn.init.constant_(m.bias, 0.5)
 
 
 class LatentSampler:
@@ -34,19 +30,21 @@ class LatentSampler:
 
 class TrainZSampler(LatentSampler):
 
-    def __init__(self, mean_mlp, std_mlp, d_model, num_samples):
-        self.mean_mlp = mean_mlp
-        self.std_mlp = std_mlp
+    def __init__(self, encoder, d_model, num_samples, device, dtype):
+        self.encoder = encoder
         self.d_model = d_model
         self.num_samples = num_samples
 
-        init_mean_mlp(get_last_linear_layer(self.mean_mlp))
-        init_std_mlp(get_last_linear_layer(self.std_mlp))
+        self.z_mean = nn.Linear(d_model, d_model, device=device, dtype=dtype)
+        self.z_std = nn.Linear(d_model, d_model, device=device, dtype=dtype)
+
+        init_mean_mlp(self.z_mean)
+        init_std_mlp(self.z_std)
 
     def sample(self, outcome_yx: torch.Tensor, **kwargs):
-        mean = self.mean_mlp(outcome_yx)
-        logvar = self.std_mlp(outcome_yx)
-        std = torch.exp(0.5 * logvar)
+        z_enc = self.encoder(outcome_yx)
+        mean = self.z_mean(z_enc)
+        std = F.softplus(self.z_std(z_enc))
 
         z_samples = torch.distributions.Normal(mean, std).rsample((self.num_samples,))
         return z_samples, mean, std
