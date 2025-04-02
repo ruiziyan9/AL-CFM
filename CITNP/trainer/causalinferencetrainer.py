@@ -143,16 +143,22 @@ class CausalInferenceTrainer:
             collate_fn=collator(is_training=False),
         )
 
-    def apply_learning_rate_warmup(self, epoch, step, lr_warmup_steps):
+    def apply_learning_rate_warmup(self, epoch, step, steps_per_epoch, lr_warmup_steps):
         """
         Warmup should be around 10% of the total steps.
         """
-        if epoch == 0 and step < lr_warmup_steps:
-            lr = step / lr_warmup_steps * self.learning_rate
+        # Compute your global (absolute) step across all epochs.
+        global_step = epoch * steps_per_epoch + step
+
+        if global_step < lr_warmup_steps:
+            # Linear scale from 0 up to self.learning_rate
+            warmup_lr = (global_step / lr_warmup_steps) * self.learning_rate
             for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr
+                param_group["lr"] = warmup_lr
         else:
-            pass
+            # After global_step >= lr_warmup_steps, keep the base (or scheduled) LR
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = self.learning_rate
 
     def test_single_epoch(
         self,
@@ -291,10 +297,13 @@ class CausalInferenceTrainer:
         self.model.to(dtype)
 
         pbar = tqdm(train_loader, desc="Training")
+        step_per_epoch = len(train_loader)
         for i, data in enumerate(pbar):
             # Learning rate warmup
             self.apply_learning_rate_warmup(
-                epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps
+                epoch=epoch, step=i,
+                steps_per_epoch=step_per_epoch,
+                lr_warmup_steps=lr_warmup_steps
             )
             # Get the inputs and targets
             context, target, intvn_indices, outcome_indices, masks, _ = send_to_device(

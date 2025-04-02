@@ -38,11 +38,12 @@ def main(args: argparse.Namespace):
     train_files = list(train_dir.iterdir())
     train_hdf5_files = [i for i in train_files if i.suffix == ".hdf5"]
     train_hdf5_files = [train_hdf5_files[0]] if args.debug else train_hdf5_files
-    train_dataset = MultipleFileDataset(train_hdf5_files)
+    # train_dataset = MultipleFileDataset(train_hdf5_files)
 
     val_dir = data_dir / "val"
     val_files = list(val_dir.iterdir())
     val_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
+    train_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
 
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
