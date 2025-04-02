@@ -346,54 +346,33 @@ class CausalInfEncoder(nn.Module):
 
     def encode(
         self,
-        context_data: Tensor,
-        target_data: Tensor,
+        context_embed: Tensor,
+        target_embed: Tensor,
         outcome_indices: Tensor,
         intervention_indices: Tensor,
-        target_train_data: Optional[Tensor] = None,
+        target_train_embed: Optional[Tensor] = None,
         variable_mask: Optional[Tensor] = None,
     ):
         """
         Args:
         -----
-        - context_data (torch.Tensor): The context data with shape
-            [batch_size, num_context, num_nodes, 1].
-        - target_data (torch.Tensor): The target data with shape
-            [batch_size, num_target, num_nodes, 1]. This should be all zeros
+        - context_embed (torch.Tensor): The context data with shape
+            [batch_size, num_context, num_nodes, d_model].
+        - target_embed (torch.Tensor): The target data with shape
+            [batch_size, num_target, num_nodes, d_model]. This should be all zeros
             except for node that is meant to be the interventional variable.
-        - target_train_data (torch.Tensor): The target data with shape
-            [batch_size, num_target, num_nodes, 1]. This should be the same
+        - target_train_embed (torch.Tensor): The target data with shape
+            [batch_size, num_target, num_nodes, d_model]. This should be the same
             as target_data but with the true values of the outcome variable.
         - outcome_indices (torch.Tensor, optional): The indices of the outcome
             with shape [batch_size]. Defaults to None.
         - variable_mask (torch.Tensor, optional): The mask that allows for
             different number of variables. Defaults to None.
         """
-        context_embed = self.embed(
-            data=context_data,
-            outcome_indices=outcome_indices,
-            intervention_indices=intervention_indices,
-            context=True,
-        )
-        target_embed = self.embed(
-            data=target_data,
-            outcome_indices=outcome_indices,
-            intervention_indices=intervention_indices,
-            context=False,
-        )
-        if self.training and target_train_data is not None:
-            target_train_embed = self.embed(
-                data=target_train_data,
-                outcome_indices=outcome_indices,
-                intervention_indices=intervention_indices,
-                context=False,
-            )
-        else:
-            target_train_embed = None
         # shape [batch_size, num_context + num_target, num_nodes, d_model]
         full_data = self.create_input(context_embed, target_embed, target_train_embed)
         sample_mask, num_target = self.create_sample_mask(
-            context_data, target_data, target_train_data
+            context_embed, target_embed, target_train_embed
         )
         # shape [batch_size, num_samples, num_nodes, d_model]
         # Encode the data

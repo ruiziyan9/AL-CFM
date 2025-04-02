@@ -109,15 +109,28 @@ class CausalInferenceModel(torch.nn.Module):
         - outcome_index (torch.Tensor): Outcome index tensor with shape
             (batch_size)
         """
-        masked_target_data = set_all_except_batchindex_to_zero(
-            data=target_data, batch_index=intervention_index
+        context_embed = self.encoder.embed(
+            data=context_data,
+            outcome_indices=outcome_index,
+            intervention_indices=intervention_index,
+            context=True,
+        )
+        target_embed = self.encoder.embed(
+            data=target_data,
+            outcome_indices=outcome_index,
+            intervention_indices=intervention_index,
+            context=False,
+        )
+
+        masked_target_embed = set_all_except_batchindex_to_zero(
+            data=target_embed, batch_index=intervention_index
         )
 
         # shape encoding: (batch_size, num_target, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            context_data=context_data,
-            target_data=masked_target_data,
-            target_train_data=None,
+            context_embed=context_embed,
+            target_embed=masked_target_embed,
+            target_train_embed=None,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
@@ -303,19 +316,32 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         outcome_index,
         variable_mask=None,
     ):
-        masked_trgt_train = self.extract_training_target(
-            target_data, intervention_index, outcome_index
+        context_embed = self.encoder.embed(
+            data=context_data,
+            outcome_indices=outcome_index,
+            intervention_indices=intervention_index,
+            context=True,
+        )
+        target_embed = self.encoder.embed(
+            data=target_data,
+            outcome_indices=outcome_index,
+            intervention_indices=intervention_index,
+            context=False,
         )
 
         masked_target_data = set_all_except_batchindex_to_zero(
-            data=target_data, batch_index=intervention_index
+            data=target_embed, batch_index=intervention_index
+        )
+
+        masked_trgt_train = self.extract_training_target(
+            target_embed, intervention_index, outcome_index
         )
 
         # shape rep: (batch_size, num_samples, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            context_data=context_data,
-            target_data=masked_target_data,
-            target_train_data=masked_trgt_train,
+            context_embed=context_embed,
+            target_embed=masked_target_data,
+            target_train_embed=masked_trgt_train,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,

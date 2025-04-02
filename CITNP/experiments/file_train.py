@@ -38,12 +38,11 @@ def main(args: argparse.Namespace):
     train_files = list(train_dir.iterdir())
     train_hdf5_files = [i for i in train_files if i.suffix == ".hdf5"]
     train_hdf5_files = [train_hdf5_files[0]] if args.debug else train_hdf5_files
-    # train_dataset = MultipleFileDataset(train_hdf5_files)
+    train_dataset = MultipleFileDataset(train_hdf5_files)
 
     val_dir = data_dir / "val"
     val_files = list(val_dir.iterdir())
     val_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
-    train_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
 
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
@@ -57,19 +56,19 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
-        "num_z_samples_train": args.num_z_samples_train,
-        "num_z_samples_eval": args.num_z_samples_eval,
-        "decoder_depth": args.decoder_depth,
+        # "num_z_samples_train": args.num_z_samples_train,
+        # "num_z_samples_eval": args.num_z_samples_eval,
+        # "decoder_depth": args.decoder_depth,
         "mean_loss_across_samples": args.mean_loss_across_samples,
         "device": args.device,
         "dtype": args.dtype,
     }
 
-    locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
-    model = LocalLatentCausalInferenceModel(locallatentconfig)
+    # locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
+    # model = LocalLatentCausalInferenceModel(locallatentconfig)
 
-    # config = CausalInfModelConfig(**MODEL_ARGS)
-    # model = CausalInferenceModel(config)
+    config = CausalInfModelConfig(**MODEL_ARGS)
+    model = CausalInferenceModel(config)
 
     if args.results_path is None:
         results_path = Path.cwd()
