@@ -14,7 +14,7 @@ from CITNP.models.causaltransformercomponents import (
 from CITNP.models.nncomponents import FlashMHCA, build_mlp, build_residual_network
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.loss import NLLLoss, VILoss
-from CITNP.utils.sampler import EvalZSampler, TrainZSampler
+from CITNP.utils.sampler import EvalZSampler, TrainZSampler, init_mean_mlp, init_std_mlp
 from CITNP.utils.utils import gather_by_node, set_all_except_batchindex_to_zero
 
 
@@ -57,7 +57,7 @@ class CausalInferenceModel(torch.nn.Module):
         self.predictor = build_mlp(
             self.d_model,
             self.d_model,
-            dim_out=2,  # mean and std
+            dim_out=self.d_model,  # mean and std
             depth=2,
         )
 
@@ -144,7 +144,7 @@ class CausalInferenceModel(torch.nn.Module):
         mean, log_var = pred.split(1, dim=-1)
         std = torch.exp(0.5 * log_var)
 
-        return mean, std, None, None
+        return mean, std, None, None, None, None
 
 
 class LocalLatentCausalInferenceModel(CausalInferenceModel):
@@ -173,6 +173,21 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
 
         self.decoder_depth = config.decoder_depth
 
+        self.mean_mlp = nn.Linear(
+            in_features=self.d_model,
+            out_features=1,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        self.std_mlp = nn.Linear(
+            in_features=self.d_model,
+            out_features=1,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        init_mean_mlp(self.mean_mlp)
+        init_std_mlp(self.std_mlp)
+
         self.decoder = nn.TransformerDecoder(
             CausalTransformerDecoderLayer(
                 d_model=config.d_model,
@@ -188,8 +203,16 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             num_layers=config.decoder_depth,
         )
 
+        self.pre_z_encoder = FlashMHCA(
+            d_model=self.d_model,
+            nhead=self.nhead,
+            batch_first=True,
+            bias=False,
+            device=self.device,
+            dtype=self.dtype,
+        )
         self.z_encoder = build_residual_network(
-            num_blocks=self.emb_depth,
+            num_blocks=1,
             input_dim=self.d_model,
             hidden_dim=self.d_model,
             output_dim=self.d_model,
@@ -213,13 +236,13 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             device=self.device,
             dtype=self.dtype,
         )
-        self.eval_z_sampler = EvalZSampler(self.d_model, self.num_z_samples_eval)
+        self.eval_z_sampler = self.train_z_sampler
+        # self.eval_z_sampler = EvalZSampler(
+        #     d_model=self.d_model,
+        #     num_samples_eval=self.num_z_samples_eval,
+        # )
 
-        self.loss = (
-            NLLLoss(mean_loss_across_samples=self.mean_loss_across_samples)
-            if not self.use_vi
-            else VILoss(mean_loss_across_samples=self.mean_loss_across_samples)
-        )
+        self.loss = NLLLoss(mean_loss_across_samples=self.mean_loss_across_samples)
         self.eval_loss = NLLLoss(mean_loss_across_samples=self.mean_loss_across_samples)
 
     def extract_training_target(self, target_data, intervention_index, outcome_index):
@@ -252,15 +275,15 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             containing the representation of the target nodes with the outcome node.
         """
         R_x = representation[:, -num_trgt:]
-        if self.training:
-            start_index = -(2 * num_trgt)
-            end_index = start_index + num_trgt
-            R_yx = representation[:, start_index:end_index]
-        else:
-            R_yx = None
+        # if self.training:
+        #     start_index = -(2 * num_trgt)
+        #     end_index = start_index + num_trgt
+        #     R_yx = representation[:, start_index:end_index]
+        # else:
+        R_yx = None
         return R_x, R_yx
 
-    def sample_z(self, outcome_yx, trgt_data):
+    def sample_z(self, outcome_x, R_x):
         """
         Args:
         -----
@@ -271,17 +294,34 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         --------
         - z_samples (torch.Tensor): Tensor of shape (num_z_samples, batch_size, d_model)
         """
+        batch_size, num_trgt, _, d_model = R_x.shape
+        outcome_x = outcome_x.unsqueeze(2)
+        # Reshaper both
+        batched_R_x = R_x.reshape(batch_size * num_trgt, -1, d_model)
+        batched_outcome_x = outcome_x.reshape(batch_size * num_trgt, -1, d_model)
+        pre_z_rep = self.pre_z_encoder(
+            query=batched_outcome_x,
+            key=batched_R_x,
+            value=batched_R_x,
+        )
+        unbatched_pre_z_rep = pre_z_rep.reshape(batch_size, num_trgt, d_model)
+
         # shape z: (batch_size, num_trgt, 1, 2*d_model)
         if self.training:
-            zsamples, mean, std = self.train_z_sampler.sample(
-                outcome_yx, num_samples=self.num_z_samples
+            zsamples, q_mean, q_std = self.train_z_sampler.sample(
+                unbatched_pre_z_rep, num_samples=self.num_z_samples
             )
+            # zsamples_eval, prior_mean, prior_std = self.eval_z_sampler.sample(
+            #     outcome_x, num_samples=self.num_z_samples_eval
+            # )
+            # del zsamples_eval
+            prior_mean, prior_std = None, None
         else:
-            zsamples, mean, std = self.eval_z_sampler.sample(
-                trgt_data, num_samples=self.num_z_samples_eval
+            zsamples, prior_mean, prior_std = self.eval_z_sampler.sample(
+                unbatched_pre_z_rep, num_samples=self.num_z_samples_eval
             )
-
-        return zsamples, mean, std
+            q_mean, q_std = None, None
+        return zsamples, prior_mean, prior_std, q_mean, q_std
 
     def merge_zsamples_rep(self, z_samples, rep):
         """
@@ -316,32 +356,32 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         outcome_index,
         variable_mask=None,
     ):
-        context_embed = self.encoder.embed(
-            data=context_data,
-            outcome_indices=outcome_index,
-            intervention_indices=intervention_index,
-            context=True,
-        )
-        target_embed = self.encoder.embed(
-            data=target_data,
-            outcome_indices=outcome_index,
-            intervention_indices=intervention_index,
-            context=False,
-        )
+        # context_embed = self.encoder.embed(
+        #     data=context_data,
+        #     outcome_indices=outcome_index,
+        #     intervention_indices=intervention_index,
+        #     context=True,
+        # )
+        # target_embed = self.encoder.embed(
+        #     data=target_data,
+        #     outcome_indices=outcome_index,
+        #     intervention_indices=intervention_index,
+        #     context=False,
+        # )
 
         masked_target_data = set_all_except_batchindex_to_zero(
-            data=target_embed, batch_index=intervention_index
+            data=target_data, batch_index=intervention_index
         )
 
-        masked_trgt_train = self.extract_training_target(
-            target_embed, intervention_index, outcome_index
-        )
+        # masked_trgt_train = self.extract_training_target(
+        #     target_embed, intervention_index, outcome_index
+        # )
 
         # shape rep: (batch_size, num_samples, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            context_embed=context_embed,
-            target_embed=masked_target_data,
-            target_train_embed=masked_trgt_train,
+            context_data=context_data,
+            target_data=masked_target_data,
+            target_train_data=None,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
@@ -352,16 +392,17 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
         # We want to find p(outcome | do(intervention))
         # shape outcome_encoding: (batch_size, num_trgt, d_model)
         outcome_x = gather_by_node(R_x, outcome_index)
-        if self.training:
+        if self.training and R_yx is not None:
             outcome_yx = gather_by_node(R_yx, outcome_index)
         else:
             outcome_yx = None
 
         # shape z_samples: (num_z_samples, batch_size, num_trgt, d_model)
-        z_samples, z_mean, z_std = self.sample_z(outcome_yx, masked_target_data)
+        z_samples, prior_mean, prior_std, z_mean, z_std = self.sample_z(outcome_x, R_x)
 
         # Merge outcome_rep and z_samples
         final_rep = self.merge_zsamples_rep(z_samples, outcome_x)
+        # final_rep = z_samples
 
         if self.decoder_depth != 0:
             num_z_samples, batch_size, num_trgt, _ = final_rep.shape
@@ -379,12 +420,24 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             decoder_rep = final_rep
 
         pred = self.predictor(decoder_rep)
-        mean, std = pred.split(1, dim=-1)
+        # mean, std = pred.split(1, dim=-1)
+        mean = self.mean_mlp(pred)
+        std = self.std_mlp(pred)
         std = torch.nn.functional.softplus(std)
 
-        return mean, std, z_mean, z_std
+        return mean, std, prior_mean, prior_std, z_mean, z_std
 
-    def calculate_loss(self, pred_mean, pred_std, target, outcome_index, z_mean, z_std):
+    def calculate_loss(
+        self,
+        pred_mean,
+        pred_std,
+        target,
+        outcome_index,
+        z_mean,
+        z_std,
+        prior_mean,
+        prior_std,
+    ):
         """
         Args:
         -----
@@ -413,6 +466,8 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
                 target=trgt_outcome,
                 z_mean=z_mean,
                 z_std=z_std,
+                prior_mean=prior_mean,
+                prior_std=prior_std,
             )
         else:
             return self.eval_loss.calculate_loss(
@@ -421,4 +476,6 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
                 target=trgt_outcome,
                 z_mean=z_mean,
                 z_std=z_std,
+                prior_mean=prior_mean,
+                prior_std=prior_std,
             )

@@ -21,7 +21,11 @@ def init_std_mlp(m):
         nn.init.constant_(m.bias, 0.5)
 
 
-class LatentSampler:
+class LatentSampler(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
     def sample(
         self, context: torch.Tensor, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -31,6 +35,7 @@ class LatentSampler:
 class TrainZSampler(LatentSampler):
 
     def __init__(self, encoder, d_model, num_samples, device, dtype):
+        super().__init__()
         self.encoder = encoder
         self.d_model = d_model
         self.num_samples = num_samples
@@ -53,6 +58,7 @@ class TrainZSampler(LatentSampler):
 class EvalZSampler(LatentSampler):
 
     def __init__(self, d_model, num_samples_eval):
+        super().__init__()
         self.d_model = d_model
         self.num_samples_eval = num_samples_eval
 
@@ -66,6 +72,10 @@ class EvalZSampler(LatentSampler):
             device=trgt_data.device,
             dtype=trgt_data.dtype,
         )
-        mean = torch.zeros_like(z_samples[0:1])
-        std = torch.ones_like(z_samples[0:1])
+        mean = torch.zeros_like(
+            z_samples[0], device=trgt_data.device, dtype=trgt_data.dtype
+        )
+        std = torch.ones_like(
+            z_samples[0], device=trgt_data.device, dtype=trgt_data.dtype
+        )
         return z_samples, mean, std

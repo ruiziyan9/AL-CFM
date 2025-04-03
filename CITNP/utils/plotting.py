@@ -2,7 +2,7 @@ from typing import List
 
 import matplotlib
 
-matplotlib.use("Agg")  # Non-interactive backend
+# matplotlib.use("Agg")  # Non-interactive backend
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -139,7 +139,7 @@ def plot_predictions_to_wandb(
                     .to(device)
                 )
 
-                mean, std, _, _ = model(
+                mean, std, _, _, _, _ = model(
                     context_data=context,
                     target_data=new_target,
                     intervention_index=intvn_indices,

@@ -32,26 +32,29 @@ class NLLLoss(BaseLoss):
         target: torch.Tensor,
         z_mean: Optional[torch.Tensor] = None,
         z_std: Optional[torch.Tensor] = None,
+        prior_mean: Optional[torch.Tensor] = None,
+        prior_std: Optional[torch.Tensor] = None,
         **kwargs
     ) -> torch.Tensor:
         num_z_samples = pred_mean.size(0)
         # During evaluation we only care about the predictive likelihood
         distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
 
-        neglikelihood = -distribution.log_prob(target)
+        likelihood = distribution.log_prob(target)
         logL = torch.log(
             torch.tensor(
                 num_z_samples,
-                device=neglikelihood.device,
-                dtype=neglikelihood.dtype,
+                device=likelihood.device,
+                dtype=likelihood.dtype,
             )
         )
-        neglikelihood_z_meaned = torch.logsumexp(neglikelihood, dim=0) - logL
+        likelihood_z_meaned = torch.logsumexp(likelihood, dim=0) - logL
         if self.mean_loss_across_samples:
-            neglikelihood_allsample = neglikelihood_z_meaned.mean(1).sum(-1)
+            likelihood_allsample = likelihood_z_meaned.mean(1).sum(-1)
         else:
-            neglikelihood_allsample = neglikelihood_z_meaned.sum(1).sum(-1)
-        neglikelihood_fullmeaned = neglikelihood_allsample.mean(0).mean()
+            likelihood_allsample = likelihood_z_meaned.sum(1).sum(-1)
+        likelihood_fullmeaned = likelihood_allsample.mean(0).mean()
+        neglikelihood_fullmeaned = -likelihood_fullmeaned
         return neglikelihood_fullmeaned
 
 
@@ -68,6 +71,8 @@ class VILoss(BaseLoss):
         target: torch.Tensor,
         z_mean: torch.Tensor,
         z_std: torch.Tensor,
+        prior_mean: torch.Tensor,
+        prior_std: torch.Tensor,
         **kwargs
     ) -> torch.Tensor:
         # Data term
@@ -81,7 +86,7 @@ class VILoss(BaseLoss):
 
         # KL term
         q_z = torch.distributions.Normal(z_mean, z_std)
-        p_z = torch.distributions.Normal(0, 1)
+        p_z = torch.distributions.Normal(prior_mean, prior_std)
         kl = torch.distributions.kl_divergence(q_z, p_z)
         kl_dim = kl.sum(2)
         if self.mean_loss_across_samples:

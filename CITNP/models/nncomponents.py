@@ -55,23 +55,26 @@ class FlashMHCA(nn.Module):
         --------
         - output: shape [batch_size, seq_len, d_model]
         """
-        B, T, _ = query.shape  # batch size, sequence length, embedding
+        B, T_q, _ = query.shape  # batch size, sequence length, embedding
+        _, T_k, _ = key.shape  # batch size, sequence length, embedding
 
         query = self.layernormQ(query)
         key = self.layernormK(key)
         value = self.layernormV(value)
 
         q = (
-            self.q_proj(query).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+            self.q_proj(query).view(B, T_q, self.nhead, self.head_dim).transpose(1, 2)
         )  # [B, H, T, D]
-        k = self.k_proj(key).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.v_proj(value).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
+        k = self.k_proj(key).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
+        v = self.v_proj(value).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
 
         attn_output = F.scaled_dot_product_attention(
             q, k, v, is_causal=False
         )  # [B, H, T, D]
 
-        attn_output = attn_output.transpose(1, 2).contiguous().view(B, T, self.d_model)
+        attn_output = (
+            attn_output.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
+        )
         return self.out_proj(attn_output)
 
 
