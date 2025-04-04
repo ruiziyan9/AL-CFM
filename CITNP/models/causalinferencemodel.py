@@ -11,9 +11,8 @@ import torch.nn as nn
 from CITNP.models.causaltransformercomponents import (
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
-    Predictor,
 )
-from CITNP.models.nncomponents import build_mlp
+from CITNP.models.nncomponents import Predictor
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.loss import CNPLoss, NLLLoss
 from CITNP.utils.outputs import ModelOutput
@@ -81,9 +80,7 @@ class BaseCausalInference(nn.Module, ABC):
         return outcome_encoding, encoding
 
     def _predict(self, outcome_encoding):
-        pred = self.predictor(outcome_encoding)
-        mean, prestd = pred.split(1, dim=-1)
-        std = torch.nn.functional.softplus(prestd)
+        mean, std = self.predictor(outcome_encoding)
         return mean, std
 
     @abstractmethod

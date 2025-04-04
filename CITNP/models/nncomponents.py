@@ -27,6 +27,7 @@ class Predictor(nn.Module):
         )
         self.mean_mlp = nn.Linear(d_model, 1)
         self.std_mlp = nn.Linear(d_model, 1)
+        self._init_weights()
 
     def _init_weights(self):
         """
