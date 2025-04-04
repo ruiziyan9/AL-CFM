@@ -60,6 +60,20 @@ class BaseCausalInference(nn.Module, ABC):
             depth=2,
         )
 
+    def _mask_target_data(
+        self,
+        target_data: torch.Tensor,
+        intervention_index: torch.Tensor,
+    ):
+        """
+        Set all values in target_data to 0 except for the indices specified
+        in intervention_index.
+        """
+        masked_target_data = set_all_except_batchindex_to_zero(
+            data=target_data, batch_index=intervention_index
+        )
+        return masked_target_data
+
     def _extract_outcome_representation(
         self, representation: torch.Tensor, outcome_index: torch.Tensor, num_trgt: int
     ):
@@ -181,8 +195,8 @@ class CausalInferenceModel(BaseCausalInference):
         - outcome_index (torch.Tensor): Outcome index tensor with shape
             (batch_size)
         """
-        masked_target_data = set_all_except_batchindex_to_zero(
-            data=target_data, batch_index=intervention_index
+        masked_target_data = self._mask_target_data(
+            target_data=target_data, intervention_index=intervention_index
         )
         # shape rep: (batch_size, num_target, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
@@ -313,12 +327,6 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
             )
         return decoder_rep
 
-    def _predict(self, decoder_rep: torch.Tensor):
-        pred = self.predictor(decoder_rep)
-        mean, prestd = pred.split(1, dim=-1)
-        std = torch.nn.functional.softplus(prestd)
-        return mean, std
-
     def calculate_loss(
         self,
         model_output: ModelOutput,
@@ -343,8 +351,8 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
         outcome_index: torch.Tensor,
         variable_mask: Optional[torch.Tensor] = None,
     ):
-        masked_target_data = set_all_except_batchindex_to_zero(
-            data=target_data, batch_index=intervention_index
+        masked_target_data = self._mask_target_data(
+            target_data=target_data, intervention_index=intervention_index
         )
         # shape rep: (batch_size, num_samples, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
