@@ -14,6 +14,7 @@ from CITNP.models.causalinferencemodel import (
     LocalLatentCausalInferenceModel,
 )
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
+from CITNP.utils.callbacks import GradientChecker
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.default_args import overwrite_debug_args, parse_args
 from CITNP.utils.utils import _generate_experiment_name, set_seed
@@ -59,20 +60,20 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
-        "num_z_samples_train": 16,
-        "num_z_samples_eval": 16,
-        "decoder_depth": args.decoder_depth,
+        # "num_z_samples_train": args.num_z_samples_train,
+        # "num_z_samples_eval": args.num_z_samples_eval,
+        # "decoder_depth": args.decoder_depth,
         "mean_loss_across_samples": args.mean_loss_across_samples,
         "device": args.device,
         "dtype": args.dtype,
     }
 
-    locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
-    model = LocalLatentCausalInferenceModel(locallatentconfig)
+    # locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
+    # model = LocalLatentCausalInferenceModel(locallatentconfig)
 
-    # config = CausalInfModelConfig(**MODEL_ARGS)
-    # model = CausalInferenceModel(config)
-    #
+    config = CausalInfModelConfig(**MODEL_ARGS)
+    model = CausalInferenceModel(config)
+
     if args.results_path is None:
         results_path = Path.cwd()
     else:
@@ -109,12 +110,30 @@ def main(args: argparse.Namespace):
     else:
         pass
 
+    callback = [
+        GradientChecker(
+            model,
+            watched_layers=[
+                "decoder.layers.0.linear1.weight",
+                "encoder.context_outcome.0.weight",
+                "encoder.encoder.layers.0.linear1.weight",
+                "encoder.encoder.layers.7.linear1.weight",
+                "z_rep_merger.0.fc1.weight",
+                "z_param_mlp.0.0.weight",
+                "z_encoder.0.fc1.weight",
+                "train_z_sampler.z_mean.weight",
+                "train_z_sampler.z_std.weight",
+            ],
+        )
+    ]
+
     trainer = CausalInferenceTrainer(
         model=model,
         train_dataset=train_dataset,
         validation_dataset=val_dataset,
         test_dataset=test_dataset,
         optimizer=optimizer,
+        callback=callback,
         **TRAINER_ARGS,
     )
     trainer.train()
@@ -122,6 +141,8 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     # These fixed some attention errors for me
+    torch.backends.cuda.enable_flash_sdp(True)
+
     parser = argparse.ArgumentParser()
     args = parse_args()
     main(args)

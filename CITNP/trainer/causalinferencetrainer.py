@@ -143,16 +143,22 @@ class CausalInferenceTrainer:
             collate_fn=collator(is_training=False),
         )
 
-    def apply_learning_rate_warmup(self, epoch, step, lr_warmup_steps):
+    def apply_learning_rate_warmup(self, epoch, step, steps_per_epoch, lr_warmup_steps):
         """
         Warmup should be around 10% of the total steps.
         """
-        if epoch == 0 and step < lr_warmup_steps:
-            lr = step / lr_warmup_steps * self.learning_rate
+        # Compute your global (absolute) step across all epochs.
+        global_step = epoch * steps_per_epoch + step
+
+        if global_step < lr_warmup_steps:
+            # Linear scale from 0 up to self.learning_rate
+            warmup_lr = (global_step / lr_warmup_steps) * self.learning_rate
             for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr
+                param_group["lr"] = warmup_lr
         else:
-            pass
+            # After global_step >= lr_warmup_steps, keep the base (or scheduled) LR
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = self.learning_rate
 
     def test_single_epoch(
         self,
@@ -239,7 +245,7 @@ class CausalInferenceTrainer:
                 if masks is not None:
                     masks = masks.to("cuda", dtype=dtype)
 
-                pred_mean, pred_std, z_mean, z_std = self.model(
+                model_output = self.model(
                     context_data=context,
                     target_data=target,
                     intervention_index=intvn_indices,
@@ -247,15 +253,12 @@ class CausalInferenceTrainer:
                     variable_mask=masks,
                 )
                 loss = self.model.calculate_loss(
-                    pred_mean=pred_mean,
-                    pred_std=pred_std,
+                    model_output=model_output,
                     target=target,
                     outcome_index=outcome_indices,
-                    z_mean=z_mean,
-                    z_std=z_std,
                 )
 
-                all_loss += th.sum(loss).cpu().item()
+                all_loss += loss.cpu().item()
 
         if self.use_wandb:
             metric_dict = plot_predictions_to_wandb(
@@ -267,7 +270,11 @@ class CausalInferenceTrainer:
             )
 
         # Log the validation loss
-        loss = all_loss / len(val_loader.dataset)
+        dataset = val_loader.dataset
+        loss = all_loss / len(dataset)
+        if isinstance(dataset, th.utils.data.IterableDataset):
+            loss /= dataset.batch_size
+
         metric_dict.update(
             {
                 "val_loss": loss,
@@ -286,15 +293,21 @@ class CausalInferenceTrainer:
         epoch,
         lr_warmup_steps,
     ):
+        metric_dict = None
         self.model.train()
         dtype = th.bfloat16 if self.bfloat16 else th.float32
         self.model.to(dtype)
 
         pbar = tqdm(train_loader, desc="Training")
+        step_per_epoch = len(train_loader)
         for i, data in enumerate(pbar):
+            global_index = epoch * step_per_epoch + i
             # Learning rate warmup
             self.apply_learning_rate_warmup(
-                epoch=epoch, step=i, lr_warmup_steps=lr_warmup_steps
+                epoch=epoch,
+                step=i,
+                steps_per_epoch=step_per_epoch,
+                lr_warmup_steps=lr_warmup_steps,
             )
             # Get the inputs and targets
             context, target, intvn_indices, outcome_indices, masks, _ = send_to_device(
@@ -311,7 +324,7 @@ class CausalInferenceTrainer:
             # Zero the parameter gradients
             self.optimizer.zero_grad()
             # Forward pass
-            pred_mean, pred_std, z_mean, z_std = self.model(
+            model_output = self.model(
                 context_data=context,
                 target_data=target,
                 intervention_index=intvn_indices,
@@ -319,35 +332,22 @@ class CausalInferenceTrainer:
                 variable_mask=masks,
             )
             loss = self.model.calculate_loss(
-                pred_mean=pred_mean,
-                pred_std=pred_std,
+                model_output=model_output,
                 target=target,
                 outcome_index=outcome_indices,
-                z_mean=z_mean,
-                z_std=z_std,
             )
-            if isinstance(loss, tuple):
-                data_loss, kl = loss
-                loss = data_loss + kl
-            else:
-                data_loss, kl = None, None
-
             loss.backward()
             # Gradient clipping
             th.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             # Optimize
             self.optimizer.step()
-            if i % self.log_step == 0:
+            if global_index % self.log_step == 0:
                 metric_dict = {
                     "train loss": loss.mean().item(),
                 }
-                if data_loss is not None:
-                    metric_dict.update({"data loss": data_loss.mean().item()})
-                if kl is not None:
-                    metric_dict.update({"kl": kl.mean().item()})
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 metric_dict.update({"learning_rate": current_lr})
-                if i % self.log_step == 0 and i > 0:
+                if global_index > 0:
                     metric_dict = self.validate_single_epoch(val_loader, metric_dict)
                     metric_dict = self.test_single_epoch(test_loader, metric_dict)
                     if self.callback is not None:
@@ -355,7 +355,7 @@ class CausalInferenceTrainer:
                             metric_dict = callback(metric_dict)
                 if self.use_wandb:
                     wandb.log(metric_dict)
-            if (i + 1) % self.save_checkpoint_every == 0:
+            if (global_index + 1) % self.save_checkpoint_every == 0:
                 # Save the model
                 self.save_dir.mkdir(parents=True, exist_ok=True)
                 th.save(

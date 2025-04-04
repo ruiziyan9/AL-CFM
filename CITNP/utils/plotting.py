@@ -1,9 +1,6 @@
 from typing import List
 
 import matplotlib
-
-matplotlib.use("Agg")  # Non-interactive backend
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch as th
@@ -49,7 +46,9 @@ def plot_context_target_predictions(
 
     # Create figure and axis
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.scatter(context_treatment, context_outcome, color="blue", label="Context")
+    ax.scatter(
+        context_treatment, context_outcome, color="blue", label="Context", alpha=0.5
+    )
     ax.scatter(target_treatment, target_outcome, color="red", label="Target", alpha=0.5)
 
     # Ensure correct shape for prediction arrays
@@ -62,13 +61,12 @@ def plot_context_target_predictions(
     for i in range(n_samples):
         mean = np.squeeze(pred_mean[i])
         std = np.squeeze(pred_std[i])
-        ax.plot(new_target_treatment, mean, "g-", alpha=0.8)
+        ax.plot(new_target_treatment, mean, alpha=0.5)
         ax.fill_between(
             new_target_treatment,
             mean - 2 * std,
             mean + 2 * std,
-            color="green",
-            alpha=0.2 / np.sqrt(n_samples),
+            alpha=0.1 / np.sqrt(n_samples),
         )
 
     # Final touches
@@ -139,13 +137,15 @@ def plot_predictions_to_wandb(
                     .to(device)
                 )
 
-                mean, std, _, _ = model(
+                model_output = model(
                     context_data=context,
                     target_data=new_target,
                     intervention_index=intvn_indices,
                     outcome_index=outcome_indices,
                     variable_mask=None,
                 )
+                mean = model_output.pred_mean
+                std = model_output.pred_std
 
                 fig = plot_context_target_predictions(
                     context=context,
