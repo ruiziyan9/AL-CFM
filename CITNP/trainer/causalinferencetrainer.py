@@ -245,7 +245,7 @@ class CausalInferenceTrainer:
                 if masks is not None:
                     masks = masks.to("cuda", dtype=dtype)
 
-                pred_mean, pred_std, prior_mean, prior_std, z_mean, z_std = self.model(
+                model_output = self.model(
                     context_data=context,
                     target_data=target,
                     intervention_index=intvn_indices,
@@ -253,17 +253,12 @@ class CausalInferenceTrainer:
                     variable_mask=masks,
                 )
                 loss = self.model.calculate_loss(
-                    pred_mean=pred_mean,
-                    pred_std=pred_std,
+                    model_output=model_output,
                     target=target,
                     outcome_index=outcome_indices,
-                    z_mean=z_mean,
-                    z_std=z_std,
-                    prior_mean=prior_mean,
-                    prior_std=prior_std,
                 )
 
-                all_loss += th.sum(loss).cpu().item()
+                all_loss += loss.cpu().item()
 
         if self.use_wandb:
             metric_dict = plot_predictions_to_wandb(
@@ -275,7 +270,11 @@ class CausalInferenceTrainer:
             )
 
         # Log the validation loss
-        loss = all_loss / len(val_loader.dataset)
+        dataset = val_loader.dataset
+        loss = all_loss / len(dataset)
+        if isinstance(dataset, th.utils.data.IterableDataset):
+            loss /= dataset.batch_size
+
         metric_dict.update(
             {
                 "val_loss": loss,
@@ -325,7 +324,7 @@ class CausalInferenceTrainer:
             # Zero the parameter gradients
             self.optimizer.zero_grad()
             # Forward pass
-            pred_mean, pred_std, prior_mean, prior_std, z_mean, z_std = self.model(
+            model_output = self.model(
                 context_data=context,
                 target_data=target,
                 intervention_index=intvn_indices,
@@ -333,21 +332,10 @@ class CausalInferenceTrainer:
                 variable_mask=masks,
             )
             loss = self.model.calculate_loss(
-                pred_mean=pred_mean,
-                pred_std=pred_std,
+                model_output=model_output,
                 target=target,
                 outcome_index=outcome_indices,
-                z_mean=z_mean,
-                z_std=z_std,
-                prior_mean=prior_mean,
-                prior_std=prior_std,
             )
-            if isinstance(loss, tuple):
-                data_loss, kl = loss
-                loss = data_loss + kl
-            else:
-                data_loss, kl = None, None
-
             loss.backward()
             # Gradient clipping
             th.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
@@ -357,10 +345,6 @@ class CausalInferenceTrainer:
                 metric_dict = {
                     "train loss": loss.mean().item(),
                 }
-                if data_loss is not None:
-                    metric_dict.update({"data loss": data_loss.mean().item()})
-                if kl is not None:
-                    metric_dict.update({"kl": kl.mean().item()})
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 metric_dict.update({"learning_rate": current_lr})
                 if global_index > 0:

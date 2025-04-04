@@ -2,6 +2,7 @@
 File containing the CausalInferenceModel class
 """
 
+from abc import ABC, abstractmethod
 from typing import Optional
 
 import torch
@@ -11,26 +12,24 @@ from CITNP.models.causaltransformercomponents import (
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
 )
-from CITNP.models.nncomponents import FlashMHCA, build_mlp, build_residual_network
+from CITNP.models.nncomponents import build_mlp
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
-from CITNP.utils.loss import NLLLoss, VILoss
-from CITNP.utils.sampler import EvalZSampler, TrainZSampler, init_mean_mlp, init_std_mlp
-from CITNP.utils.utils import gather_by_node, set_all_except_batchindex_to_zero
+from CITNP.utils.loss import CNPLoss, NLLLoss
+from CITNP.utils.outputs import ModelOutput
+from CITNP.utils.sampler import TrainZSampler
+from CITNP.utils.utils import (
+    gather_by_node,
+    reshape_back_node_attention,
+    reshape_for_node_attention,
+    set_all_except_batchindex_to_zero,
+)
 
 
-class CausalInferenceModel(torch.nn.Module):
-    """
-    Class containing the CausalInferenceModel class.
-    """
+class BaseCausalInference(nn.Module, ABC):
 
-    def __init__(
-        self,
-        config: CausalInfModelConfig,
-    ):
-        """
-        Constructor for the CausalInferenceModel class
-        """
-        super(CausalInferenceModel, self).__init__()
+    def __init__(self, config):
+        super().__init__()
+
         self.d_model = config.d_model
         self.emb_depth = config.emb_depth
         self.dim_feedforward = config.dim_feedforward
@@ -57,27 +56,100 @@ class CausalInferenceModel(torch.nn.Module):
         self.predictor = build_mlp(
             self.d_model,
             self.d_model,
-            dim_out=self.d_model,  # mean and std
+            dim_out=2,  # mean and std
             depth=2,
         )
 
-    def calculate_loss(self, pred_mean, pred_std, target, outcome_index, **kwargs):
+    def _extract_outcome_representation(
+        self, representation: torch.Tensor, outcome_index: torch.Tensor, num_trgt: int
+    ):
+        encoding = representation[:, -num_trgt:]
+        outcome_encoding = gather_by_node(encoding, outcome_index)
+        return outcome_encoding, encoding
+
+    def _predict(self, outcome_encoding):
+        pred = self.predictor(outcome_encoding)
+        mean, prestd = pred.split(1, dim=-1)
+        std = torch.nn.functional.softplus(prestd)
+        return mean, std
+
+    @abstractmethod
+    def calculate_loss(
+        self,
+        model_output: ModelOutput,
+        target: torch.Tensor,
+        outcome_index: torch.Tensor,
+    ):
+        """
+        Calculate the loss for the model.
+        """
+        raise NotImplementedError("Loss calculation not implemented")
+
+    @abstractmethod
+    def forward(
+        self,
+        context_data: torch.Tensor,
+        target_data: torch.Tensor,
+        intervention_index: torch.Tensor,
+        outcome_index: torch.Tensor,
+        variable_mask: Optional[torch.Tensor] = None,
+    ):
+        """
+        Forward pass for the CausalInferenceModel class.
+        """
+        raise NotImplementedError("Forward pass not implemented")
+
+
+class CausalInferenceModel(BaseCausalInference):
+    """
+    Class containing the CausalInferenceModel class.
+    """
+
+    def __init__(
+        self,
+        config: CausalInfModelConfig,
+    ):
+        """
+        Constructor for the CausalInferenceModel class
+        """
+        super().__init__(config)
+        self.d_model = config.d_model
+        self.emb_depth = config.emb_depth
+        self.dim_feedforward = config.dim_feedforward
+        self.nhead = config.nhead
+        self.dropout = config.dropout
+        self.num_layers_encoder = config.num_layers_encoder
+        self.num_nodes = config.num_nodes
+        self.mean_loss_across_samples = config.mean_loss_across_samples
+        self.device = config.device
+        self.dtype = config.dtype
+
+        self.loss = CNPLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples, reduce="mean"
+        )
+        self.eval_loss = CNPLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples, reduce="sum"
+        )
+
+    def calculate_loss(
+        self,
+        model_output: ModelOutput,
+        target: torch.tensor,
+        outcome_index: torch.Tensor,
+    ):
         """
         Calculate the loss for the model.
         """
         # Get the outcome
         target = gather_by_node(target, outcome_index)
-
-        # Calculate the loss
-        # TODO (cristiana): Check with Anish whether 1e-30 is for stability.
-        distribution = torch.distributions.Normal(pred_mean, pred_std + 1e-12)
-        loss = -distribution.log_prob(target)  # + 1e-30)
-        # Sum over the samples and mean over the batch
-        if self.mean_loss_across_samples:
-            loss_all_samples = loss.mean(1)
+        if self.training:
+            return self.loss.calculate_loss(
+                model_output=model_output, trgt_outcome=target
+            )
         else:
-            loss_all_samples = loss.sum(1)
-        return loss_all_samples.mean()
+            return self.eval_loss.calculate_loss(
+                model_output=model_output, trgt_outcome=target
+            )
 
     def forward(
         self,
@@ -109,274 +181,171 @@ class CausalInferenceModel(torch.nn.Module):
         - outcome_index (torch.Tensor): Outcome index tensor with shape
             (batch_size)
         """
-        context_embed = self.encoder.embed(
-            data=context_data,
-            outcome_indices=outcome_index,
-            intervention_indices=intervention_index,
-            context=True,
+        masked_target_data = set_all_except_batchindex_to_zero(
+            data=target_data, batch_index=intervention_index
         )
-        target_embed = self.encoder.embed(
-            data=target_data,
-            outcome_indices=outcome_index,
-            intervention_indices=intervention_index,
-            context=False,
-        )
-
-        masked_target_embed = set_all_except_batchindex_to_zero(
-            data=target_embed, batch_index=intervention_index
-        )
-
-        # shape encoding: (batch_size, num_target, num_nodes, d_model)
+        # shape rep: (batch_size, num_target, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
-            context_embed=context_embed,
-            target_embed=masked_target_embed,
-            target_train_embed=None,
+            context_data=context_data,
+            target_data=masked_target_data,
+            target_train_data=None,
             outcome_indices=outcome_index,
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
         )
-        encoding = rep[:, -num_trgt:]
-
-        # We want to find p(outcome | do(intervention))
-        outcome_encoding = gather_by_node(encoding, outcome_index)
-
-        pred = self.predictor(outcome_encoding)
-        mean, log_var = pred.split(1, dim=-1)
-        std = torch.exp(0.5 * log_var)
-
-        return mean, std, None, None, None, None
+        # shape outcome_encoding: (batch_size, num_target, d_model)
+        outcome_encoding, _ = self._extract_outcome_representation(
+            representation=rep,
+            outcome_index=outcome_index,
+            num_trgt=num_trgt,
+        )
+        mean, std = self._predict(outcome_encoding)
+        return ModelOutput(pred_mean=mean, pred_std=std)
 
 
-class LocalLatentCausalInferenceModel(CausalInferenceModel):
+class LocalLatentCausalInferenceModel(BaseCausalInference):
 
     def __init__(
         self,
         config: LocalLatentConfig,
     ):
-        causalconfig = CausalInfModelConfig(
-            d_model=config.d_model,
-            emb_depth=config.emb_depth,
-            dim_feedforward=config.dim_feedforward,
-            nhead=config.nhead,
-            dropout=config.dropout,
-            num_layers_encoder=config.num_layers_encoder,
-            mean_loss_across_samples=config.mean_loss_across_samples,
-            num_nodes=config.num_nodes,
-            device=config.device,
-            dtype=config.dtype,
-        )
-        super().__init__(causalconfig)
+        super().__init__(config)
         self.num_z_samples = config.num_z_samples_train
         self.num_z_samples_eval = config.num_z_samples_eval
-        self.use_vi = config.use_vi
         self.mean_loss_across_samples = config.mean_loss_across_samples
 
         self.decoder_depth = config.decoder_depth
 
-        self.mean_mlp = nn.Linear(
-            in_features=self.d_model,
-            out_features=1,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        self.std_mlp = nn.Linear(
-            in_features=self.d_model,
-            out_features=1,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        init_mean_mlp(self.mean_mlp)
-        init_std_mlp(self.std_mlp)
-
-        self.decoder = nn.TransformerDecoder(
-            CausalTransformerDecoderLayer(
-                d_model=config.d_model,
-                nhead=config.nhead,
-                dim_feedforward=config.dim_feedforward,
-                dropout=config.dropout,
-                norm_first=True,
-                batch_first=True,
-                device=config.device,
-                dtype=config.dtype,
-                bias=False,
-            ),
-            num_layers=config.decoder_depth,
-        )
-
-        self.pre_z_encoder = FlashMHCA(
-            d_model=self.d_model,
-            nhead=self.nhead,
-            batch_first=True,
-            bias=False,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        self.z_encoder = build_residual_network(
-            num_blocks=1,
-            input_dim=self.d_model,
-            hidden_dim=self.d_model,
-            output_dim=self.d_model,
-            device=self.device,
-            dtype=self.dtype,
-        )
-
-        self.z_rep_merger = build_residual_network(
-            num_blocks=self.emb_depth,
-            input_dim=self.d_model * 2,
-            hidden_dim=self.d_model,
-            output_dim=self.d_model,
-            device=self.device,
-            dtype=self.dtype,
-        )
+        if self.decoder_depth != 0:
+            self.decoder = nn.TransformerDecoder(
+                CausalTransformerDecoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.nhead,
+                    dim_feedforward=config.dim_feedforward,
+                    dropout=config.dropout,
+                    norm_first=True,
+                    batch_first=True,
+                    device=config.device,
+                    dtype=config.dtype,
+                    bias=False,
+                ),
+                num_layers=config.decoder_depth,
+            )
 
         self.train_z_sampler = TrainZSampler(
-            encoder=self.z_encoder,
             d_model=self.d_model,
-            num_samples=self.num_z_samples,
+            nhead=self.nhead,
+            emb_depth=self.emb_depth,
             device=self.device,
             dtype=self.dtype,
         )
-        self.eval_z_sampler = self.train_z_sampler
-        # self.eval_z_sampler = EvalZSampler(
-        #     d_model=self.d_model,
-        #     num_samples_eval=self.num_z_samples_eval,
-        # )
 
-        self.loss = NLLLoss(mean_loss_across_samples=self.mean_loss_across_samples)
-        self.eval_loss = NLLLoss(mean_loss_across_samples=self.mean_loss_across_samples)
+        self.loss = NLLLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples, reduce="mean"
+        )
+        self.eval_loss = NLLLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples, reduce="sum"
+        )
 
-    def extract_training_target(self, target_data, intervention_index, outcome_index):
-        if self.training:
-            # During training we want the true outcome.
-            only_intvn_trgt = set_all_except_batchindex_to_zero(
-                data=target_data, batch_index=intervention_index
-            )
-            only_outcome_trgt = set_all_except_batchindex_to_zero(
-                data=target_data, batch_index=outcome_index
-            )
-            masked_trgt_train = only_intvn_trgt + only_outcome_trgt
-        else:
-            masked_trgt_train = None
-        return masked_trgt_train
+    def _sample_z(
+        self, outcome_rep: torch.Tensor, trgt_rep: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+        -----
+        - outcome_rep (torch.Tensor): Tensor of shape
+            (batch_size, num_trgt, d_model) containing the representation of the
+            outcome node.
+        - trgt_rep (torch.Tensor): Tensor of shape
+            (batch_size, num_trgt, num_nodes, d_model) containing the
+            representation of the target nodes.
 
-    def extract_representation(
+        Returns:
+        --------
+        - merged_rep (torch.Tensor): Tensor of shape
+            (num_z_samples, batch_size, num_trgt, d_model) containing the
+            merged representation of the outcome and z samples.
+        """
+        num_samples = self.num_z_samples if self.training else self.num_z_samples_eval
+        merged_rep, _, _ = self.train_z_sampler(
+            outcome_rep=outcome_rep, trgt_rep=trgt_rep, num_samples=num_samples
+        )
+        return merged_rep
+
+    def _decode(
         self,
-        representation,
-        num_trgt,
+        representation: torch.Tensor,
     ):
         """
-        Extract the representation based on training or not.
-
-        Returns:
-        --------
-        - R_x (torch.Tensor): Tensor of shape (batch_size, num_trgt, d_model)
-            containing the representation of the target nodes.
-        - R_yx (torch.Tensor): Tensor of shape (batch_size, num_trgt, d_model)
-            containing the representation of the target nodes with the outcome node.
-        """
-        R_x = representation[:, -num_trgt:]
-        # if self.training:
-        #     start_index = -(2 * num_trgt)
-        #     end_index = start_index + num_trgt
-        #     R_yx = representation[:, start_index:end_index]
-        # else:
-        R_yx = None
-        return R_x, R_yx
-
-    def sample_z(self, outcome_x, R_x):
-        """
         Args:
         -----
-        - outcome_yx (torch.Tensor): Tensor of shape (batch_size, num_trgt, d_model)
-            containing the parameters of the distribution of z.
+        - representation (torch.Tensor): Tensor of shape
+            (num_z_samples, batch_size, num_trgt, d_model) containing the
+            merged representation of the outcome and z samples.
 
         Returns:
         --------
-        - z_samples (torch.Tensor): Tensor of shape (num_z_samples, batch_size, d_model)
+        - decoder_rep (torch.Tensor): Tensor of shape
+            (num_z_samples, batch_size, num_trgt, d_model) containing the
+            decoded representation.
         """
-        batch_size, num_trgt, _, d_model = R_x.shape
-        outcome_x = outcome_x.unsqueeze(2)
-        # Reshaper both
-        batched_R_x = R_x.reshape(batch_size * num_trgt, -1, d_model)
-        batched_outcome_x = outcome_x.reshape(batch_size * num_trgt, -1, d_model)
-        pre_z_rep = self.pre_z_encoder(
-            query=batched_outcome_x,
-            key=batched_R_x,
-            value=batched_R_x,
-        )
-        unbatched_pre_z_rep = pre_z_rep.reshape(batch_size, num_trgt, d_model)
-
-        # shape z: (batch_size, num_trgt, 1, 2*d_model)
-        if self.training:
-            zsamples, q_mean, q_std = self.train_z_sampler.sample(
-                unbatched_pre_z_rep, num_samples=self.num_z_samples
-            )
-            # zsamples_eval, prior_mean, prior_std = self.eval_z_sampler.sample(
-            #     outcome_x, num_samples=self.num_z_samples_eval
-            # )
-            # del zsamples_eval
-            prior_mean, prior_std = None, None
+        if self.decoder_depth == 0:
+            decoder_rep = representation
         else:
-            zsamples, prior_mean, prior_std = self.eval_z_sampler.sample(
-                unbatched_pre_z_rep, num_samples=self.num_z_samples_eval
+            num_z_samples, batch_size, num_trgt, d_model = representation.shape
+            rep_batched = reshape_for_node_attention(
+                representation,
+                num_z_samples,
+                batch_size,
+                num_trgt,
+                d_model,
             )
-            q_mean, q_std = None, None
-        return zsamples, prior_mean, prior_std, q_mean, q_std
+            decoder_rep_batched = self.decoder(
+                tgt=rep_batched,
+                memory=None,
+            )
+            decoder_rep = reshape_back_node_attention(
+                decoder_rep_batched,
+                num_z_samples,
+                batch_size,
+                num_trgt,
+                d_model,
+            )
+        return decoder_rep
 
-    def merge_zsamples_rep(self, z_samples, rep):
-        """
-        Args:
-        -----
-        - z_samples (torch.Tensor): Tensor of shape
-            (num_z_samples, batch_size, num_trgt, d_model)
-        - rep (torch.Tensor): Tensor of shape
-            (batch_size, num_trgt, d_model)
-        """
-        num_z_samples, batch_size, num_trgt, d_model = z_samples.shape
-        # shape rep_expand: (num_z_samples, batch_size, num_trgt, d_model)
-        rep_expand = rep.unsqueeze(0).expand_as(z_samples)
+    def _predict(self, decoder_rep: torch.Tensor):
+        pred = self.predictor(decoder_rep)
+        mean, prestd = pred.split(1, dim=-1)
+        std = torch.nn.functional.softplus(prestd)
+        return mean, std
 
-        # shape rep_batched: (num_z_samples * batch_size, num_trgt, d_model)
-        rep_batched = rep_expand.reshape(num_z_samples * batch_size, num_trgt, d_model)
-        z_batched = z_samples.reshape(num_z_samples * batch_size, num_trgt, d_model)
-
-        # concatenate along the last dimension
-        # shape z_rep_batched: (num_z_samples * batch_size, num_trgt, 2*d_model)
-        z_rep_batched = torch.cat((z_batched, rep_batched), dim=-1)
-
-        z_rep = self.z_rep_merger(z_rep_batched)
-        z_rep_unbatched = z_rep.reshape(num_z_samples, batch_size, num_trgt, d_model)
-        return z_rep_unbatched
+    def calculate_loss(
+        self,
+        model_output: ModelOutput,
+        target: torch.Tensor,
+        outcome_index: torch.Tensor,
+    ):
+        trgt_outcome = gather_by_node(target, outcome_index)
+        if self.training:
+            return self.loss.calculate_loss(
+                model_output=model_output, trgt_outcome=trgt_outcome
+            )
+        else:
+            return self.eval_loss.calculate_loss(
+                model_output=model_output, trgt_outcome=trgt_outcome
+            )
 
     def forward(
         self,
-        context_data,
-        target_data,
-        intervention_index,
-        outcome_index,
-        variable_mask=None,
+        context_data: torch.Tensor,
+        target_data: torch.Tensor,
+        intervention_index: torch.Tensor,
+        outcome_index: torch.Tensor,
+        variable_mask: Optional[torch.Tensor] = None,
     ):
-        # context_embed = self.encoder.embed(
-        #     data=context_data,
-        #     outcome_indices=outcome_index,
-        #     intervention_indices=intervention_index,
-        #     context=True,
-        # )
-        # target_embed = self.encoder.embed(
-        #     data=target_data,
-        #     outcome_indices=outcome_index,
-        #     intervention_indices=intervention_index,
-        #     context=False,
-        # )
-
         masked_target_data = set_all_except_batchindex_to_zero(
             data=target_data, batch_index=intervention_index
         )
-
-        # masked_trgt_train = self.extract_training_target(
-        #     target_embed, intervention_index, outcome_index
-        # )
-
         # shape rep: (batch_size, num_samples, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
             context_data=context_data,
@@ -386,96 +355,13 @@ class LocalLatentCausalInferenceModel(CausalInferenceModel):
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
         )
-        # shape encoding: (batch_size, num_trgt, num_nodes, d_model)
-        R_x, R_yx = self.extract_representation(rep, num_trgt)
-
-        # We want to find p(outcome | do(intervention))
-        # shape outcome_encoding: (batch_size, num_trgt, d_model)
-        outcome_x = gather_by_node(R_x, outcome_index)
-        if self.training and R_yx is not None:
-            outcome_yx = gather_by_node(R_yx, outcome_index)
-        else:
-            outcome_yx = None
-
+        outcome_rep, trgt_rep = self._extract_outcome_representation(
+            representation=rep,
+            outcome_index=outcome_index,
+            num_trgt=num_trgt,
+        )
         # shape z_samples: (num_z_samples, batch_size, num_trgt, d_model)
-        z_samples, prior_mean, prior_std, z_mean, z_std = self.sample_z(outcome_x, R_x)
-
-        # Merge outcome_rep and z_samples
-        final_rep = self.merge_zsamples_rep(z_samples, outcome_x)
-        # final_rep = z_samples
-
-        if self.decoder_depth != 0:
-            num_z_samples, batch_size, num_trgt, _ = final_rep.shape
-            final_rep_batched = final_rep.reshape(
-                num_z_samples * batch_size, num_trgt, -1
-            )
-            decoder_rep_batched = self.decoder(
-                tgt=final_rep_batched,
-                memory=None,
-            )
-            decoder_rep = decoder_rep_batched.reshape(
-                num_z_samples, batch_size, num_trgt, -1
-            )
-        else:
-            decoder_rep = final_rep
-
-        pred = self.predictor(decoder_rep)
-        # mean, std = pred.split(1, dim=-1)
-        mean = self.mean_mlp(pred)
-        std = self.std_mlp(pred)
-        std = torch.nn.functional.softplus(std)
-
-        return mean, std, prior_mean, prior_std, z_mean, z_std
-
-    def calculate_loss(
-        self,
-        pred_mean,
-        pred_std,
-        target,
-        outcome_index,
-        z_mean,
-        z_std,
-        prior_mean,
-        prior_std,
-    ):
-        """
-        Args:
-        -----
-        - pred_mean (torch.Tensor): Tensor of shape
-            (num_z_samples, batch_size, num_trgt, 1) containing the mean of the
-            predicted distribution.
-        - pred_std (torch.Tensor): Tensor of shape
-            (num_z_samples, batch_size, num_trgt, 1) containing the std of the
-            predicted distribution.
-        - target (torch.Tensor): Tensor of shape
-            (batch_size, num_trgt, num_nodes, 1) containing the target values.
-        - outcome_index (torch.Tensor): Tensor of shape (batch_size,) with the index
-            of the outcome node for each dataset.
-        - z_mean (torch.Tensor): Tensor of shape
-            (batch_size, num_trgt, 1, d_model) containing the mean of the
-            z distribution.
-        - z_std (torch.Tensor): Tensor of shape
-            (batch_size, num_trgt, 1, d_model) containing the std of the
-            z distribution.
-        """
-        trgt_outcome = gather_by_node(target, outcome_index)
-        if self.training:
-            return self.loss.calculate_loss(
-                pred_mean=pred_mean,
-                pred_std=pred_std,
-                target=trgt_outcome,
-                z_mean=z_mean,
-                z_std=z_std,
-                prior_mean=prior_mean,
-                prior_std=prior_std,
-            )
-        else:
-            return self.eval_loss.calculate_loss(
-                pred_mean=pred_mean,
-                pred_std=pred_std,
-                target=trgt_outcome,
-                z_mean=z_mean,
-                z_std=z_std,
-                prior_mean=prior_mean,
-                prior_std=prior_std,
-            )
+        z_rep_merged = self._sample_z(outcome_rep, trgt_rep)
+        decoder_rep = self._decode(z_rep_merged)
+        pred_mean, pred_std = self._predict(decoder_rep)
+        return ModelOutput(pred_mean=pred_mean, pred_std=pred_std)

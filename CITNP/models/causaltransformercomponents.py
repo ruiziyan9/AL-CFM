@@ -7,22 +7,12 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from CITNP.models.nncomponents import build_mlp
-
-
-def _reshape_for_sample_attention(src, B, S, N, D):
-    return src.permute(0, 2, 1, 3).reshape(B * N, S, D)
-
-
-def _reshape_back_sample_attention(src, B, S, N, D):
-    return src.reshape(B, N, S, D).permute(0, 2, 1, 3)
-
-
-def _reshape_for_node_attention(src, B, S, N, D):
-    return src.reshape(B * S, N, D)
-
-
-def _reshape_back_node_attention(src, B, S, N, D):
-    return src.reshape(B, S, N, D)
+from CITNP.utils.utils import (
+    reshape_back_node_attention,
+    reshape_back_sample_attention,
+    reshape_for_node_attention,
+    reshape_for_sample_attention,
+)
 
 
 class CausalInfTransformerEncoder(nn.Module):
@@ -59,7 +49,7 @@ class CausalInfTransformerEncoder(nn.Module):
             # Attention across samples
             if idx_layer % 2 == 0:
                 # shape [batch_size * num_nodes, num_samples, d_model]
-                src = _reshape_for_sample_attention(
+                src = reshape_for_sample_attention(
                     src, batch_size, num_samples, num_nodes, d_model
                 )
                 src = mod(
@@ -69,13 +59,13 @@ class CausalInfTransformerEncoder(nn.Module):
                     is_causal=is_causal,
                 )
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = _reshape_back_sample_attention(
+                src = reshape_back_sample_attention(
                     src, batch_size, num_samples, num_nodes, d_model
                 )
             # Attention across nodes
             else:
                 # shape [batch_size * num_samples, num_nodes, d_model]
-                src = _reshape_for_node_attention(
+                src = reshape_for_node_attention(
                     src, batch_size, num_samples, num_nodes, d_model
                 )
                 # Extra zeros for the query
@@ -95,7 +85,7 @@ class CausalInfTransformerEncoder(nn.Module):
                     bool_pad = node_src_key_padding_mask == -float("inf")
                     src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = _reshape_back_node_attention(
+                src = reshape_back_node_attention(
                     src, batch_size, num_samples, num_nodes, d_model
                 )
         return src

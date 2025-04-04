@@ -9,6 +9,22 @@ import numpy as np
 import torch
 
 
+def reshape_for_sample_attention(src, B, S, N, D):
+    return src.permute(0, 2, 1, 3).reshape(B * N, S, D)
+
+
+def reshape_back_sample_attention(src, B, S, N, D):
+    return src.reshape(B, N, S, D).permute(0, 2, 1, 3)
+
+
+def reshape_for_node_attention(src, B, S, N, D):
+    return src.reshape(B * S, N, D)
+
+
+def reshape_back_node_attention(src, B, S, N, D):
+    return src.reshape(B, S, N, D)
+
+
 def send_to_device(data, device):
     if isinstance(data, torch.Tensor):
         return data.to(device)

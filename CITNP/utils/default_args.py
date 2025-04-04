@@ -105,7 +105,7 @@ def parse_args():
     parser.add_argument(
         "--function_generator",
         type=str,
-        default="uniformlinear",
+        default="simplegp",
         help="Type of function to generate.",
     )
     parser.add_argument(
@@ -115,7 +115,7 @@ def parse_args():
         "--graph_degrees",
         nargs="+",
         type=int,
-        default=[1],
+        default=[1, 2, 3],
         help="Degree(s) for the graph.",
     )
     parser.add_argument(

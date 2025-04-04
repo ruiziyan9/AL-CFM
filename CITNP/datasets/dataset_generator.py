@@ -147,8 +147,8 @@ class InterventionDatasetGenerator(IterableDataset):
         """
         # TODO: Do we intervene on a variable that has no parents?
         # Choose intervention index
-        # intervention_index = np.random.choice(dag.shape[0])
-        intervention_index = np.zeros(1)
+        intervention_index = np.random.choice(dag.shape[0])
+        # intervention_index = np.zeros(1)
         return intervention_index
 
     def pad_data(self, data: np.ndarray, current_vars: int) -> np.ndarray:
@@ -274,8 +274,6 @@ class InterventionDatasetGenerator(IterableDataset):
             )[0]
             # find the index of the intervened variable post permutation
             intvn_index = np.where(permutation_indices == intvn_index)[0][0]
-
-            intvn_index = (intvn_index + 1) % 2
 
             # Permute data
             obs_data, intvn_data = self.permute_data(
