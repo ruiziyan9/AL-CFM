@@ -12,6 +12,42 @@ def build_mlp(dim_in, dim_hid, dim_out, depth):
     return nn.Sequential(*layers)
 
 
+class Predictor(nn.Module):
+    """
+    A simple feedforward neural network with a linear layer followed by a GELU activation.
+    """
+
+    def __init__(self, d_model, depth):
+        super(Predictor, self).__init__()
+        self.pred = build_mlp(
+            d_model,
+            d_model,
+            dim_out=d_model,  # mean and std
+            depth=depth,
+        )
+        self.mean_mlp = nn.Linear(d_model, 1)
+        self.std_mlp = nn.Linear(d_model, 1)
+
+    def _init_weights(self):
+        """
+        Initializes linear layers with Xavier initialization.
+        """
+        for layer in self.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.kaiming_normal_(layer.weight)
+                nn.init.zeros_(layer.bias)
+        self.mean_mlp.weight.data[:] *= 0.01
+        self.std_mlp.weight.data[:] *= 0.01
+
+    def forward(self, x):
+        out = self.pred(x)
+        act_out = torch.nn.functional.gelu(out)
+        mean = self.mean_mlp(act_out)
+        prestd = self.std_mlp(act_out)
+        std = torch.nn.functional.softplus(prestd)
+        return mean, std
+
+
 class FlashMHCA(nn.Module):
     def __init__(
         self,

@@ -11,6 +11,7 @@ import torch.nn as nn
 from CITNP.models.causaltransformercomponents import (
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
+    Predictor,
 )
 from CITNP.models.nncomponents import build_mlp
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
@@ -53,11 +54,9 @@ class BaseCausalInference(nn.Module, ABC):
             dtype=self.dtype,
         )
 
-        self.predictor = build_mlp(
-            self.d_model,
-            self.d_model,
-            dim_out=2,  # mean and std
-            depth=2,
+        self.predictor = Predictor(
+            d_model=self.d_model,
+            depth=self.emb_depth,
         )
 
     def _mask_target_data(
