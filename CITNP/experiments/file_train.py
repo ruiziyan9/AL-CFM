@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 import wandb
 
+from typing import Union
 from CITNP.models.causalinferencemodel import (
     CausalInferenceModel,
     LocalLatentCausalInferenceModel,
@@ -42,12 +43,16 @@ def main(args: argparse.Namespace):
 
     val_dir = data_dir / "val"
     val_files = list(val_dir.iterdir())
-    val_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
+    val_dataset = MultipleFileDataset(
+        [i for i in val_files if i.suffix == ".hdf5"]
+    )
     # train_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
 
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
-    test_dataset = MultipleFileDataset([i for i in test_files if i.suffix == ".hdf5"])
+    test_dataset = MultipleFileDataset(
+        [i for i in test_files if i.suffix == ".hdf5"]
+    )
 
     MODEL_ARGS = {
         "d_model": args.d_model,
@@ -57,19 +62,34 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
-        # "num_z_samples_train": args.num_z_samples_train,
-        # "num_z_samples_eval": args.num_z_samples_eval,
-        # "decoder_depth": args.decoder_depth,
         "mean_loss_across_samples": args.mean_loss_across_samples,
         "device": args.device,
         "dtype": args.dtype,
     }
 
-    # locallatentconfig = LocalLatentConfig(**MODEL_ARGS)
-    # model = LocalLatentCausalInferenceModel(locallatentconfig)
+    # Add model-specific args dynamically
+    if args.model_type == "cnp":
+        MODEL_ARGS["num_mixture_components"] = args.num_mixture_components
+    elif args.model_type == "locallatent":
+        MODEL_ARGS.update(
+            {
+                "num_z_samples_train": args.num_z_samples_train,
+                "num_z_samples_eval": args.num_z_samples_eval,
+                "decoder_depth": args.decoder_depth,
+            }
+        )
+    else:
+        raise ValueError(f"Unknown model type: {args.model_type}")
 
-    config = CausalInfModelConfig(**MODEL_ARGS)
-    model = CausalInferenceModel(config)
+    config: Union[CausalInfModelConfig, LocalLatentConfig]
+    if args.model_type == "cnp":
+        config = CausalInfModelConfig(**MODEL_ARGS)
+        model = CausalInferenceModel(config)
+        project_name = "meta_causal_inference"
+    else:
+        config = LocalLatentConfig(**MODEL_ARGS)
+        model = LocalLatentCausalInferenceModel(config)
+        project_name = "meta_causal_inference"
 
     if args.results_path is None:
         results_path = Path.cwd()
@@ -87,7 +107,7 @@ def main(args: argparse.Namespace):
         "bfloat16": args.dtype == torch.bfloat16,
         "num_workers": args.num_workers,
         "save_dir": model_save_dir,
-        "cntxt_split": [0.2, 0.8],
+        "cntxt_split": [0.05, 0.2],
         "sample_size": args.sample_size,
         "log_step": args.log_step,
         "save_checkpoint_every": args.save_checkpoint_every,
@@ -98,7 +118,7 @@ def main(args: argparse.Namespace):
             # Set the entity
             entity="npcausalinf",
             # Set the project where this run will be logged
-            project="zlocal",
+            project=project_name,
             name=args.run_name,
             # Track hyperparameters and run metadata
             config={**vars(args), **TRAINER_ARGS, **MODEL_ARGS},
@@ -137,6 +157,7 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     # These fixed some attention errors for me
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
     torch.backends.cuda.enable_flash_sdp(True)
 
     parser = argparse.ArgumentParser()

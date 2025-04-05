@@ -29,9 +29,9 @@ class CausalInfTransformerEncoder(nn.Module):
     ) -> None:
         super(CausalInfTransformerEncoder, self).__init__()
         assert len(encoder_layers) > 0, "Encoder must have at least one layer."
-        assert (
-            len(encoder_layers) % 2 == 0
-        ), "Encoder must have an even number of layers."
+        assert len(encoder_layers) % 2 == 0, (
+            "Encoder must have an even number of layers."
+        )
         self.layers = encoder_layers
 
     def forward(
@@ -107,7 +107,7 @@ class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
         layer_norm_eps: float = 0.00001,
         batch_first: bool = True,
         norm_first: bool = True,
-        bias: bool = False,
+        bias: bool = True,
         device=None,
         dtype=None,
     ) -> None:
@@ -154,7 +154,8 @@ class CausalTransformerDecoderLayer(nn.TransformerDecoderLayer):
             x = x + self._ff_block(self.norm3(x))
         else:
             x = self.norm1(
-                x + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)
+                x
+                + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)
             )
             x = self.norm3(x + self._ff_block(x))
         return x
@@ -239,7 +240,7 @@ class CausalInfEncoder(nn.Module):
             nhead=nhead,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            bias=False,
+            bias=True,
             batch_first=True,
             norm_first=True,
             device=device,
@@ -303,7 +304,9 @@ class CausalInfEncoder(nn.Module):
         Creates the full input by concatenating the context and target data.
         """
         if self.training and target_train_data is not None:
-            full_data = torch.cat([context_data, target_train_data, target_data], dim=1)
+            full_data = torch.cat(
+                [context_data, target_train_data, target_data], dim=1
+            )
         else:
             full_data = torch.cat([context_data, target_data], dim=1)
         return full_data
@@ -382,7 +385,9 @@ class CausalInfEncoder(nn.Module):
             target_train_embed = None
 
         # shape [batch_size, num_context + num_target, num_nodes, d_model]
-        full_data = self.create_input(context_embed, target_embed, target_train_embed)
+        full_data = self.create_input(
+            context_embed, target_embed, target_train_embed
+        )
         sample_mask, num_target = self.create_sample_mask(
             context_embed, target_embed, target_train_embed
         )

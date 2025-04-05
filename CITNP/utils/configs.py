@@ -5,7 +5,7 @@ import torch
 
 
 @dataclass
-class CausalInfModelConfig:
+class Config:
     d_model: int
     emb_depth: int
     dim_feedforward: int
@@ -19,7 +19,12 @@ class CausalInfModelConfig:
 
 
 @dataclass
-class LocalLatentConfig(CausalInfModelConfig):
+class CausalInfModelConfig(Config):
+    num_mixture_components: Optional[int] = 1
+
+
+@dataclass
+class LocalLatentConfig(Config):
     decoder_depth: int
     num_z_samples_train: int
     num_z_samples_eval: int

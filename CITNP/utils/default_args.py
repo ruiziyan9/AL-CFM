@@ -19,13 +19,15 @@ def parse_args():
     parser.add_argument(
         "--work_dir",
         type=str,
-        default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
+        # default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
+        default="/scratches/kolmogorov_2/cdd43/CausalInferenceNeuralProcess/CITNP",
         help="Path to the working directory.",
     )
     parser.add_argument(
         "--data_file",
         type=str,
-        default="anticausal_simplegplvm_['ER']_2_1000",
+        # default="anticausal_simplegplvm_['ER']_2_1000",
+        default="simplegp_['ER']_3_1000",
         help="Name of the data file to use.",
     )
 
@@ -38,9 +40,18 @@ def parse_args():
         default=False,
         help="Whether to run in debug mode.",
     )
-    parser.add_argument("--d_model", type=int, default=256, help="Model dimension.")
-    parser.add_argument("--emb_depth", type=int, default=2, help="Embedding depth.")
-    parser.add_argument("--decoder_depth", type=int, default=0, help="Decoder depth.")
+    parser.add_argument(
+        "--model_type", choices=["cnp", "locallatent"], default="cnp"
+    )
+    parser.add_argument(
+        "--d_model", type=int, default=256, help="Model dimension."
+    )
+    parser.add_argument(
+        "--emb_depth", type=int, default=2, help="Embedding depth."
+    )
+    parser.add_argument(
+        "--decoder_depth", type=int, default=0, help="Decoder depth."
+    )
     parser.add_argument(
         "--dim_feedforward",
         type=int,
@@ -59,8 +70,15 @@ def parse_args():
     parser.add_argument(
         "--mean_loss_across_samples",
         action="store_true",
-        default=False,
+        default=True,
         help="Whether to average the loss across samples.",
+    )
+    # MoG args
+    parser.add_argument(
+        "--num_mixture_components",
+        type=int,
+        default=1,
+        help="Number of components in MoG.",
     )
     # Local VI args
     parser.add_argument(
@@ -125,9 +143,11 @@ def parse_args():
         help="Number of iterations per epoch.",
     )
     parser.add_argument(
-        "--learning_rate", type=float, default=0.0001, help="Learning rate."
+        "--learning_rate", type=float, default=0.0005, help="Learning rate."
     )
-    parser.add_argument("--run_name", type=str, default=None, help="Name of the run.")
+    parser.add_argument(
+        "--run_name", type=str, default=None, help="Name of the run."
+    )
 
     # Training args
     parser.add_argument("--epochs", type=int, default=2, help="Number of epochs.")
@@ -140,7 +160,7 @@ def parse_args():
     parser.add_argument(
         "--lr_warmup_ratio",
         type=float,
-        default=0.1,
+        default=0.02,
         help="Warmup ratio for learning rate.",
     )
     parser.add_argument(

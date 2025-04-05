@@ -4,9 +4,8 @@ File to train the transformer NP classifier model.
 
 from functools import partial
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Sequence
 
-import torch
 import torch as th
 import wandb
 from tqdm import tqdm
@@ -75,7 +74,7 @@ class CausalInferenceTrainer:
         use_wandb: bool = True,
         log_step: int = 500,
         save_checkpoint_every: int = 10,
-        callback: Optional[List[Callable]] = None,
+        callback: Optional[Sequence[Callable]] = None,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset
@@ -143,7 +142,9 @@ class CausalInferenceTrainer:
             collate_fn=collator(is_training=False),
         )
 
-    def apply_learning_rate_warmup(self, epoch, step, steps_per_epoch, lr_warmup_steps):
+    def apply_learning_rate_warmup(
+        self, epoch, step, steps_per_epoch, lr_warmup_steps
+    ):
         """
         Warmup should be around 10% of the total steps.
         """
@@ -230,7 +231,9 @@ class CausalInferenceTrainer:
             self.model.to(dtype)
 
             all_loss = 0
-            for i, data in enumerate(tqdm(val_loader, desc="Validation", leave=False)):
+            for i, data in enumerate(
+                tqdm(val_loader, desc="Validation", leave=False)
+            ):
                 # Get the inputs and targets
                 context, target, intvn_indices, outcome_indices, masks, _ = (
                     send_to_device(
@@ -310,9 +313,11 @@ class CausalInferenceTrainer:
                 lr_warmup_steps=lr_warmup_steps,
             )
             # Get the inputs and targets
-            context, target, intvn_indices, outcome_indices, masks, _ = send_to_device(
-                list(data),
-                device="cuda",
+            context, target, intvn_indices, outcome_indices, masks, _ = (
+                send_to_device(
+                    list(data),
+                    device="cuda",
+                )
             )
             context, target = send_to_device(
                 [context, target],
@@ -348,7 +353,9 @@ class CausalInferenceTrainer:
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 metric_dict.update({"learning_rate": current_lr})
                 if global_index > 0:
-                    metric_dict = self.validate_single_epoch(val_loader, metric_dict)
+                    metric_dict = self.validate_single_epoch(
+                        val_loader, metric_dict
+                    )
                     metric_dict = self.test_single_epoch(test_loader, metric_dict)
                     if self.callback is not None:
                         for callback in self.callback:
