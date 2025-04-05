@@ -1,5 +1,6 @@
 from typing import List
 
+import einops
 import matplotlib.pyplot as plt
 import numpy as np
 import torch as th
@@ -23,18 +24,22 @@ def plot_context_target_predictions(
     context,
     target,
     new_target,
-    pred_mean,
-    pred_std,
+    model_output,
     treatment_idx,
     outcome_index,
     return_fig=False,
+    num_mog_samples=15,
 ):
     # Convert to numpy
     context = to_numpy(context)
     target = to_numpy(target)
     new_target = to_numpy(new_target)
-    pred_mean = to_numpy(pred_mean)
-    pred_std = to_numpy(pred_std)
+    pred_mean = to_numpy(model_output.pred_mean)
+    pred_std = to_numpy(model_output.pred_std)
+    if model_output.weights is not None:
+        weights = to_numpy(model_output.weights)
+    else:
+        weights = None
 
     # Extract relevant columns
     context_treatment = extract_column(context, treatment_idx)
@@ -62,17 +67,46 @@ def plot_context_target_predictions(
         pred_std = np.expand_dims(pred_std, axis=0)
 
     # Plot predictions
-    n_samples = pred_mean.shape[0]
-    for i in range(n_samples):
-        mean = np.squeeze(pred_mean[i])
-        std = np.squeeze(pred_std[i])
-        ax.plot(new_target_treatment, mean, alpha=0.5)
-        ax.fill_between(
+    # If the prediction is not an MoG, plot the mean and std
+    if weights is None:
+        n_samples = pred_mean.shape[0]
+        for i in range(n_samples):
+            mean = np.squeeze(pred_mean[i])
+            std = np.squeeze(pred_std[i])
+            ax.plot(new_target_treatment, mean, alpha=0.5)
+            ax.fill_between(
+                new_target_treatment,
+                mean - 2 * std,
+                mean + 2 * std,
+                alpha=0.1 / np.sqrt(n_samples),
+            )
+    # If the prediction is an MoG, plot samples from MoG
+    else:
+        # Plot mean prediction.
+        mean_weighted = np.squeeze((pred_mean * weights).sum(axis=-1)[0])
+        plt.plot(
             new_target_treatment,
-            mean - 2 * std,
-            mean + 2 * std,
-            alpha=0.1 / np.sqrt(n_samples),
+            mean_weighted,
+            color="green",
+            label="Predicted Mean",
+            zorder=1,
         )
+        # Plot samples.
+        for _ in range(num_mog_samples):
+            samples = to_numpy(
+                sample_MoG(
+                    model_output.pred_mean,
+                    model_output.pred_std,
+                    model_output.weights,
+                )
+            )
+            plt.scatter(
+                new_target_treatment,
+                samples,
+                color="magenta",
+                alpha=0.1,
+                zorder=5,
+            )
 
     # Final touches
     ax.set_xlabel("Treatment")
@@ -149,15 +183,12 @@ def plot_predictions_to_wandb(
                     outcome_index=outcome_indices,
                     variable_mask=None,
                 )
-                mean = model_output.pred_mean
-                std = model_output.pred_std
 
                 fig = plot_context_target_predictions(
                     context=context,
                     target=target,
                     new_target=new_target,
-                    pred_mean=mean,
-                    pred_std=std,
+                    model_output=model_output,
                     treatment_idx=intvn_indices,
                     outcome_index=outcome_indices,
                     return_fig=True,
@@ -169,3 +200,45 @@ def plot_predictions_to_wandb(
                 plots_logged += 1
     metric_dict["prediction/plots"] = wandb_images
     return metric_dict
+
+
+def sample_MoG(means, stds, weights):
+    """
+    Sample from a Mixture of Gaussians (MoG).
+
+    Args:
+        means: [B, N, D, K] - Means of Gaussian components
+        stds: [B, N, D, K] - Standard deviations
+        weights: [B, N, D, K] - Mixture weights (not necessarily normalized)
+
+    Returns:
+        samples: [B, N, D] - Sampled values from MoG
+    """
+    B, N, D, K = means.shape
+    assert D == 1, "Only D=1 is supported"
+
+    # Normalize weights
+    weights = th.nn.functional.softmax(weights, dim=-1)  # [B, N, D, K]
+
+    # Reshape to [B * N, K] for categorical sampling
+    flat_weights = einops.rearrange(weights, "b n d k -> (b n d) k")
+    comp_dist = th.distributions.Categorical(probs=flat_weights)
+    component_indices = comp_dist.sample()  # [B * N * D]
+
+    # Reshape back to [B, N, D]
+    component_indices = einops.rearrange(
+        component_indices, "(b n d) -> b n d", b=B, n=N, d=D
+    )
+
+    # Use gather to select corresponding means and stds
+    comp_indices_exp = component_indices.unsqueeze(-1)  # [B, N, D, 1]
+    selected_means = th.gather(means, -1, comp_indices_exp).squeeze(
+        -1
+    )  # [B, N, D]
+    selected_stds = th.gather(stds, -1, comp_indices_exp).squeeze(-1)  # [B, N, D]
+
+    # Sample from standard normal and reparameterize
+    eps = th.randn_like(selected_means)
+    samples = selected_means + selected_stds * eps  # [B, N, D]
+
+    return samples
