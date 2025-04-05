@@ -68,7 +68,7 @@ def plot_context_target_predictions(
 
     # Plot predictions
     # If the prediction is not an MoG, plot the mean and std
-    if weights is None:
+    if weights is None or pred_mean.shape[-1] == 1:
         n_samples = pred_mean.shape[0]
         for i in range(n_samples):
             mean = np.squeeze(pred_mean[i])
