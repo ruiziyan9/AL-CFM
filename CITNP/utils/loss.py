@@ -78,13 +78,13 @@ class MixtureGaussianLoss(BaseLoss):
         # Compute log probabilities for all components
         log_prob = distribution.log_prob(
             target_expanded
-        )  # Shape: (batch_size, num_samples, K)
+        )  # Shape: (batch_size, num_samples, d, K)
 
         assert weights is not None, "weights must not be None"
         # Weighted log probabilities with mixture weights
         weighted_log_prob = torch.logsumexp(
             log_prob + torch.log(weights + 1e-12), dim=-1
-        )  # Shape: (batch_size, num_samples)
+        )  # Shape: (batch_size, num_samples, d)
 
         # Reduce over the samples
         if self.mean_loss_across_samples:

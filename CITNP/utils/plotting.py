@@ -1,6 +1,5 @@
 from typing import List
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch as th
@@ -47,9 +46,15 @@ def plot_context_target_predictions(
     # Create figure and axis
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.scatter(
-        context_treatment, context_outcome, color="blue", label="Context", alpha=0.5
+        context_treatment,
+        context_outcome,
+        color="blue",
+        label="Context",
+        alpha=0.5,
     )
-    ax.scatter(target_treatment, target_outcome, color="red", label="Target", alpha=0.5)
+    ax.scatter(
+        target_treatment, target_outcome, color="red", label="Target", alpha=0.5
+    )
 
     # Ensure correct shape for prediction arrays
     if pred_mean.ndim == 2:

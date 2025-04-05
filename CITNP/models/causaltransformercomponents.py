@@ -280,7 +280,7 @@ class CausalInfEncoder(nn.Module):
             int_emb = self.target_intervention(data)
             out_emb = self.target_outcome(data)
 
-        # Replace embeddings at outcome and intervention indices.
+        # # Replace embeddings at outcome and intervention indices.
         # Using vectorized indexing:
         batch_idx = torch.arange(batch_size, device=data.device)
 
@@ -296,7 +296,7 @@ class CausalInfEncoder(nn.Module):
             + out_emb * mask_outcome
             + int_emb * mask_int
         )
-        # embedding = var_emb
+
         return embedding
 
     def create_input(self, context_data, target_data, target_train_data):
