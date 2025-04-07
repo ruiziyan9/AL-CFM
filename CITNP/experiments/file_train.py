@@ -62,6 +62,8 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
+        "sample_attn_mode": args.sample_attn_mode,
+        "linear_attention": args.linear_attention,
         "mean_loss_across_samples": args.mean_loss_across_samples,
         "device": args.device,
         "dtype": args.dtype,

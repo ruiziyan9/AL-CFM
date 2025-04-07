@@ -2,11 +2,42 @@
 File for random utility functions.
 """
 
+import copy
 import random
 from datetime import datetime
+from functools import partial
+from typing import Union, Tuple
 
 import numpy as np
 import torch
+from torch import nn
+
+
+def _get_clones(
+    modules: Union[nn.Module, partial, Tuple[Union[nn.Module, partial], ...]],
+    repeats: int,
+) -> nn.ModuleList:
+    """
+    Repeat and deepcopy one or more modules in a fixed order.
+
+    Args:
+        modules: A single nn.Module or a tuple of modules.
+        repeats: Number of times to repeat the pattern.
+
+    Returns:
+        nn.ModuleList of length `repeats * len(modules)`
+    """
+    if isinstance(modules, (nn.Module, partial)):
+        modules = (modules,)
+
+    cloned = []
+    for i in range(repeats * len(modules)):
+        base = modules[i % len(modules)]
+        if isinstance(base, partial):
+            cloned.append(base())  # instantiate
+        else:
+            cloned.append(copy.deepcopy(base))
+    return nn.ModuleList(cloned)
 
 
 def reshape_for_sample_attention(src, B, S, N, D):
@@ -142,7 +173,9 @@ def set_all_except_batchindex_to_zero(
 
     # Create a tensor that lists node indices for broadcasting.
     # Shape: (1, 1, num_nodes, 1)
-    node_range = torch.arange(num_nodes, device=data.device).view(1, 1, num_nodes, 1)
+    node_range = torch.arange(num_nodes, device=data.device).view(
+        1, 1, num_nodes, 1
+    )
 
     # Reshape intervention_index to (batch_size, 1, 1, 1) for broadcasting.
     intervention_index = batch_index.view(batch_size, 1, 1, 1)

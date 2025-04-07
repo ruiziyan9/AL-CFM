@@ -36,6 +36,8 @@ class BaseCausalInference(nn.Module, ABC):
         self.dropout = config.dropout
         self.num_layers_encoder = config.num_layers_encoder
         self.num_nodes = config.num_nodes
+        self.sample_attn_mode = config.sample_attn_mode
+        self.linear_attention = config.linear_attention
         self.mean_loss_across_samples = config.mean_loss_across_samples
         self.device = config.device
         self.dtype = config.dtype
@@ -50,6 +52,8 @@ class BaseCausalInference(nn.Module, ABC):
             num_nodes=self.num_nodes,
             device=self.device,
             dtype=self.dtype,
+            sample_attn_mode=self.sample_attn_mode,
+            linear_attention=self.linear_attention,
         )
 
     def _mask_target_data(

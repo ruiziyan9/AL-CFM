@@ -6,8 +6,13 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
 
+from CITNP.networks.attention_layers import (
+    MultiHeadSelfAttentionLayer,
+    MultiHeadCrossAttentionLayer,
+)
 from CITNP.models.nncomponents import build_mlp
 from CITNP.utils.utils import (
+    _get_clones,
     reshape_back_node_attention,
     reshape_back_sample_attention,
     reshape_for_node_attention,
@@ -22,22 +27,48 @@ class CausalInfTransformerEncoder(nn.Module):
 
     def __init__(
         self,
-        encoder_layers: nn.ModuleList,
+        sample_layers: nn.ModuleList,
+        node_layers: nn.ModuleList,
+        sample_attn_mode: str = "MHSA",
         norm=None,
         enable_nested_tensor=True,
         mask_check=True,
     ) -> None:
         super(CausalInfTransformerEncoder, self).__init__()
-        assert len(encoder_layers) > 0, "Encoder must have at least one layer."
-        assert len(encoder_layers) % 2 == 0, (
+        assert len(sample_layers) + len(node_layers) > 0, (
+            "Encoder must have at least one layer."
+        )
+        assert (len(sample_layers) + len(node_layers)) % 2 == 0, (
             "Encoder must have an even number of layers."
         )
-        self.layers = encoder_layers
+        if sample_attn_mode == "MHSA":
+            assert len(sample_layers) == len(node_layers), (
+                "For MHSA, the number of sample and node layers must be equal.",
+            )
+        elif sample_attn_mode == "MHCA":
+            assert len(sample_layers) == 2 * len(node_layers), (
+                "For MHCA, the number of sample layers must be twice the number of node layers.",
+            )
+        self.sample_layers = sample_layers
+        self.node_layers = node_layers
+        self.sample_attn_mode = sample_attn_mode
+
+        # Depending on attention mode, define how we iterate over the layers
+        if self.sample_attn_mode == "MHSA":
+            self.iterator = list(zip(self.sample_layers, self.node_layers))
+        elif self.sample_attn_mode == "MHCA":
+            # Flattened list of modules: [mhsa1, mhca1, mhsa2, mhca2, ...]
+            # Group sample_layers as pairs: [(mhsa1, mhca1), (mhsa2, mhca2), ...]
+            grouped = list(zip(self.sample_layers[::2], self.sample_layers[1::2]))
+            self.iterator = list(zip(grouped, self.node_layers))
+        else:
+            raise ValueError(f"Unknown sample_attn_mode: {self.sample_attn_mode}")
 
     def forward(
         self,
         src: Tensor,
         sample_mask: Tensor,
+        num_target: int,
         variable_mask: Optional[Tensor] = None,
         is_causal: bool = False,
     ) -> Tensor:
@@ -45,49 +76,57 @@ class CausalInfTransformerEncoder(nn.Module):
         # We need to reshape the tensor to [batch_size * num_nodes, num_samples, d_model]
         # to carry out attention over samples
         batch_size, num_samples, num_nodes, d_model = src.size()
-        for idx_layer, mod in enumerate(self.layers):
+
+        for sample_layer, node_layer in self.iterator:
             # Attention across samples
-            if idx_layer % 2 == 0:
-                # shape [batch_size * num_nodes, num_samples, d_model]
-                src = reshape_for_sample_attention(
-                    src, batch_size, num_samples, num_nodes, d_model
-                )
-                src = mod(
+            # shape [batch_size * num_nodes, num_samples, d_model]
+            src = reshape_for_sample_attention(
+                src, batch_size, num_samples, num_nodes, d_model
+            )
+            if self.sample_attn_mode == "MHSA":
+                src = sample_layer(
                     src,
-                    src_mask=sample_mask,
-                    src_key_padding_mask=None,
-                    is_causal=is_causal,
+                    mask=sample_mask,
                 )
+            elif self.sample_attn_mode == "MHCA":
+                ctxt_src = src[:, :-num_target, :]
+                tgt_src = src[:, -num_target:, :]
+                # MHSA amongst context
+                ctxt_src = sample_layer[0](ctxt_src)
+                # MHCA between context and target
+                tgt_src = sample_layer[1](tgt_src, ctxt_src)
                 # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = reshape_back_sample_attention(
-                    src, batch_size, num_samples, num_nodes, d_model
-                )
+                src = torch.cat([ctxt_src, tgt_src], dim=1)
+
+            # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
+            src = reshape_back_sample_attention(
+                src, batch_size, num_samples, num_nodes, d_model
+            )
+
             # Attention across nodes
-            else:
-                # shape [batch_size * num_samples, num_nodes, d_model]
-                src = reshape_for_node_attention(
-                    src, batch_size, num_samples, num_nodes, d_model
-                )
-                # Extra zeros for the query
-                node_src_key_padding_mask = variable_mask
-                if node_src_key_padding_mask is not None:
-                    node_src_key_padding_mask = node_src_key_padding_mask.reshape(
-                        batch_size * num_samples, num_nodes
-                    )
-                src = mod(
-                    src,
-                    src_mask=None,
-                    src_key_padding_mask=node_src_key_padding_mask,
-                    is_causal=is_causal,
-                )
-                # Make masking position back to zero
-                if node_src_key_padding_mask is not None:
-                    bool_pad = node_src_key_padding_mask == -float("inf")
-                    src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
-                # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
-                src = reshape_back_node_attention(
-                    src, batch_size, num_samples, num_nodes, d_model
-                )
+            # shape [batch_size * num_samples, num_nodes, d_model]
+            src = reshape_for_node_attention(
+                src, batch_size, num_samples, num_nodes, d_model
+            )
+            # TODO: Add the node_src_key_padding_mask
+            # Extra zeros for the query
+            # node_src_key_padding_mask = variable_mask
+            # if node_src_key_padding_mask is not None:
+            #     node_src_key_padding_mask = node_src_key_padding_mask.reshape(
+            #         batch_size * num_samples, num_nodes
+            #     )
+            src = node_layer(
+                src,
+                mask=None,
+            )
+            # Make masking position back to zero
+            # if node_src_key_padding_mask is not None:
+            #     bool_pad = node_src_key_padding_mask == -float("inf")
+            #     src = src.masked_fill_(bool_pad.unsqueeze(-1), 0)
+            # Reshape the tensor back to [batch_size, num_samples, num_nodes, d_model]
+            src = reshape_back_node_attention(
+                src, batch_size, num_samples, num_nodes, d_model
+            )
         return src
 
 
@@ -216,7 +255,10 @@ class CausalInfEncoder(nn.Module):
         dtype,
         emb_depth: int = 1,
         dropout: Optional[float] = 0.0,
+        sample_attn_mode: str = "MHSA",
+        linear_attention: bool = False,
     ):
+        assert d_model % nhead == 0, "d_model must be divisible by nhead"
         super(CausalInfEncoder, self).__init__()
         # Different MLP for context and target
         # Different embedding for everything.
@@ -234,22 +276,45 @@ class CausalInfEncoder(nn.Module):
         self.target_intervention = mlp()
         self.target_outcome = mlp()
 
-        module = partial(
-            nn.TransformerEncoderLayer,
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            bias=True,
-            batch_first=True,
+        module_mhsa = partial(
+            MultiHeadSelfAttentionLayer,
+            embed_dim=d_model,
+            num_heads=nhead,
+            head_dim=d_model // nhead,
+            feedforward_dim=dim_feedforward,
+            p_dropout=dropout,
             norm_first=True,
-            device=device,
-            dtype=dtype,
-            activation=F.gelu,
+            activation=nn.GELU(),
+            linear=linear_attention,
         )
-        encoderlayers = nn.ModuleList([module() for i in range(num_layers)])
+        if sample_attn_mode == "MHCA":
+            module_mhca = partial(
+                MultiHeadCrossAttentionLayer,
+                embed_dim=d_model,
+                num_heads=nhead,
+                head_dim=d_model // nhead,
+                feedforward_dim=dim_feedforward,
+                p_dropout=dropout,
+                norm_first=True,
+                activation=nn.GELU(),
+                linear=linear_attention,
+            )
+            sample_layers = _get_clones(
+                (module_mhsa, module_mhca), num_layers // 2
+            )
+        elif sample_attn_mode == "MHSA":
+            sample_layers = _get_clones(module_mhsa, num_layers // 2)
+        else:
+            raise ValueError(
+                f"Unknown sample attention mode: {sample_attn_mode}. "
+                "Use either 'MHSA' or 'MHCA'."
+            )
+
+        node_layers = _get_clones(module_mhsa, num_layers // 2)
         self.encoder = CausalInfTransformerEncoder(
-            encoder_layers=encoderlayers,
+            sample_layers=sample_layers,
+            node_layers=node_layers,
+            sample_attn_mode=sample_attn_mode,
         )
 
     def embed(self, data, outcome_indices, intervention_indices, context=True):
@@ -395,7 +460,10 @@ class CausalInfEncoder(nn.Module):
         # Encode the data
         # shape [batch_size, num_samples, num_nodes, d_model]
         representation = self.encoder(
-            full_data, sample_mask=sample_mask, variable_mask=variable_mask
+            full_data,
+            sample_mask=sample_mask,
+            num_target=num_target,
+            variable_mask=variable_mask,
         )
 
         # Compute the summary representation

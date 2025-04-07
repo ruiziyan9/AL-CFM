@@ -13,6 +13,8 @@ class Config:
     dropout: float
     num_layers_encoder: int
     num_nodes: int
+    sample_attn_mode: str
+    linear_attention: bool
     mean_loss_across_samples: bool
     device: str
     dtype: torch.dtype

@@ -68,6 +68,18 @@ def parse_args():
         help="Number of layers in the encoder.",
     )
     parser.add_argument(
+        "--sample_attn_mode",
+        type=str,
+        default="MHSA",
+        help="Type of sample attention: MHSA or MHCA.",
+    )
+    parser.add_argument(
+        "--linear_attention",
+        action="store_true",
+        default=False,
+        help="Whether to use linear attention.",
+    )
+    parser.add_argument(
         "--mean_loss_across_samples",
         action="store_true",
         default=True,
