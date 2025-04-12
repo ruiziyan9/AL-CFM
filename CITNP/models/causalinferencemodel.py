@@ -14,7 +14,7 @@ from CITNP.models.causaltransformercomponents import (
 )
 from CITNP.models.nncomponents import MoGPredictor, Predictor
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
-from CITNP.utils.loss import CNPLoss, NLLLoss, MixtureGaussianLoss
+from CITNP.utils.loss import BaseLoss, CNPLoss, NLLLoss, MixtureGaussianLoss
 from CITNP.utils.outputs import ModelOutput
 from CITNP.utils.sampler import TrainZSampler
 from CITNP.utils.utils import (
@@ -124,38 +124,23 @@ class CausalInferenceModel(BaseCausalInference):
         """
         super().__init__(config)
 
-        self.loss = MixtureGaussianLoss(
+        self.loss: BaseLoss = CNPLoss(
             mean_loss_across_samples=self.mean_loss_across_samples,
             reduce="mean",
-            num_mixture_components=config.num_mixture_components,
         )
-        self.eval_loss = MixtureGaussianLoss(
+        self.eval_loss: BaseLoss = CNPLoss(
             mean_loss_across_samples=self.mean_loss_across_samples,
             reduce="sum",
-            num_mixture_components=config.num_mixture_components,
         )
 
-        if isinstance(self.loss, MixtureGaussianLoss):
-            self.predictor = MoGPredictor(
-                d_model=self.d_model,
-                depth=self.emb_depth,
-                num_mixture_components=config.num_mixture_components,
-            )
-            assert self.predictor.output_heads == ("mean", "std", "weights"), (
-                "MixtureGaussianLoss requires predictor to output "
-                "mean, std and weights"
-            )
-        elif isinstance(self.loss, CNPLoss):
-            self.predictor = Predictor(
-                d_model=self.d_model,
-                depth=self.emb_depth,
-            )
-            assert self.predictor.output_heads == (
-                "mean",
-                "std",
-            ), "CNPLoss requires predictor to output mean and std"
-        else:
-            raise ValueError(f"{self.loss} is not supported for this model")
+        self.predictor = Predictor(
+            d_model=self.d_model,
+            depth=self.emb_depth,
+        )
+        assert self.predictor.output_heads == (
+            "mean",
+            "std",
+        ), "CNPLoss requires predictor to output mean and std"
 
     def calculate_loss(
         self,
@@ -231,6 +216,32 @@ class CausalInferenceModel(BaseCausalInference):
         elif self.predictor.output_heads == ("mean", "std", "weights"):
             mean, std, weights = self._predict(outcome_encoding)
             return ModelOutput(pred_mean=mean, pred_std=std, weights=weights)
+
+
+class MoGCausalInferenceModel(CausalInferenceModel):
+    def __init__(self, config: CausalInfModelConfig):
+        super().__init__(config)
+
+        self.loss = MixtureGaussianLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples,
+            reduce="mean",
+            num_mixture_components=config.num_mixture_components,
+        )
+        self.eval_loss = MixtureGaussianLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples,
+            reduce="sum",
+            num_mixture_components=config.num_mixture_components,
+        )
+
+        self.predictor = MoGPredictor(
+            d_model=self.d_model,
+            depth=self.emb_depth,
+            num_mixture_components=config.num_mixture_components,
+        )
+        assert self.predictor.output_heads == ("mean", "std", "weights"), (
+            "MixtureGaussianLoss requires predictor to output "
+            "mean, std and weights"
+        )
 
 
 class LocalLatentCausalInferenceModel(BaseCausalInference):

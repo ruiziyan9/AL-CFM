@@ -11,6 +11,7 @@ import wandb
 from typing import Union
 from CITNP.models.causalinferencemodel import (
     CausalInferenceModel,
+    MoGCausalInferenceModel,
     LocalLatentCausalInferenceModel,
 )
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
@@ -86,7 +87,10 @@ def main(args: argparse.Namespace):
     config: Union[CausalInfModelConfig, LocalLatentConfig]
     if args.model_type == "cnp":
         config = CausalInfModelConfig(**MODEL_ARGS)
-        model = CausalInferenceModel(config)
+        if args.num_mixture_components > 1:
+            model = MoGCausalInferenceModel(config)
+        else:
+            model = CausalInferenceModel(config)
         project_name = "meta_causal_inference"
     else:
         config = LocalLatentConfig(**MODEL_ARGS)

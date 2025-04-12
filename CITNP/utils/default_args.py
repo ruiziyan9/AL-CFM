@@ -20,7 +20,7 @@ def parse_args():
         "--work_dir",
         type=str,
         # default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
-        default="/scratches/kolmogorov_2/cdd43/CausalInferenceNeuralProcess/CITNP",
+        default="/scratches/cartwright/cdd43/CausalInferenceNeuralProcess/CITNP",
         help="Path to the working directory.",
     )
     parser.add_argument(
@@ -192,7 +192,7 @@ def parse_args():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=15,
+        default=8,
         help="Number of workers for data loading.",
     )
 

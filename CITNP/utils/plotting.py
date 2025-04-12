@@ -36,6 +36,7 @@ def plot_context_target_predictions(
     new_target = to_numpy(new_target)
     pred_mean = to_numpy(model_output.pred_mean)
     pred_std = to_numpy(model_output.pred_std)
+    # MoG models will also have weights
     if model_output.weights is not None:
         weights = to_numpy(model_output.weights)
     else:
