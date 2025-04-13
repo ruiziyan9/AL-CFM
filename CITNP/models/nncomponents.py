@@ -1,3 +1,4 @@
+import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,41 +13,86 @@ def build_mlp(dim_in, dim_hid, dim_out, depth):
     return nn.Sequential(*layers)
 
 
-class Predictor(nn.Module):
+class BasePredictor(nn.Module):
+    def __init__(
+        self,
+        d_model,
+        depth,
+        output_heads,
+        num_outcome_nodes=1,
+        num_mixture_components=1,
+    ):
+        super().__init__()
+        self.output_heads = output_heads
+        self.num_outcome_nodes = num_outcome_nodes
+        self.num_mixture_components = num_mixture_components
+        self.num_heads = len(output_heads)
+
+        self.pred = build_mlp(
+            d_model,
+            d_model,
+            dim_out=d_model,
+            depth=depth,
+        )
+
+        total_output_dim = (
+            self.num_heads * num_outcome_nodes * num_mixture_components
+        )
+        self.output_layer = nn.Linear(d_model, total_output_dim)
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.kaiming_normal_(self.output_layer.weight)
+        nn.init.zeros_(self.output_layer.bias)
+        self.output_layer.weight.data *= 0.01
+
+    def forward(self, x):
+        raise NotImplementedError(
+            "Use a subclass like Predictor or MoGPredictor."
+        )
+
+
+class Predictor(BasePredictor):
     """
     A simple feedforward neural network with a linear layer followed by a GELU activation.
     """
 
-    def __init__(self, d_model, depth):
-        super(Predictor, self).__init__()
-        self.pred = build_mlp(
-            d_model,
-            d_model,
-            dim_out=d_model,  # mean and std
-            depth=depth,
+    def __init__(self, **kwargs):
+        super().__init__(
+            output_heads=("mean", "std"), num_mixture_components=1, **kwargs
         )
-        self.mean_mlp = nn.Linear(d_model, 1)
-        self.std_mlp = nn.Linear(d_model, 1)
-        self._init_weights()
-
-    def _init_weights(self):
-        """
-        Initializes linear layers with Xavier initialization.
-        """
-        for layer in self.modules():
-            if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight)
-                nn.init.zeros_(layer.bias)
-        self.mean_mlp.weight.data[:] *= 0.01
-        self.std_mlp.weight.data[:] *= 0.01
 
     def forward(self, x):
-        out = self.pred(x)
-        act_out = torch.nn.functional.gelu(out)
-        mean = self.mean_mlp(act_out)
-        prestd = self.std_mlp(act_out)
-        std = torch.nn.functional.softplus(prestd)
+        act_out = F.gelu(self.pred(x))  # [B, N, D]
+        D = self.num_outcome_nodes
+
+        out = self.output_layer(act_out)  # [B, N, 2 * D]
+        out = einops.rearrange(
+            out, "... n (h d) -> h ... n d", h=self.num_heads, d=D
+        )
+        mean, pre_std = out[0], out[1]
+        std = F.softplus(pre_std)  # [B, N, D]
         return mean, std
+
+
+class MoGPredictor(BasePredictor):
+    def __init__(self, **kwargs):
+        super().__init__(output_heads=("mean", "std", "weights"), **kwargs)
+
+    def forward(self, x):
+        act_out = F.gelu(self.pred(x))  # [B, N, D]
+        D = self.num_outcome_nodes
+        K = self.num_mixture_components
+
+        out = self.output_layer(act_out)  # [B, N, 3 * D * K]
+        out = einops.rearrange(
+            out, "b n (h d k) -> h b n d k", h=self.num_heads, d=D, k=K
+        )
+
+        mean, pre_std, logits = out[0], out[1], out[2]
+        std = F.softplus(pre_std)  # [B, N, D, K]
+        weights = F.softmax(logits, dim=-1)  # [B, N, D, K]
+        return mean, std, weights
 
 
 class FlashMHCA(nn.Module):
@@ -100,10 +146,20 @@ class FlashMHCA(nn.Module):
         value = self.layernormV(value)
 
         q = (
-            self.q_proj(query).view(B, T_q, self.nhead, self.head_dim).transpose(1, 2)
+            self.q_proj(query)
+            .view(B, T_q, self.nhead, self.head_dim)
+            .transpose(1, 2)
         )  # [B, H, T, D]
-        k = self.k_proj(key).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.v_proj(value).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
+        k = (
+            self.k_proj(key)
+            .view(B, T_k, self.nhead, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.v_proj(value)
+            .view(B, T_k, self.nhead, self.head_dim)
+            .transpose(1, 2)
+        )
 
         attn_output = F.scaled_dot_product_attention(
             q, k, v, is_causal=False
@@ -116,7 +172,6 @@ class FlashMHCA(nn.Module):
 
 
 class MHCA(nn.Module):
-
     def __init__(
         self,
         d_model: int,

@@ -16,4 +16,4 @@ def normalise_variable(data, axis):
 if __name__ == "__main__":
     data = np.random.gamma(1, 1, size=(100, 5))
     print(data.mean(axis=0))
-    print(normalise_variable(data).mean(axis=0))
+    print(normalise_variable(data, axis=0).mean(axis=0))

@@ -12,9 +12,9 @@ from CITNP.models.causaltransformercomponents import (
     CausalInfEncoder,
     CausalTransformerDecoderLayer,
 )
-from CITNP.models.nncomponents import Predictor
+from CITNP.models.nncomponents import MoGPredictor, Predictor
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
-from CITNP.utils.loss import CNPLoss, NLLLoss
+from CITNP.utils.loss import BaseLoss, CNPLoss, NLLLoss, MixtureGaussianLoss
 from CITNP.utils.outputs import ModelOutput
 from CITNP.utils.sampler import TrainZSampler
 from CITNP.utils.utils import (
@@ -26,7 +26,6 @@ from CITNP.utils.utils import (
 
 
 class BaseCausalInference(nn.Module, ABC):
-
     def __init__(self, config):
         super().__init__()
 
@@ -37,6 +36,8 @@ class BaseCausalInference(nn.Module, ABC):
         self.dropout = config.dropout
         self.num_layers_encoder = config.num_layers_encoder
         self.num_nodes = config.num_nodes
+        self.sample_attn_mode = config.sample_attn_mode
+        self.linear_attention = config.linear_attention
         self.mean_loss_across_samples = config.mean_loss_across_samples
         self.device = config.device
         self.dtype = config.dtype
@@ -51,11 +52,8 @@ class BaseCausalInference(nn.Module, ABC):
             num_nodes=self.num_nodes,
             device=self.device,
             dtype=self.dtype,
-        )
-
-        self.predictor = Predictor(
-            d_model=self.d_model,
-            depth=self.emb_depth,
+            sample_attn_mode=self.sample_attn_mode,
+            linear_attention=self.linear_attention,
         )
 
     def _mask_target_data(
@@ -73,15 +71,17 @@ class BaseCausalInference(nn.Module, ABC):
         return masked_target_data
 
     def _extract_outcome_representation(
-        self, representation: torch.Tensor, outcome_index: torch.Tensor, num_trgt: int
+        self,
+        representation: torch.Tensor,
+        outcome_index: torch.Tensor,
+        num_trgt: int,
     ):
         encoding = representation[:, -num_trgt:]
         outcome_encoding = gather_by_node(encoding, outcome_index)
         return outcome_encoding, encoding
 
     def _predict(self, outcome_encoding):
-        mean, std = self.predictor(outcome_encoding)
-        return mean, std
+        return self.predictor(outcome_encoding)
 
     @abstractmethod
     def calculate_loss(
@@ -123,23 +123,24 @@ class CausalInferenceModel(BaseCausalInference):
         Constructor for the CausalInferenceModel class
         """
         super().__init__(config)
-        self.d_model = config.d_model
-        self.emb_depth = config.emb_depth
-        self.dim_feedforward = config.dim_feedforward
-        self.nhead = config.nhead
-        self.dropout = config.dropout
-        self.num_layers_encoder = config.num_layers_encoder
-        self.num_nodes = config.num_nodes
-        self.mean_loss_across_samples = config.mean_loss_across_samples
-        self.device = config.device
-        self.dtype = config.dtype
 
-        self.loss = CNPLoss(
-            mean_loss_across_samples=self.mean_loss_across_samples, reduce="mean"
+        self.loss: BaseLoss = CNPLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples,
+            reduce="mean",
         )
-        self.eval_loss = CNPLoss(
-            mean_loss_across_samples=self.mean_loss_across_samples, reduce="sum"
+        self.eval_loss: BaseLoss = CNPLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples,
+            reduce="sum",
         )
+
+        self.predictor = Predictor(
+            d_model=self.d_model,
+            depth=self.emb_depth,
+        )
+        assert self.predictor.output_heads == (
+            "mean",
+            "std",
+        ), "CNPLoss requires predictor to output mean and std"
 
     def calculate_loss(
         self,
@@ -209,12 +210,41 @@ class CausalInferenceModel(BaseCausalInference):
             outcome_index=outcome_index,
             num_trgt=num_trgt,
         )
-        mean, std = self._predict(outcome_encoding)
-        return ModelOutput(pred_mean=mean, pred_std=std)
+        if self.predictor.output_heads == ("mean", "std"):
+            mean, std = self._predict(outcome_encoding)
+            return ModelOutput(pred_mean=mean, pred_std=std)
+        elif self.predictor.output_heads == ("mean", "std", "weights"):
+            mean, std, weights = self._predict(outcome_encoding)
+            return ModelOutput(pred_mean=mean, pred_std=std, weights=weights)
+
+
+class MoGCausalInferenceModel(CausalInferenceModel):
+    def __init__(self, config: CausalInfModelConfig):
+        super().__init__(config)
+
+        self.loss = MixtureGaussianLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples,
+            reduce="mean",
+            num_mixture_components=config.num_mixture_components,
+        )
+        self.eval_loss = MixtureGaussianLoss(
+            mean_loss_across_samples=self.mean_loss_across_samples,
+            reduce="sum",
+            num_mixture_components=config.num_mixture_components,
+        )
+
+        self.predictor = MoGPredictor(
+            d_model=self.d_model,
+            depth=self.emb_depth,
+            num_mixture_components=config.num_mixture_components,
+        )
+        assert self.predictor.output_heads == ("mean", "std", "weights"), (
+            "MixtureGaussianLoss requires predictor to output "
+            "mean, std and weights"
+        )
 
 
 class LocalLatentCausalInferenceModel(BaseCausalInference):
-
     def __init__(
         self,
         config: LocalLatentConfig,
@@ -237,7 +267,7 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
                     batch_first=True,
                     device=config.device,
                     dtype=config.dtype,
-                    bias=False,
+                    bias=True,
                 ),
                 num_layers=config.decoder_depth,
             )
@@ -255,6 +285,11 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
         )
         self.eval_loss = NLLLoss(
             mean_loss_across_samples=self.mean_loss_across_samples, reduce="sum"
+        )
+
+        self.predictor = Predictor(
+            d_model=self.d_model,
+            depth=self.emb_depth,
         )
 
     def _sample_z(
@@ -276,7 +311,9 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
             (num_z_samples, batch_size, num_trgt, d_model) containing the
             merged representation of the outcome and z samples.
         """
-        num_samples = self.num_z_samples if self.training else self.num_z_samples_eval
+        num_samples = (
+            self.num_z_samples if self.training else self.num_z_samples_eval
+        )
         merged_rep, _, _ = self.train_z_sampler(
             outcome_rep=outcome_rep, trgt_rep=trgt_rep, num_samples=num_samples
         )

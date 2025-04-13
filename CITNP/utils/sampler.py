@@ -1,26 +1,27 @@
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from CITNP.models.nncomponents import FlashMHCA, build_residual_network
-from CITNP.utils.utils import reshape_back_node_attention, reshape_for_node_attention
+from CITNP.utils.utils import (
+    reshape_back_node_attention,
+    reshape_for_node_attention,
+)
 
 
 class LatentSampler(nn.Module):
-
     def __init__(self):
         super().__init__()
 
     def _sample(
-        self, context: torch.Tensor, **kwargs
+        self, rep: torch.Tensor, num_samples: int, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
 
 class TrainZSampler(LatentSampler):
-
     def __init__(self, d_model, nhead, emb_depth, device, dtype):
         super().__init__()
 
@@ -68,7 +69,9 @@ class TrainZSampler(LatentSampler):
         rep_batched = sample_outcome_rep.reshape(
             num_z_samples * batch_size, num_trgt, d_model
         )
-        z_batched = z_samples.reshape(num_z_samples * batch_size, num_trgt, d_model)
+        z_batched = z_samples.reshape(
+            num_z_samples * batch_size, num_trgt, d_model
+        )
         # concatenate along the last dimension
         z_rep_batched = torch.cat((z_batched, rep_batched), dim=-1)
         return z_rep_batched
@@ -89,7 +92,7 @@ class TrainZSampler(LatentSampler):
         return unbatch_merged_rep
 
     def _sample(
-        self, rep: torch.Tensor, num_samples: int
+        self, rep: torch.Tensor, num_samples: int, **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         z_enc = self.z_encoder(rep)
         mean = self.z_mean(z_enc)
