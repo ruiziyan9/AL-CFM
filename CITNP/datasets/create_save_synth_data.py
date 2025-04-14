@@ -69,13 +69,13 @@ def main(
     data_end: int,
     split: str,
     name_prefix: str = "",
-    sample_size: int = 1000,
+    sample_size: int = 500,
     num_variables: List[int] = 3,
     function_generator: str = "simplegp",
     graph_type: List[str] = ["ER"],
     graph_degrees: List[int] = [1, 2, 3],
 ):
-    batch_sizes = {"train": 50000, "val": 100, "test": 25}
+    batch_sizes = {"train": 50000, "val": 100, "test": 100}
 
     if split not in batch_sizes:
         raise ValueError(

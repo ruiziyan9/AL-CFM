@@ -178,10 +178,10 @@ if __name__ == "__main__":
     data_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-gp/datasets"
     )
-    data_name = "3var_simplegp_ER_3_1000"
+    data_name = "3var_simplegp_ER_3_500"
     data_path = data_folder / data_name
 
-    num_datasets = 25
+    num_datasets = 100
     sample_size = 500
 
     main(data_path=data_path, num_datasets=num_datasets, sample_size=sample_size)

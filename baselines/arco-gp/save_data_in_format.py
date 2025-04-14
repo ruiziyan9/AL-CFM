@@ -70,7 +70,8 @@ def format_int_data(unformatted_int_data: np.ndarray, header: list, intvn_index:
     # Add row to top indicating intervention variable
     no_intvn_indicator = ["n/i"] * len(header)
     no_intvn_indicator[intvn_index] = 0.0
-    int_data.loc[0] = no_intvn_indicator  # adding a row
+    row_df = pd.DataFrame([no_intvn_indicator], columns=header)
+    int_data = pd.concat([row_df, int_data], ignore_index=True)
     return int_data
 
 
@@ -112,7 +113,7 @@ def main(
 
 if __name__ == "__main__":
 
-    data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/3var_simplegp_ER_3_1000/test"
+    data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/3var_simplegp_ER_3_500/test"
     data_path = Path(data_folder) / "data_idx0.hdf5"
 
     save_folder = Path(
