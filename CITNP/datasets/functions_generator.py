@@ -387,8 +387,7 @@ class DataGenerator(ABC):
             else:
                 intvn_parents_of_i = parents_of_i
                 intvn_inputs = self._get_inputs(intvn_parents_of_i, intvn_data)
-                obs_inputs = normalise_variable(obs_inputs, axis=0)
-                intvn_inputs = normalise_variable(intvn_inputs, axis=0)
+
                 full_inputs = np.concatenate([obs_inputs, intvn_inputs], axis=0)
                 # Pass the inputs to the function
                 full_inputs = normalise_variable(full_inputs, axis=0)
@@ -397,8 +396,12 @@ class DataGenerator(ABC):
                 variable_obs = variable[:sample_size]
                 variable_intvn = variable[sample_size:]
 
-                variable_obs = normalise_variable(variable_obs, axis=0)
-                variable_intvn = normalise_variable(variable_intvn, axis=0)
+                variable_obs, mean_obs, std_obs = normalise_variable(
+                    variable_obs, axis=0, return_stats=True
+                )
+                variable_intvn = normalise_variable(
+                    variable_intvn, axis=0, mean=mean_obs, std=std_obs
+                )
 
             obs_data[:, i : i + 1] = variable_obs
             intvn_data[:, i : i + 1] = variable_intvn
