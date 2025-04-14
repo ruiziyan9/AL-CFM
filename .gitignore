@@ -182,3 +182,5 @@ wandb/
 *.hdf5
 
 **/synth_training_data/
+
+*.csv

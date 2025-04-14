@@ -103,8 +103,12 @@ def transformer_inference_split_withpadding(
             masks = batch[5]
 
         # Standardize the data
-        obs_data_array = normalise_variable(obs_data_array, axis=1)
-        int_data_array = normalise_variable(int_data_array, axis=1)
+        obs_data_array, mean_obs, std_obs = normalise_variable(
+            obs_data_array, axis=1, return_stats=True
+        )
+        int_data_array = normalise_variable(
+            int_data_array, axis=1, mean=mean_obs, std=std_obs
+        )
 
         context, target = sample_context_and_target(
             obs_data_array,
