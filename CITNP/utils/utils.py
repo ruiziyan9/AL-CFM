@@ -3,9 +3,11 @@ File for random utility functions.
 """
 
 import copy
+from pathlib import Path
 import random
 from datetime import datetime
 from functools import partial
+import re
 from typing import Union, Tuple
 
 import numpy as np
@@ -238,3 +240,24 @@ def append_treatment_outcome_index_to_data(
 def gather_by_node(tensor, node_index):
     batch_idx = torch.arange(tensor.size(0), device=tensor.device)
     return tensor[batch_idx, :, node_index, :]
+
+
+def load_latest_checkpoint(model, model_save_dir):
+    model_save_dir = Path(model_save_dir)
+    checkpoint_files = list(model_save_dir.glob("model_*.pt"))
+
+    if not checkpoint_files:
+        print("No checkpoint found.")
+        raise FileNotFoundError(f"No checkpoint found in {model_save_dir}.")
+        return model, None
+
+    # Extract epoch number from filenames like 'model_12.pt'
+    def extract_epoch(file_path):
+        match = re.search(r"model_(\d+)\.pt", file_path.name)
+        return int(match.group(1)) if match else -1
+
+    latest_ckpt = max(checkpoint_files, key=extract_epoch)
+    print(f"Loading checkpoint: {latest_ckpt.name}")
+
+    model.load_state_dict(torch.load(latest_ckpt))
+    return model, latest_ckpt

@@ -27,7 +27,8 @@ def parse_args():
         "--data_file",
         type=str,
         # default="anticausal_simplegplvm_['ER']_2_1000",
-        default="simplegp_['ER']_3_1000",
+        # default="simplegp_ER_3_1000",
+        default="3_var_simpleGP_ER_3_1000",
         help="Name of the data file to use.",
     )
 
@@ -82,7 +83,7 @@ def parse_args():
     parser.add_argument(
         "--mean_loss_across_samples",
         action="store_true",
-        default=True,
+        default=False,
         help="Whether to average the loss across samples.",
     )
     # MoG args
@@ -151,7 +152,7 @@ def parse_args():
     parser.add_argument(
         "--iterations_per_epoch",
         type=int,
-        default=10000,
+        default=10,
         help="Number of iterations per epoch.",
     )
     parser.add_argument(
@@ -186,7 +187,7 @@ def parse_args():
     parser.add_argument(
         "--save_checkpoint_every",
         type=int,
-        default=1,
+        default=100,
         help="Number of epochs after which to save checkpoint.",
     )
     parser.add_argument(
@@ -194,6 +195,12 @@ def parse_args():
         type=int,
         default=8,
         help="Number of workers for data loading.",
+    )
+    parser.add_argument(
+        "--model_chkpt_path",
+        type=str,
+        default="",
+        help="Checkpoint path for testing.",
     )
 
     return parser.parse_args()

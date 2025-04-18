@@ -15,7 +15,10 @@ class BaseLoss(ABC):
 
     @abstractmethod
     def calculate_loss(
-        self, model_output: ModelOutput, trgt_outcome: torch.Tensor
+        self,
+        model_output: ModelOutput,
+        trgt_outcome: torch.Tensor,
+        test: bool = False,
     ) -> torch.Tensor:
         raise NotImplementedError
 
@@ -25,7 +28,10 @@ class CNPLoss(BaseLoss):
         super().__init__(**kwargs)
 
     def calculate_loss(
-        self, model_output: ModelOutput, trgt_outcome: torch.Tensor
+        self,
+        model_output: ModelOutput,
+        trgt_outcome: torch.Tensor,
+        test: bool = False,
     ) -> torch.Tensor:
         pred_mean = model_output.pred_mean
         pred_std = model_output.pred_std
@@ -44,7 +50,10 @@ class CNPLoss(BaseLoss):
             log_prob_allbatch = log_prob_all_samples.sum(0)
 
         neg_log_prob_allbatch = -log_prob_allbatch
-        return neg_log_prob_allbatch
+        if not test:
+            return neg_log_prob_allbatch
+        else:
+            return -log_prob_all_samples
 
 
 class MixtureGaussianLoss(BaseLoss):
@@ -57,7 +66,10 @@ class MixtureGaussianLoss(BaseLoss):
         self.num_mixture_components = num_mixture_components
 
     def calculate_loss(
-        self, model_output: ModelOutput, trgt_outcome: torch.Tensor
+        self,
+        model_output: ModelOutput,
+        trgt_outcome: torch.Tensor,
+        test: bool = False,
     ) -> torch.Tensor:
         pred_mean = model_output.pred_mean
         pred_std = model_output.pred_std
@@ -98,7 +110,10 @@ class MixtureGaussianLoss(BaseLoss):
             log_prob_allbatch = log_prob_all_samples.sum(0)
 
         neg_log_prob_allbatch = -log_prob_allbatch
-        return neg_log_prob_allbatch
+        if not test:
+            return neg_log_prob_allbatch
+        else:
+            return -log_prob_all_samples
 
 
 class NLLLoss(BaseLoss):
@@ -106,7 +121,10 @@ class NLLLoss(BaseLoss):
         super().__init__(**kwargs)
 
     def calculate_loss(
-        self, model_output: ModelOutput, trgt_outcome: torch.Tensor
+        self,
+        model_output: ModelOutput,
+        trgt_outcome: torch.Tensor,
+        test: bool = False,
     ) -> torch.Tensor:
         pred_mean = model_output.pred_mean
         pred_std = model_output.pred_std
@@ -135,4 +153,7 @@ class NLLLoss(BaseLoss):
             likelihood_allbatch = likelihood_allsample.sum(0)
 
         neglikelihood_allbatch = -likelihood_allbatch
-        return neglikelihood_allbatch
+        if not test:
+            return neglikelihood_allbatch
+        else:
+            return -likelihood_allsample

@@ -95,7 +95,8 @@ class CausalInferenceTrainer:
         self.save_checkpoint_every = save_checkpoint_every
         self.callback = callback
 
-        self.learning_rate = self.optimizer.param_groups[0]["lr"]
+        if self.optimizer is not None:
+            self.learning_rate = self.optimizer.param_groups[0]["lr"]
 
         self.initialise_loaders()
 
@@ -161,68 +162,65 @@ class CausalInferenceTrainer:
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = self.learning_rate
 
-    def test_single_epoch(
-        self,
-        test_loader,
-        metric_dict,
-        calc_metrics=False,
-        num_samples=100,
-        check_acyclic=False,
-    ):
-        # with th.no_grad():
-        #     self.model.to("cuda")
-        #     dtype = th.float32
-        #     self.model.eval()
-        #     self.model.to(dtype)
-        #     all_loss = 0
-        #     for i, data in enumerate(tqdm(test_loader, desc="Testing")):
-        #         # Get the inputs and targets
-        #         inputs, targets, attention_mask = data
-        #         targets = targets.to("cuda", dtype=dtype)
-        #         inputs = inputs.to("cuda", dtype=dtype)
-        #         if attention_mask is not None:
-        #             attention_mask = attention_mask.to("cuda", dtype=dtype)
-        #         inputs = (inputs - inputs.mean(dim=1, keepdim=True)) / inputs.std(dim=1, keepdim=True)
-        #         # Forward pass
-        #         adj_logit = self.model(inputs, graph=targets, mask=attention_mask, is_training=False)
+    def test_single_epoch(self, test_loader, metric_dict):
+        with th.no_grad():
+            self.model.eval()
+            dtype = th.float32
+            self.model.to(dtype)
 
-        #         if isinstance(adj_logit, tuple):
-        #             adj_logit = adj_logit[0]
+            all_loss = []
+            for i, data in enumerate(tqdm(test_loader, desc="Test", leave=False)):
+                # Get the inputs and targets
+                context, target, intvn_indices, outcome_indices, masks, _ = (
+                    send_to_device(
+                        list(data),
+                        device="cuda",
+                    )
+                )
+                context, target = send_to_device(
+                    [context, target],
+                    device=th.float32,
+                )
+                if masks is not None:
+                    masks = masks.to("cuda", dtype=dtype)
 
-        #         loss = self.model.calculate_loss(adj_logit, targets)
-        #         all_loss += th.sum(loss).cpu().item()
-        #         if calc_metrics:
-        #             predictions, _ = self.model.sample(
-        #                 inputs, num_samples=num_samples, mask=attention_mask
-        #             )
-        #             auc = auc_graph_scores(targets, predictions)
-        #             log_prob = log_prob_graph_scores(targets, predictions.to(targets.device))
-        #             e_shd = expected_shd(targets.cpu().detach().numpy(), predictions.cpu().detach().numpy(), check_acyclic=check_acyclic)
-        #             e_f1 = expected_f1_score(targets.cpu().detach().numpy(), predictions.cpu().detach().numpy(), check_acyclic=check_acyclic)
-        #             result = {
-        #                 "e_shd": list(e_shd),
-        #                 "e_f1": list(e_f1),
-        #                 "auc": list(auc),
-        #                 "log_prob": list(log_prob),
-        #             }
-        #             if "e_shd" in metric_dict:
-        #                 metric_dict["e_shd"] += result["e_shd"]
-        #                 metric_dict["e_f1"] += result["e_f1"]
-        #                 metric_dict["auc"] += result["auc"]
-        #                 metric_dict["log_prob"] += result["log_prob"]
-        #             else:
-        #                 metric_dict.update(result)
-        #     # Log the test loss
-        #     loss = all_loss / len(test_loader.dataset)
-        #     metric_dict.update(
-        #         {
-        #             "test_loss": loss,
-        #         }
+                model_output = self.model(
+                    context_data=context,
+                    target_data=target,
+                    intervention_index=intvn_indices,
+                    outcome_index=outcome_indices,
+                    variable_mask=masks,
+                )
+                loss = self.model.calculate_loss(
+                    model_output=model_output,
+                    target=target,
+                    outcome_index=outcome_indices,
+                    test=True,
+                )
+
+                all_loss.append(loss)
+
+        # if self.use_wandb:
+        #     metric_dict = plot_predictions_to_wandb(
+        #         metric_dict=metric_dict,
+        #         model=self.model,
+        #         loader=test_loader,
+        #         num_plots=10,
+        #         device="cuda",
         #     )
-        #     dtype = th.bfloat16 if self.bfloat16 else th.float32
-        #     self.model.train()
-        #     self.model.to(dtype)
-        return metric_dict
+
+        # Log the mean and std of the test loss
+        all_loss = th.concat(all_loss)
+
+        metric_dict.update(
+            {
+                "test_loss_mean": all_loss.mean().cpu().item(),
+                "test_loss_std": all_loss.std().cpu().item(),
+                # "test_loss_per_dataset": all_loss.cpu().numpy().tolist(),
+            }
+        )
+
+        return metric_dict, all_loss
 
     def validate_single_epoch(self, val_loader, metric_dict):
         with th.no_grad():
@@ -399,3 +397,31 @@ class CausalInferenceTrainer:
             if self.scheduler is not None:
                 self.scheduler.step()
         pass
+
+
+class CausalInferenceTester(CausalInferenceTrainer):
+    def __init__(
+        self, test_dataset, model, batch_size, num_workers, sample_size, use_wandb
+    ):
+        super().__init__(
+            train_dataset=test_dataset,  # unused
+            validation_dataset=test_dataset,  # unused
+            test_dataset=test_dataset,
+            model=model,
+            optimizer=None,
+            epochs=0,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            lr_warmup_ratio=0.0,
+            bfloat16=False,
+            save_dir=Path("./"),  # unused
+            sample_size=sample_size,
+            cntxt_split=[0.5, 0.5],  # unused
+            use_wandb=use_wandb,
+        )
+
+    def test(self):
+        return self.test_single_epoch(
+            test_loader=self.test_loader,
+            metric_dict={},
+        )

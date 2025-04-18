@@ -38,16 +38,16 @@ def sample_context_and_target(
     """
     Sample context and target from dataset
     """
-    context_size = sample_context_size(min_context, max_context)
-    target_size = sample_size - context_size
 
     if is_training:
+        context_size = sample_context_size(min_context, max_context)
+        target_size = sample_size - context_size
         context_idx = np.random.choice(sample_size, context_size, replace=False)
         target_idx = np.random.choice(sample_size, target_size, replace=False)
     else:
         # Deterministic sampling
-        context_idx = np.arange(context_size)
-        target_idx = np.arange(target_size)
+        context_idx = np.arange(sample_size)
+        target_idx = np.arange(sample_size)
 
     context = np.take(obs_data_array, context_idx, axis=1)
     target = np.take(intvn_data_array, target_idx, axis=1)
@@ -67,7 +67,10 @@ def sample_outcome_index(
     outcome_index = np.zeros(batch_size, dtype=int)
     for i in range(batch_size):
         intvn_index = intvn_indices[i]
-        outcome_index[i] = np.random.choice(
+        # outcome_index[i] = np.random.choice(
+        #     np.delete(np.arange(variable_counts[i]), intvn_index)
+        # )
+        outcome_index[i] = np.min(
             np.delete(np.arange(variable_counts[i]), intvn_index)
         )
     return outcome_index
@@ -119,7 +122,7 @@ def transformer_inference_split_withpadding(
             is_training=is_training,
         )
 
-        # Randomly sample an outcome index
+        # Sample an outcome index
         outcome_indices = sample_outcome_index(variable_counts, intvn_indices)
 
         context = th.from_numpy(context).float().unsqueeze(-1)
