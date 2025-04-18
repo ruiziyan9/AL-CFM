@@ -27,8 +27,8 @@ def parse_args():
         "--data_file",
         type=str,
         # default="anticausal_simplegplvm_['ER']_2_1000",
-        # default="simplegp_ER_3_1000",
-        default="3_var_simpleGP_ER_3_1000",
+        default="simplegp_ER_3_1000",
+        # default="3_var_simpleGP_ER_3_1000",
         help="Name of the data file to use.",
     )
 

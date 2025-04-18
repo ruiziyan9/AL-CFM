@@ -163,64 +163,64 @@ class CausalInferenceTrainer:
                 param_group["lr"] = self.learning_rate
 
     def test_single_epoch(self, test_loader, metric_dict):
-        with th.no_grad():
-            self.model.eval()
-            dtype = th.float32
-            self.model.to(dtype)
+        #     with th.no_grad():
+        #         self.model.eval()
+        #         dtype = th.float32
+        #         self.model.to(dtype)
 
-            all_loss = []
-            for i, data in enumerate(tqdm(test_loader, desc="Test", leave=False)):
-                # Get the inputs and targets
-                context, target, intvn_indices, outcome_indices, masks, _ = (
-                    send_to_device(
-                        list(data),
-                        device="cuda",
-                    )
-                )
-                context, target = send_to_device(
-                    [context, target],
-                    device=th.float32,
-                )
-                if masks is not None:
-                    masks = masks.to("cuda", dtype=dtype)
+        #         all_loss = []
+        #         for i, data in enumerate(tqdm(test_loader, desc="Test", leave=False)):
+        #             # Get the inputs and targets
+        #             context, target, intvn_indices, outcome_indices, masks, _ = (
+        #                 send_to_device(
+        #                     list(data),
+        #                     device="cuda",
+        #                 )
+        #             )
+        #             context, target = send_to_device(
+        #                 [context, target],
+        #                 device=th.float32,
+        #             )
+        #             if masks is not None:
+        #                 masks = masks.to("cuda", dtype=dtype)
 
-                model_output = self.model(
-                    context_data=context,
-                    target_data=target,
-                    intervention_index=intvn_indices,
-                    outcome_index=outcome_indices,
-                    variable_mask=masks,
-                )
-                loss = self.model.calculate_loss(
-                    model_output=model_output,
-                    target=target,
-                    outcome_index=outcome_indices,
-                    test=True,
-                )
+        #             model_output = self.model(
+        #                 context_data=context,
+        #                 target_data=target,
+        #                 intervention_index=intvn_indices,
+        #                 outcome_index=outcome_indices,
+        #                 variable_mask=masks,
+        #             )
+        #             loss = self.model.calculate_loss(
+        #                 model_output=model_output,
+        #                 target=target,
+        #                 outcome_index=outcome_indices,
+        #                 test=True,
+        #             )
 
-                all_loss.append(loss)
+        #             all_loss.append(loss)
 
-        # if self.use_wandb:
-        #     metric_dict = plot_predictions_to_wandb(
-        #         metric_dict=metric_dict,
-        #         model=self.model,
-        #         loader=test_loader,
-        #         num_plots=10,
-        #         device="cuda",
+        #     # if self.use_wandb:
+        #     #     metric_dict = plot_predictions_to_wandb(
+        #     #         metric_dict=metric_dict,
+        #     #         model=self.model,
+        #     #         loader=test_loader,
+        #     #         num_plots=10,
+        #     #         device="cuda",
+        #     #     )
+
+        #     # Log the mean and std of the test loss
+        #     all_loss = th.concat(all_loss)
+
+        #     metric_dict.update(
+        #         {
+        #             "test_loss_mean": all_loss.mean().cpu().item(),
+        #             "test_loss_std": all_loss.std().cpu().item(),
+        #             # "test_loss_per_dataset": all_loss.cpu().numpy().tolist(),
+        #         }
         #     )
 
-        # Log the mean and std of the test loss
-        all_loss = th.concat(all_loss)
-
-        metric_dict.update(
-            {
-                "test_loss_mean": all_loss.mean().cpu().item(),
-                "test_loss_std": all_loss.std().cpu().item(),
-                # "test_loss_per_dataset": all_loss.cpu().numpy().tolist(),
-            }
-        )
-
-        return metric_dict, all_loss
+        return metric_dict
 
     def validate_single_epoch(self, val_loader, metric_dict):
         with th.no_grad():
@@ -419,6 +419,65 @@ class CausalInferenceTester(CausalInferenceTrainer):
             cntxt_split=[0.5, 0.5],  # unused
             use_wandb=use_wandb,
         )
+
+    def test_single_epoch(self, test_loader, metric_dict):
+        with th.no_grad():
+            self.model.eval()
+            dtype = th.float32
+            self.model.to(dtype)
+
+            all_loss = []
+            for i, data in enumerate(tqdm(test_loader, desc="Test", leave=False)):
+                # Get the inputs and targets
+                context, target, intvn_indices, outcome_indices, masks, _ = (
+                    send_to_device(
+                        list(data),
+                        device="cuda",
+                    )
+                )
+                context, target = send_to_device(
+                    [context, target],
+                    device=th.float32,
+                )
+                if masks is not None:
+                    masks = masks.to("cuda", dtype=dtype)
+
+                model_output = self.model(
+                    context_data=context,
+                    target_data=target,
+                    intervention_index=intvn_indices,
+                    outcome_index=outcome_indices,
+                    variable_mask=masks,
+                )
+                loss = self.model.calculate_loss(
+                    model_output=model_output,
+                    target=target,
+                    outcome_index=outcome_indices,
+                    test=True,
+                )
+
+                all_loss.append(loss)
+
+        # if self.use_wandb:
+        #     metric_dict = plot_predictions_to_wandb(
+        #         metric_dict=metric_dict,
+        #         model=self.model,
+        #         loader=test_loader,
+        #         num_plots=10,
+        #         device="cuda",
+        #     )
+
+        # Log the mean and std of the test loss
+        all_loss = th.concat(all_loss)
+
+        metric_dict.update(
+            {
+                "test_loss_mean": all_loss.mean().cpu().item(),
+                "test_loss_std": all_loss.std().cpu().item(),
+                # "test_loss_per_dataset": all_loss.cpu().numpy().tolist(),
+            }
+        )
+        return metric_dict
 
     def test(self):
         return self.test_single_epoch(
