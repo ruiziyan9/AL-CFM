@@ -123,12 +123,12 @@ def main(args: argparse.Namespace):
     else:
         pass
 
-    trainer = CausalInferenceTester(
+    tester = CausalInferenceTester(
         model=model,
         test_dataset=test_dataset,
         **TRAINER_ARGS,
     )
-    test_metrics, all_loss = trainer.test()
+    test_metrics = tester.test()
     print(f"Test metrics: {test_metrics}")
     with open(model_save_dir / f"test_metrics_{args.data_file}.json", "w") as f:
         json.dump(test_metrics, f, indent=4)
