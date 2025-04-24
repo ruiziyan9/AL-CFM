@@ -146,7 +146,7 @@ class NeuralNetFunctions:
         self,
         num_parents: int,
     ):
-        self.num_parents = num_parents if num_parents > 0 else 1
+        self.num_parents = num_parents + 1 if num_parents > 0 else 1
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         self.model = th.nn.Sequential(
             th.nn.Linear(self.num_parents, 128),
@@ -163,7 +163,10 @@ class NeuralNetFunctions:
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
                 inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
-
+            else:
+                # If there are parents, append latent.
+                latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                inputs = np.concatenate([inputs, latent], axis=-1)
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
             noise_scale = (
@@ -211,34 +214,32 @@ class SimpleGPFunctions:
         """
         Sample from a GP.
         """
-        with th.no_grad():
-            inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
-            covariance = self.kernel(inputs, inputs)
-            noise_value = (
-                self.noise_dist.sample((inputs.shape[0],))
-                .to(self.device)
-                .to(self.dtype)
-            )
-            covariance = covariance + 1e-4 * th.eye(
-                inputs.shape[0], device=self.device, dtype=self.dtype
-            )
-            mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
-            normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            noise_sample = normal_dist.sample().to(self.dtype)
-            output = noise_sample + noise_value.flatten() * th.randn_like(mean)
-            final_output = output.detach().cpu().numpy().astype(np.float32)
-            return final_output[:, None]
+        inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
+        covariance = self.kernel(inputs, inputs)
+        noise_value = (
+            self.noise_dist.sample((inputs.shape[0],)).to(self.device).to(self.dtype)
+        )
+        covariance = covariance + 1e-4 * th.eye(
+            inputs.shape[0], device=self.device, dtype=self.dtype
+        )
+        mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
+        normal_dist = th.distributions.MultivariateNormal(mean, covariance)
+        noise_sample = normal_dist.sample().to(self.dtype)
+        output = noise_sample + noise_value.flatten() * th.randn_like(mean)
+        final_output = output.detach().cpu().numpy().astype(np.float32)
+        return final_output[:, None]
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
         """
         Samples from GP given kernel and mean.
         """
-        input_num = inputs.shape[-1]
-        if input_num == 0:
-            # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                # If there is no parent, we sample from a normal distribution.
+                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
-        outputs = self.sample_gp(inputs)
+            outputs = self.sample_gp(inputs)
         return outputs
 
 
@@ -275,6 +276,7 @@ class SimpleGPLVMFunctions:
         """
         with th.no_grad():
             if inputs.shape[-1] > 1:
+                # Latent as the mean
                 mean = th.from_numpy(inputs[:, -1]).to(self.device).to(self.dtype)
             else:
                 mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
@@ -302,11 +304,9 @@ class SimpleGPLVMFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.uniform(-1, 1, size=(inputs.shape[0], 1))
-            # inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
         else:
-            latent = np.random.uniform(-1, 1, size=(inputs.shape[0], 1))
-            # latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
             inputs = np.concatenate([inputs, latent], axis=-1)
 
         outputs = self.sample_gplvm(inputs)
@@ -627,6 +627,44 @@ class UniformLinearFunctionGenerator(DataGenerator):
             num_parents = int(np.sum(parents_of_i))
 
             function = UniformLinear(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class NeuralGPLVMFunctionGenerator(DataGenerator):
+    """
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            # Randomly choose between GPLVM and NeuralNet
+            if np.random.rand() > 0.5:
+                function = SimpleGPLVMFunctions(num_parents=num_parents)
+            else:
+                function = NeuralNetFunctions(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict

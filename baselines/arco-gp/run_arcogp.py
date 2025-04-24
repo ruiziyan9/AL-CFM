@@ -27,10 +27,12 @@ def get_config():
     cfg.policy = "static-obs-dataset"
     cfg.max_ps_size = 2
     cfg.num_arco_steps = 200
-    cfg.num_mc_cos = 50
-    cfg.num_mc_graphs = 5
-    cfg.num_samples_per_graph = 5
+    cfg.num_mc_cos = 100
+    cfg.num_mc_graphs = 10
+    cfg.num_samples_per_graph = 10
     cfg.compute_distributional_stats = False
+    cfg.es_threshold = 1e-8
+    cfg.es_win_size = 10
     return cfg
 
 

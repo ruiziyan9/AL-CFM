@@ -11,6 +11,7 @@ from torch.utils.data import IterableDataset
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (
     GPFunctionGenerator,
+    NeuralGPLVMFunctionGenerator,
     NeuralNetFunctionGenerator,
     SimpleGPFunctionGenerator,
     SimpleGPLVMFunctionGenerator,
@@ -87,6 +88,8 @@ class InterventionDatasetGenerator(IterableDataset):
             self.data_generator = partial(SimpleGPLVMFunctionGenerator)
         elif self.function_generator == "uniformlinear":
             self.data_generator = partial(UniformLinearFunctionGenerator)
+        elif self.function_generator == "neuralgplvm":
+            self.data_generator = partial(NeuralGPLVMFunctionGenerator)
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """
