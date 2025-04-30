@@ -260,7 +260,7 @@ class SimpleGPLVMFunctions:
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         self.dtype = th.float64
 
-        lengthscale_values = np.random.lognormal(-1, 1, size=(self.num_parents + 1))
+        lengthscale_values = np.random.lognormal(-0.5, 1, size=(self.num_parents + 1))
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
         # Define the kernel
