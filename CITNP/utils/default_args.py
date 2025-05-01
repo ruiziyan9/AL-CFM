@@ -7,7 +7,7 @@ import argparse
 import torch
 
 
-def parse_args():
+def parse_default_args():
     """
     Parses command-line arguments for the CITNP package, using defaults that
     match return_default_args() from your script.
@@ -19,8 +19,8 @@ def parse_args():
     parser.add_argument(
         "--work_dir",
         type=str,
-        # default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
-        default="/scratches/cartwright/cdd43/CausalInferenceNeuralProcess/CITNP",
+        default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
+        # default="/scratches/cartwright/cdd43/CausalInferenceNeuralProcess/CITNP",
         help="Path to the working directory.",
     )
     parser.add_argument(
@@ -40,18 +40,10 @@ def parse_args():
         default=False,
         help="Whether to run in debug mode.",
     )
-    parser.add_argument(
-        "--model_type", choices=["cnp", "locallatent"], default="cnp"
-    )
-    parser.add_argument(
-        "--d_model", type=int, default=256, help="Model dimension."
-    )
-    parser.add_argument(
-        "--emb_depth", type=int, default=2, help="Embedding depth."
-    )
-    parser.add_argument(
-        "--decoder_depth", type=int, default=0, help="Decoder depth."
-    )
+    parser.add_argument("--model_type", choices=["cnp", "locallatent"], default="cnp")
+    parser.add_argument("--d_model", type=int, default=256, help="Model dimension.")
+    parser.add_argument("--emb_depth", type=int, default=2, help="Embedding depth.")
+    parser.add_argument("--decoder_depth", type=int, default=0, help="Decoder depth.")
     parser.add_argument(
         "--dim_feedforward",
         type=int,
@@ -70,7 +62,7 @@ def parse_args():
     parser.add_argument(
         "--sample_attn_mode",
         type=str,
-        default="MHSA",
+        default="MHCA",
         help="Type of sample attention: MHSA or MHCA.",
     )
     parser.add_argument(
@@ -89,7 +81,7 @@ def parse_args():
     parser.add_argument(
         "--num_mixture_components",
         type=int,
-        default=1,
+        default=5,
         help="Number of components in MoG.",
     )
     # Local VI args
@@ -157,9 +149,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate", type=float, default=0.0005, help="Learning rate."
     )
-    parser.add_argument(
-        "--run_name", type=str, default=None, help="Name of the run."
-    )
+    parser.add_argument("--run_name", type=str, default=None, help="Name of the run.")
 
     # Training args
     parser.add_argument("--epochs", type=int, default=2, help="Number of epochs.")
@@ -184,10 +174,10 @@ def parse_args():
     parser.add_argument("--log_step", type=int, default=200, help="Log step.")
 
     parser.add_argument(
-        "--save_checkpoint_every",
+        "--save_checkpoint_every_n_steps",
         type=int,
-        default=1,
-        help="Number of epochs after which to save checkpoint.",
+        default=10000,
+        help="Number of steps after which to save checkpoint.",
     )
     parser.add_argument(
         "--num_workers",

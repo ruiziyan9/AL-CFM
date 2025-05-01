@@ -4,21 +4,33 @@ File to train the model.
 
 import argparse
 from pathlib import Path
+from typing import Union
 
 import torch
 import wandb
 
-from typing import Union
 from CITNP.models.causalinferencemodel import (
     CausalInferenceModel,
-    MoGCausalInferenceModel,
     LocalLatentCausalInferenceModel,
+    MoGCausalInferenceModel,
+)
+from CITNP.trainer.callbacks import (
+    CheckpointCallback,
+    LRSchedulerCallback,
+    ProgressBarCallback,
+    WandbLoggingCallback,
 )
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
-from CITNP.utils.callbacks import GradientChecker
-from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
+from CITNP.utils.configs import (
+    CausalInfModelConfig,
+    DataConfig,
+    LocalLatentConfig,
+    LoggingConfig,
+    OptimizerConfig,
+    TrainingConfig,
+)
 from CITNP.utils.datautils import MultipleFileDataset
-from CITNP.utils.default_args import overwrite_debug_args, parse_args
+from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
 from CITNP.utils.utils import _generate_experiment_name, set_seed
 
 
@@ -44,16 +56,11 @@ def main(args: argparse.Namespace):
 
     val_dir = data_dir / "val"
     val_files = list(val_dir.iterdir())
-    val_dataset = MultipleFileDataset(
-        [i for i in val_files if i.suffix == ".hdf5"]
-    )
-    # train_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
+    val_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
 
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
-    test_dataset = MultipleFileDataset(
-        [i for i in test_files if i.suffix == ".hdf5"]
-    )
+    test_dataset = MultipleFileDataset([i for i in test_files if i.suffix == ".hdf5"])
 
     MODEL_ARGS = {
         "d_model": args.d_model,
@@ -84,6 +91,15 @@ def main(args: argparse.Namespace):
     else:
         raise ValueError(f"Unknown model type: {args.model_type}")
 
+    if args.results_path is None:
+        results_path = Path.cwd()
+    else:
+        results_path = Path(args.results_path)
+    save_dir = results_path / "results"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    model_save_dir = save_dir / f"{args.run_name}"
+
+    # All the configs
     config: Union[CausalInfModelConfig, LocalLatentConfig]
     if args.model_type == "cnp":
         config = CausalInfModelConfig(**MODEL_ARGS)
@@ -97,66 +113,71 @@ def main(args: argparse.Namespace):
         model = LocalLatentCausalInferenceModel(config)
         project_name = "meta_causal_inference"
 
-    if args.results_path is None:
-        results_path = Path.cwd()
-    else:
-        results_path = Path(args.results_path)
-    save_dir = results_path / "results"
-    save_dir.mkdir(parents=True, exist_ok=True)
-    model_save_dir = save_dir / f"{args.run_name}"
+    dataconfig = DataConfig(
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        cntxt_split=[0.05, 0.75],
+        sample_size=args.sample_size,
+        train_dtype="bfloat16",
+        eval_dtype="float32",
+        pin_memory=True,
+    )
 
-    TRAINER_ARGS = {
-        "batch_size": args.batch_size,
-        "epochs": args.epochs,
-        "use_wandb": not args.no_wandb,
-        "lr_warmup_ratio": args.lr_warmup_ratio,
-        "bfloat16": args.dtype == torch.bfloat16,
-        "num_workers": args.num_workers,
-        "save_dir": model_save_dir,
-        "cntxt_split": [0.05, 0.2],
-        "sample_size": args.sample_size,
-        "log_step": args.log_step,
-        "save_checkpoint_every": args.save_checkpoint_every,
-    }
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    if not args.no_wandb:
-        wandb.init(  # type: ignore
-            # Set the entity
-            entity="npcausalinf",
-            # Set the project where this run will be logged
-            project=project_name,
-            name=args.run_name,
-            # Track hyperparameters and run metadata
-            config={**vars(args), **TRAINER_ARGS, **MODEL_ARGS},
-        )
-    else:
-        pass
+    optimizerconfig = OptimizerConfig(
+        optimizer=optimizer,
+        scheduler=None,
+        learning_rate=args.learning_rate,
+        lr_warmup_ratio=args.lr_warmup_ratio,
+    )
 
-    callback = [
-        GradientChecker(
-            model,
-            watched_layers=[
-                "decoder.layers.0.linear1.weight",
-                "encoder.context_outcome.0.weight",
-                "encoder.encoder.layers.0.linear1.weight",
-                "encoder.encoder.layers.7.linear1.weight",
-                "z_rep_merger.0.fc1.weight",
-                "z_param_mlp.0.0.weight",
-                "z_encoder.0.fc1.weight",
-                "train_z_sampler.z_mean.weight",
-                "train_z_sampler.z_std.weight",
-            ],
-        )
+    loggingconfig = LoggingConfig(
+        save_dir=model_save_dir,
+        use_wandb=not args.no_wandb,
+        log_step=args.log_step,
+        save_checkpoint_every_n_steps=args.save_checkpoint_every_n_steps,
+        plot_validation_samples=True,
+        num_validation_plots=10,
+    )
+    trainingconfig = TrainingConfig(
+        epochs=args.epochs,
+        gradient_clip_val=1.0,
+        device=args.device,
+    )
+
+    # Callbacks
+    wandbcallback = WandbLoggingCallback(
+        project_name=project_name,
+        log_config=loggingconfig,
+        optim_config=optimizerconfig,
+        data_config=dataconfig,
+        model_config=config,
+        train_config=trainingconfig,
+    )
+    progress_callback = ProgressBarCallback()
+    checkpoint_callback = CheckpointCallback(
+        log_config=loggingconfig,
+    )
+    lr_scheduler_callback = LRSchedulerCallback(
+        optim_config=optimizerconfig,
+    )
+    callbacks = [
+        wandbcallback,
+        progress_callback,
+        checkpoint_callback,
+        lr_scheduler_callback,
     ]
 
     trainer = CausalInferenceTrainer(
-        model=model,
         train_dataset=train_dataset,
         validation_dataset=val_dataset,
         test_dataset=test_dataset,
-        optimizer=optimizer,
-        callback=callback,
-        **TRAINER_ARGS,
+        model=model,
+        dataconfig=dataconfig,
+        trainingconfig=trainingconfig,
+        optimizerconfig=optimizerconfig,
+        loggingconfig=loggingconfig,
+        callbacks=callbacks,
     )
     trainer.train()
 
@@ -167,5 +188,5 @@ if __name__ == "__main__":
     torch.backends.cuda.enable_flash_sdp(True)
 
     parser = argparse.ArgumentParser()
-    args = parse_args()
+    args = parse_default_args()
     main(args)
