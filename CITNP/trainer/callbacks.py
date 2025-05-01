@@ -84,6 +84,7 @@ class WandbLoggingCallback(Callback):
     def __init__(
         self,
         project_name: str,
+        run_name: str,
         log_config: LoggingConfig,
         optim_config: OptimizerConfig,
         data_config: DataConfig,
@@ -91,6 +92,7 @@ class WandbLoggingCallback(Callback):
         train_config: TrainingConfig,
     ):
         self.project_name = project_name
+        self.run_name = run_name
         self.log_config = log_config
         self.optim_config = optim_config
         self.data_config = data_config
@@ -103,6 +105,7 @@ class WandbLoggingCallback(Callback):
 
             wandb.init(
                 project=self.project_name,
+                name=self.run_name,
                 config={
                     **asdict(self.data_config),
                     **asdict(self.model_config),
@@ -176,7 +179,7 @@ class CheckpointCallback(Callback):
             self.best_val_loss = current_val_loss
             self._save_checkpoint(trainer, "best_model")
 
-    def on_epoch_end(self, trainer, epoch, logs):
+    def on_epoch_end(self, trainer, epoch, epoch_logs):
         pass
 
     def _save_checkpoint(self, trainer, filename_suffix: str):
@@ -231,6 +234,6 @@ class LRSchedulerCallback(Callback):
         # Some schedulers step here
         pass
 
-    def on_epoch_end(self, trainer, epoch, logs):
+    def on_epoch_end(self, trainer, epoch, epoch_logs):
         # Some schedulers step here
         pass

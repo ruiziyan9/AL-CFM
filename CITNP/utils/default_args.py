@@ -198,7 +198,7 @@ def overwrite_debug_args(args):
     args.epochs = 1
     args.d_model = 64
     args.dim_feedforward = 128
-    args.num_layers_encoder = 2
+    args.num_layers_encoder = 4
     args.lr_warmup_ratio = 0.0
     args.no_wandb = True
     args.run_name = "debug"

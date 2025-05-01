@@ -148,6 +148,7 @@ def main(args: argparse.Namespace):
     # Callbacks
     wandbcallback = WandbLoggingCallback(
         project_name=project_name,
+        run_name=args.run_name,
         log_config=loggingconfig,
         optim_config=optimizerconfig,
         data_config=dataconfig,
