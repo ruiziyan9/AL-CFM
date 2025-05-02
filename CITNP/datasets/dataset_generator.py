@@ -11,6 +11,7 @@ from torch.utils.data import IterableDataset
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (
     GPFunctionGenerator,
+    NeuralGPLVMFunctionGenerator,
     NeuralNetFunctionGenerator,
     SimpleGPFunctionGenerator,
     SimpleGPLVMFunctionGenerator,
@@ -90,6 +91,7 @@ class InterventionDatasetGenerator(IterableDataset):
             "uniformlinear": UniformLinearFunctionGenerator,
             "linearfixedstd": LinearFixedStdFunctionGenerator,
             "linearnonidentifiable": LinearNonIdentifiableFunctionGenerator,
+            "neuralgplvm": NeuralGPLVMFunctionGenerator,
         }
 
         if self.function_generator in valid_generators:
