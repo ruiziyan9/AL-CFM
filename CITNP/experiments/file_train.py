@@ -91,12 +91,13 @@ def main(args: argparse.Namespace):
             model = MoGCausalInferenceModel(config)
         else:
             model = CausalInferenceModel(config)
-        project_name = "meta_causal_inference"
+        # project_name = "meta_causal_inference"
     else:
         config = LocalLatentConfig(**MODEL_ARGS)
         model = LocalLatentCausalInferenceModel(config)
-        project_name = "meta_causal_inference"
+        # project_name = "meta_causal_inference"
 
+    project_name = args.data_file
     if args.results_path is None:
         results_path = Path.cwd()
     else:
@@ -113,10 +114,11 @@ def main(args: argparse.Namespace):
         "bfloat16": args.dtype == torch.bfloat16,
         "num_workers": args.num_workers,
         "save_dir": model_save_dir,
-        "cntxt_split": [0.05, 0.2],
+        "cntxt_split": [0.05, 0.75],
         "sample_size": args.sample_size,
         "log_step": args.log_step,
         "save_checkpoint_every": args.save_checkpoint_every,
+        "normalise": args.normalise,
     }
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     if not args.no_wandb:

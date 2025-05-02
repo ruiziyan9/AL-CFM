@@ -2,9 +2,12 @@
 File to train the transformer NP classifier model.
 """
 
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
+
+import numpy as np
 
 import torch as th
 import wandb
@@ -12,7 +15,7 @@ from tqdm import tqdm
 
 from CITNP.utils.datautils import transformer_inference_split_withpadding
 from CITNP.utils.plotting import plot_predictions_to_wandb
-from CITNP.utils.utils import send_to_device
+from CITNP.utils.utils import send_to_device, get_causal_direction
 
 
 class CausalInferenceTrainer:
@@ -75,6 +78,7 @@ class CausalInferenceTrainer:
         log_step: int = 500,
         save_checkpoint_every: int = 10,
         callback: Optional[Sequence[Callable]] = None,
+        normalise: Optional[bool] = True,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset
@@ -98,6 +102,7 @@ class CausalInferenceTrainer:
         if self.optimizer is not None:
             self.learning_rate = self.optimizer.param_groups[0]["lr"]
 
+        self.normalise = normalise
         self.initialise_loaders()
 
     def initialise_loaders(self):
@@ -112,6 +117,7 @@ class CausalInferenceTrainer:
             transformer_inference_split_withpadding,
             cntxt_split=self.cntxt_split,
             sample_size=self.sample_size,
+            normalise=self.normalise,
         )
         # Get loaders
         persistent_workers = True if self.num_workers > 0 else False
@@ -426,14 +432,22 @@ class CausalInferenceTester(CausalInferenceTrainer):
             dtype = th.float32
             self.model.to(dtype)
 
-            all_loss = []
+            losses = defaultdict(list)
             for i, data in enumerate(tqdm(test_loader, desc="Test", leave=False)):
                 # Get the inputs and targets
-                context, target, intvn_indices, outcome_indices, masks, _ = (
-                    send_to_device(
-                        list(data),
-                        device="cuda",
-                    )
+                (
+                    context,
+                    target,
+                    intvn_indices,
+                    outcome_indices,
+                    masks,
+                    causal_graphs,
+                ) = send_to_device(
+                    list(data),
+                    device="cuda",
+                )
+                directions = get_causal_direction(
+                    causal_graphs, intvn_indices, outcome_indices
                 )
                 context, target = send_to_device(
                     [context, target],
@@ -456,27 +470,23 @@ class CausalInferenceTester(CausalInferenceTrainer):
                     test=True,
                 )
 
-                all_loss.append(loss)
+                for direction, loss_val in zip(directions, loss):
+                    val = loss_val.item()
+                    losses[direction].append(val)
+                    losses["all"].append(val)
 
-        # if self.use_wandb:
-        #     metric_dict = plot_predictions_to_wandb(
-        #         metric_dict=metric_dict,
-        #         model=self.model,
-        #         loader=test_loader,
-        #         num_plots=10,
-        #         device="cuda",
-        #     )
+        # Convert to numpy arrays for safe aggregation
+        losses_np = {k: np.array(v) for k, v in losses.items()}
 
-        # Log the mean and std of the test loss
-        all_loss = th.concat(all_loss)
+        # Aggregate results
+        for key in ["all", "downstream", "upstream", "independent"]:
+            if key in losses_np and len(losses_np[key]) > 0:
+                metric_dict[f"test_loss_{key}_mean"] = losses_np[key].mean()
+                metric_dict[f"test_loss_{key}_std"] = losses_np[key].std()
+            else:
+                metric_dict[f"test_loss_{key}_mean"] = None
+                metric_dict[f"test_loss_{key}_std"] = None
 
-        metric_dict.update(
-            {
-                "test_loss_mean": all_loss.mean().cpu().item(),
-                "test_loss_std": all_loss.std().cpu().item(),
-                # "test_loss_per_dataset": all_loss.cpu().numpy().tolist(),
-            }
-        )
         return metric_dict
 
     def test(self):

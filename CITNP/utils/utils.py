@@ -8,7 +8,7 @@ import random
 from datetime import datetime
 from functools import partial
 import re
-from typing import Union, Tuple
+from typing import List, Union, Tuple
 
 import numpy as np
 import torch
@@ -261,3 +261,50 @@ def load_latest_checkpoint(model, model_save_dir):
 
     model.load_state_dict(torch.load(latest_ckpt))
     return model, latest_ckpt
+
+
+def _has_path(adj: torch.Tensor, start: int, end: int) -> bool:
+    """
+    Depth‐first search on a single adjacency matrix `adj` (shape [N,N]),
+    checking for a directed path start → end.
+    """
+    N = adj.size(0)
+    visited = torch.zeros(N, dtype=torch.bool)
+    stack = [start]
+
+    while stack:
+        node = stack.pop()
+        if node == end:
+            return True
+        if not visited[node]:
+            visited[node] = True
+            # find children of `node`
+            children = (adj[node] != 0).nonzero(as_tuple=False).view(-1)
+            for c in children.tolist():
+                if not visited[c]:
+                    stack.append(c)
+    return False
+
+
+def get_causal_direction(
+    graphs: torch.Tensor,  # [B, N, N] adjacency matrices
+    intvn_indices: torch.Tensor,  # [B] intervention node indices
+    outcome_indices: torch.Tensor,  # [B] outcome node indices
+) -> List[str]:
+    """
+    Returns a list of length B with values in {"upstream","downstream","independent"}.
+    """
+    B = graphs.size(0)
+    dirs = []
+    for b in range(B):
+        adj = graphs[b]
+        i = int(intvn_indices[b].item())
+        o = int(outcome_indices[b].item())
+
+        if _has_path(adj, i, o):
+            dirs.append("upstream")
+        elif _has_path(adj, o, i):
+            dirs.append("downstream")
+        else:
+            dirs.append("independent")
+    return dirs

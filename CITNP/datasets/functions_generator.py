@@ -14,6 +14,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 import torch as th
 
+from scipy.stats import invgamma
+
 from CITNP.utils.gplvm_utils import RBFKernel, SumExpGammaKernels
 from CITNP.utils.processing import normalise_variable
 
@@ -34,16 +36,79 @@ class UniformLinear:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                outputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
                 return outputs
             else:
-                weight = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[1], 1))
+                weight = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[1], 1)
+                )
                 weight = np.clip(weight, -1, 1)
                 feature = np.dot(inputs, weight)
                 outputs = feature + np.random.uniform(
                     low=-self.scale, high=self.scale, size=(inputs.shape[0], 1)
                 )
                 return outputs
+
+
+class LinearFixedStd:
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents
+        self.weights = np.random.normal(loc=0, scale=1.0, size=(num_parents,))
+        self.scale = 0.1
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Generate a uniform noise function.
+        """
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                # If there is no parent, we sample from a normal distribution.
+                outputs = np.random.normal(
+                    loc=0, scale=self.scale, size=(inputs.shape[0], 1)
+                )
+                return outputs
+            else:
+                feature = np.dot(inputs, self.weights)
+                outputs = feature + np.random.normal(
+                    loc=0, scale=self.scale, size=(inputs.shape[0])
+                )
+                return outputs[:, None]
+
+
+class LinearNonIdentifiable:
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents
+        self.weights = np.random.normal(loc=0, scale=1.0, size=(num_parents,))
+        self.scale = invgamma.rvs(a=3, scale=1, size=(1))
+        self.eta = 2
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Generate a uniform noise function.
+        """
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                # If there is no parent, we sample from a normal distribution.
+                outputs = np.random.normal(
+                    loc=0, scale=self.scale, size=(inputs.shape[0], 1)
+                )
+                return outputs
+            else:
+                feature = np.dot(inputs, self.weights)
+                outputs = feature + np.random.normal(
+                    loc=0, scale=self.scale, size=(inputs.shape[0])
+                )
+                return outputs[:, None]
 
 
 class SinFunction:
@@ -65,7 +130,9 @@ class SinFunction:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                outputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
                 return outputs
             else:
                 outputs = np.sin(
@@ -121,10 +188,14 @@ class GPFunctions:
                 .to(self.device)
                 .to(th.float64)
             )
-            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device)
+            covariance = covariance + 1e-4 * th.eye(
+                inputs.shape[0], device=self.device
+            )
             mean = th.zeros(inputs.shape[0], device=self.device)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(mean)
+            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(
+                mean
+            )
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
 
@@ -162,7 +233,9 @@ class NeuralNetFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                inputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
 
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
@@ -259,7 +332,9 @@ class SimpleGPLVMFunctions:
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         self.dtype = th.float64
 
-        lengthscale_values = np.random.lognormal(-1, 1, size=(self.num_parents + 1))
+        lengthscale_values = np.random.lognormal(
+            -1, 1, size=(self.num_parents + 1)
+        )
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
         # Define the kernel
@@ -277,7 +352,9 @@ class SimpleGPLVMFunctions:
             if inputs.shape[-1] > 1:
                 mean = th.from_numpy(inputs[:, -1]).to(self.device).to(self.dtype)
             else:
-                mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
+                mean = th.zeros(
+                    inputs.shape[0], device=self.device, dtype=self.dtype
+                )
 
             inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
             covariance = self.kernel(inputs, inputs)
@@ -324,7 +401,9 @@ class DataGenerator(ABC):
     ):
         self.number_of_variables = num_variables
 
-    def _get_inputs(self, parents_of_i: np.ndarray, data: np.ndarray) -> np.ndarray:
+    def _get_inputs(
+        self, parents_of_i: np.ndarray, data: np.ndarray
+    ) -> np.ndarray:
         """
         Get the inputs for the variable i.
         """
@@ -338,6 +417,8 @@ class DataGenerator(ABC):
         causal_graph: np.ndarray,
         sample_size: int,
         intervention_index: int,
+        return_functions: bool = False,
+        normalise: bool = True,
     ) -> np.ndarray:
         """
         Generate functions for the SCM.
@@ -356,9 +437,14 @@ class DataGenerator(ABC):
         intervention_index : int
             Index of the variable to intervene on. The parents of this variable
             will be set to 0.
+
+        return_functions : bool
+            Whether to return the functions used to generate the data.
+            This is useful in the linear case to compare to analytical result.
         """
         # Functions will be a dict with keys being the variable number
         function_dict = self.generate_functions(causal_graph)
+        functions = np.zeros((self.number_of_variables, self.number_of_variables))
         obs_data = np.zeros((sample_size, self.number_of_variables))
         intvn_data = np.zeros((sample_size, self.number_of_variables))
         # Causal graph row i is a parent of column j.
@@ -373,6 +459,10 @@ class DataGenerator(ABC):
             function_for_i = function_dict[i]
             parents_of_i = causal_graph[:, i]
 
+            if return_functions:
+                non_zero_parents = np.where(parents_of_i == 1)[0]
+                functions[:, i][non_zero_parents] = function_dict[i].weight
+
             # Observational data
             # Inputs will be an empty array if there are no parents.
             obs_inputs = self._get_inputs(parents_of_i, obs_data)
@@ -381,27 +471,30 @@ class DataGenerator(ABC):
                 variable_intvn = np.random.normal(
                     loc=0, scale=1.0, size=(sample_size, 1)
                 )
-                obs_inputs = normalise_variable(obs_inputs, axis=0)
                 variable_obs = function_for_i(obs_inputs)
-                variable_obs = normalise_variable(variable_obs, axis=0)
+                if normalise:
+                    obs_inputs = normalise_variable(obs_inputs, axis=0)
+                    variable_obs = normalise_variable(variable_obs, axis=0)
             else:
                 intvn_parents_of_i = parents_of_i
                 intvn_inputs = self._get_inputs(intvn_parents_of_i, intvn_data)
 
                 full_inputs = np.concatenate([obs_inputs, intvn_inputs], axis=0)
                 # Pass the inputs to the function
-                full_inputs = normalise_variable(full_inputs, axis=0)
+                if normalise:
+                    full_inputs = normalise_variable(full_inputs, axis=0)
                 variable = function_for_i(full_inputs)
 
                 variable_obs = variable[:sample_size]
                 variable_intvn = variable[sample_size:]
 
-                variable_obs, mean_obs, std_obs = normalise_variable(
-                    variable_obs, axis=0, return_stats=True
-                )
-                variable_intvn = normalise_variable(
-                    variable_intvn, axis=0, mean=mean_obs, std=std_obs
-                )
+                if normalise:
+                    variable_obs, mean_obs, std_obs = normalise_variable(
+                        variable_obs, axis=0, return_stats=True
+                    )
+                    variable_intvn = normalise_variable(
+                        variable_intvn, axis=0, mean=mean_obs, std=std_obs
+                    )
 
             obs_data[:, i : i + 1] = variable_obs
             intvn_data[:, i : i + 1] = variable_intvn
@@ -410,7 +503,10 @@ class DataGenerator(ABC):
         assert not np.isinf(obs_data).any(), "Obs Data contains infs!"
         assert not np.isnan(intvn_data).any(), "Intvn Data contains NaNs!"
         assert not np.isinf(intvn_data).any(), "Intvn Data contains infs!"
-        return obs_data, intvn_data
+        output = (obs_data, intvn_data)
+        if return_functions:
+            output = output + (functions,)  # type: ignore
+        return output
 
     @abstractmethod
     def generate_functions(
@@ -627,6 +723,74 @@ class UniformLinearFunctionGenerator(DataGenerator):
             num_parents = int(np.sum(parents_of_i))
 
             function = UniformLinear(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class LinearFixedStdFunctionGenerator(DataGenerator):
+    """
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function = LinearFixedStd(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class LinearNonIdentifiableFunctionGenerator(DataGenerator):
+    """
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function = LinearNonIdentifiable(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict

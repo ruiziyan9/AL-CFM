@@ -27,13 +27,24 @@ def parse_args():
         "--data_file",
         type=str,
         # default="anticausal_simplegplvm_['ER']_2_1000",
-        default="simplegp_ER_3_1000",
+        # default="simplegp_ER_3_1000",
         # default="3_var_simpleGP_ER_3_1000",
+        # default="unnormalised_linearfixedstd_ER_2_1000",
+        # default="unnorm_small_std_linearfixedstd_ER_2_1000",
+        # default="unnorm_small_scale_linearfixedstd_ER_2_1000",
+        default="unnorm_linearnonidentifiable_ER_2_1000",
         help="Name of the data file to use.",
     )
 
     parser.add_argument(
         "--seed", type=int, default=0, help="Seed for random number generation."
+    )
+    parser.add_argument(
+        "--no-normalise",
+        action="store_false",
+        dest="normalise",
+        default=True,
+        help="Disable normalisation in the collator (default is normalise=True).",
     )
     parser.add_argument(
         "--debug",

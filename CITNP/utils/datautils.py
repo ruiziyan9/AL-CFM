@@ -80,6 +80,7 @@ def transformer_inference_split_withpadding(
     cntxt_split: List[float],
     sample_size: int,
     is_training: bool = False,
+    normalise: bool = True,
 ):
     if is_training:
         min_context = int(sample_size * cntxt_split[0])
@@ -90,28 +91,46 @@ def transformer_inference_split_withpadding(
 
     def mycollate(batch):
         # There are two modes
-        if len(batch[0]) == 6:
-            obs_data_array = stack_list_of_arrays([i[0] for i in batch])
-            int_data_array = stack_list_of_arrays([i[1] for i in batch])
-            causal_graphs_array = stack_list_of_arrays([i[2] for i in batch])
-            intvn_indices = stack_list_of_arrays([i[3] for i in batch])
-            variable_counts = stack_list_of_arrays([i[4] for i in batch])
-            masks = stack_list_of_arrays([i[5] for i in batch])
+        if len(batch[0]) >= 6:
+            (
+                obs_data_array,
+                int_data_array,
+                causal_graphs_array,
+                intvn_indices,
+                variable_counts,
+                masks,
+            ) = [
+                stack_list_of_arrays([sample[i] for sample in batch])
+                for i in range(6)
+            ]
+            # Optionally extract the functions if we are returning them
+            functions = (
+                stack_list_of_arrays([sample[6] for sample in batch])
+                if len(batch[0]) > 6
+                else None
+            )
         else:
-            obs_data_array = batch[0]
-            int_data_array = batch[1]
-            causal_graphs_array = batch[2]
-            intvn_indices = batch[3]
-            variable_counts = batch[4]
-            masks = batch[5]
+            (
+                obs_data_array,
+                int_data_array,
+                causal_graphs_array,
+                intvn_indices,
+                variable_counts,
+                masks,
+            ) = batch[:6]
+
+            # Optionally extract the functions if we are returning them
+            functions = batch[6] if len(batch) > 6 else None
 
         # Standardize the data
-        obs_data_array, mean_obs, std_obs = normalise_variable(
-            obs_data_array, axis=1, return_stats=True
-        )
-        int_data_array = normalise_variable(
-            int_data_array, axis=1, mean=mean_obs, std=std_obs
-        )
+        if normalise:
+            print("Normalising data")
+            obs_data_array, mean_obs, std_obs = normalise_variable(
+                obs_data_array, axis=1, return_stats=True
+            )
+            int_data_array = normalise_variable(
+                int_data_array, axis=1, mean=mean_obs, std=std_obs
+            )
 
         context, target = sample_context_and_target(
             obs_data_array,
@@ -135,7 +154,7 @@ def transformer_inference_split_withpadding(
         intvn_indices = th.from_numpy(intvn_indices).long()
         outcome_indices = th.from_numpy(outcome_indices).long()
 
-        return (
+        output = (
             context,
             target,
             intvn_indices,
@@ -143,6 +162,9 @@ def transformer_inference_split_withpadding(
             masks,
             causal_graphs_array,
         )
+        if functions is not None:
+            output = output + (functions,)
+        return output
 
     return mycollate
 
@@ -156,6 +178,7 @@ class MultipleFileDataset(th.utils.data.Dataset):
         self.all_intvn_indices = []
         self.all_variable_counts = []
         self.all_masks = []
+        self.all_functions = []
 
         for idx, file in enumerate(file_list):
             f = h5py.File(file, "r")
@@ -168,6 +191,10 @@ class MultipleFileDataset(th.utils.data.Dataset):
                 self.all_masks.append(f["masks"])
             else:
                 self.all_masks.append(None)
+            if "functions" in f:
+                self.all_functions.append(f["functions"])
+            else:
+                self.all_functions.append(None)
         # Assume all datasets have the same size
         self.size_each_dataset = self.all_obs_data[0].shape[0]
 
@@ -183,7 +210,7 @@ class MultipleFileDataset(th.utils.data.Dataset):
         else:
             masks = None
 
-        yield (
+        output = (
             obs_data,
             int_data,
             causal_graph,
@@ -191,6 +218,11 @@ class MultipleFileDataset(th.utils.data.Dataset):
             variable_counts,
             masks,
         )
+        if self.all_functions[file_counter] is not None:
+            functions = self.all_functions[file_counter][data_idx]
+            output = output + (functions,)
+
+        yield output
 
     def __getitem__(self, idx):
         # Make sure the same item is not returned twice in parallel
