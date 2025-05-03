@@ -4,11 +4,10 @@ File to train the transformer NP classifier model.
 
 from collections import defaultdict
 from functools import partial
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch as th
-import wandb
 from tqdm import tqdm
 
 from CITNP.utils.configs import (
@@ -18,7 +17,7 @@ from CITNP.utils.configs import (
     TrainingConfig,
 )
 from CITNP.utils.datautils import transformer_inference_split_withpadding
-from CITNP.utils.utils import send_to_device
+from CITNP.utils.utils import get_causal_direction, send_to_device
 
 
 class CausalInferenceTrainer:
@@ -61,7 +60,7 @@ class CausalInferenceTrainer:
         self.train_dtype = getattr(th, self.dataconfig.train_dtype)
         self.eval_dtype = getattr(th, self.dataconfig.eval_dtype)
 
-        self.normalise = normalise
+        self.normalise = dataconfig.normalise
         self.initialise_loaders()
 
         # Training state
@@ -87,6 +86,7 @@ class CausalInferenceTrainer:
             transformer_inference_split_withpadding,
             cntxt_split=self.dataconfig.cntxt_split,
             sample_size=self.dataconfig.sample_size,
+            normalise=self.normalise,
         )
         # Get loaders
         persistent_workers = True if self.dataconfig.num_workers > 0 else False
@@ -127,8 +127,7 @@ class CausalInferenceTrainer:
 
     def _prepare_batch(self, batch: Tuple, dtype: th.dtype) -> Dict[str, th.Tensor]:
         """Sends batch data to the correct device and converts type."""
-        # Adapt this based on the *exact* structure returned by your collate_fn
-        context, target, intvn_indices, outcome_indices, masks, _ = send_to_device(
+        context, target, intvn_indices, outcome_indices, masks, graph = send_to_device(
             list(batch), self.device
         )
 
@@ -144,9 +143,12 @@ class CausalInferenceTrainer:
             "intervention_index": intvn_indices,
             "outcome_index": outcome_indices,
             "variable_mask": masks,
+            "causal_graphs": graph,
         }
 
-    def _forward_pass(self, batch: Dict[str, th.Tensor]) -> Dict[str, Any]:
+    def _forward_pass(
+        self, batch: Dict[str, th.Tensor], test: Optional[bool] = False
+    ) -> Dict[str, Any]:
         model_output = self.model(
             context_data=batch["context"],
             target_data=batch["target"],
@@ -159,6 +161,7 @@ class CausalInferenceTrainer:
             model_output=model_output,
             target=batch["target"],  # Pass the original target data if needed
             outcome_index=batch["outcome_index"],
+            test=test,
         )
         return {"loss": loss, "model_output": model_output}
 
@@ -254,3 +257,51 @@ class CausalInferenceTrainer:
         finally:
             self._run_callbacks("on_train_end")
             print("Training finished.")
+
+    def test_epoch(self, test_loader, metric_dict):
+        with th.no_grad():
+            self.model.eval()
+            self.model.to(self.eval_dtype)
+            self.model.to(self.device)
+
+            losses = defaultdict(list)
+            for i, batch in enumerate(tqdm(test_loader, desc="Test", leave=False)):
+                # Get the inputs and targets
+
+                prepared_batch = self._prepare_batch(batch, dtype=self.eval_dtype)
+
+                directions = get_causal_direction(
+                    graphs=prepared_batch["causal_graphs"],
+                    intvn_indices=prepared_batch["intervention_index"],
+                    outcome_indices=prepared_batch["outcome_index"],
+                )
+
+                output = self._forward_pass(prepared_batch, test=True)
+
+                loss = output["loss"]
+
+                for direction, loss_val in zip(directions, loss):
+                    val = loss_val.item()
+                    losses[direction].append(val)
+                    losses["all"].append(val)
+
+        # Convert to numpy arrays for safe aggregation
+        losses_np = {k: np.array(v) for k, v in losses.items()}
+
+        # Aggregate results
+        for key in ["all", "downstream", "upstream", "independent"]:
+            if key in losses_np and len(losses_np[key]) > 0:
+                metric_dict[f"test_loss_{key}_mean"] = losses_np[key].mean()
+                metric_dict[f"test_loss_{key}_std"] = losses_np[key].std()
+            else:
+                metric_dict[f"test_loss_{key}_mean"] = None
+                metric_dict[f"test_loss_{key}_std"] = None
+
+        return metric_dict
+
+    def test(self):
+        self._run_callbacks("on_test_begin")
+        return self.test_epoch(
+            test_loader=self.test_loader,
+            metric_dict={},
+        )

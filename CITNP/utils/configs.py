@@ -45,6 +45,7 @@ class DataConfig:
     train_dtype: str
     eval_dtype: str
     pin_memory: bool = True
+    normalise: bool = True
 
 
 @dataclass

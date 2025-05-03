@@ -41,6 +41,9 @@ class Callback:
     def on_validation_end(self, trainer, validation_logs):
         pass
 
+    def on_test_begin(self, trainer):
+        pass
+
 
 class ProgressBarCallback(Callback):
     """Handles TQDM progress bars."""
@@ -196,6 +199,20 @@ class CheckpointCallback(Callback):
         }
         th.save(state, save_path)
         print(f"Checkpoint saved to {save_path}")
+
+    def on_test_begin(self, trainer):
+        # Load the best model for testing
+        best_model_path = self.log_config.save_dir / "model_best_model.pt"
+        if best_model_path.exists():
+            print(f"Loading best model from {best_model_path}")
+            state = th.load(best_model_path, map_location=trainer.device)
+            trainer.model.load_state_dict(state["model_state_dict"])
+            if trainer.optimizer:
+                trainer.optimizer.load_state_dict(state["optimizer_state_dict"])
+            if trainer.scheduler and state["scheduler_state_dict"]:
+                trainer.scheduler.load_state_dict(state["scheduler_state_dict"])
+        else:
+            print(f"No best model found at {best_model_path}. Using current model.")
 
 
 class LRSchedulerCallback(Callback):

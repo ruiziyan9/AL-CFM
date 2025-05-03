@@ -107,11 +107,10 @@ def main(args: argparse.Namespace):
             model = MoGCausalInferenceModel(config)
         else:
             model = CausalInferenceModel(config)
-        # project_name = "meta_causal_inference"
     else:
         config = LocalLatentConfig(**MODEL_ARGS)
         model = LocalLatentCausalInferenceModel(config)
-        # project_name = "meta_causal_inference"
+    project_name = "meta_causal_inference"
 
     dataconfig = DataConfig(
         batch_size=args.batch_size,
@@ -121,6 +120,7 @@ def main(args: argparse.Namespace):
         train_dtype="bfloat16",
         eval_dtype="float32",
         pin_memory=True,
+        normalise=True,
     )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -181,6 +181,7 @@ def main(args: argparse.Namespace):
         callbacks=callbacks,
     )
     trainer.train()
+    test_stats = trainer.test()
 
 
 if __name__ == "__main__":
