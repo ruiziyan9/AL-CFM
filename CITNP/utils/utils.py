@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import Any, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -182,7 +182,9 @@ def set_all_except_batchindex_to_zero(
 
     # Create a tensor that lists node indices for broadcasting.
     # Shape: (1, 1, num_nodes, 1)
-    node_range = torch.arange(num_nodes, device=data.device).view(1, 1, num_nodes, 1)
+    node_range = torch.arange(num_nodes, device=data.device).view(
+        1, 1, num_nodes, 1
+    )
 
     # Reshape intervention_index to (batch_size, 1, 1, 1) for broadcasting.
     intervention_index = batch_index.view(batch_size, 1, 1, 1)
@@ -317,7 +319,7 @@ def get_causal_direction(
 
 def convert_trainerdict_to_config(
     trainer_dict: dict,
-) -> dict:
+) -> Tuple[Any, Any, Any, Any]:
     """
     Converts a trainer dictionary to a configuration dictionary.
 
@@ -352,7 +354,9 @@ def convert_trainerdict_to_config(
         save_dir=trainer_dict["save_dir"],
         use_wandb=trainer_dict["use_wandb"],
         log_step=trainer_dict["log_step"],
-        save_checkpoint_every_n_steps=trainer_dict["save_checkpoint_every_n_steps"],
+        save_checkpoint_every_n_steps=trainer_dict[
+            "save_checkpoint_every_n_steps"
+        ],
         plot_validation_samples=trainer_dict["plot_validation_samples"],
         num_validation_plots=trainer_dict["num_validation_plots"],
     )

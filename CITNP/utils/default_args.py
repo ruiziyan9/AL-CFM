@@ -4,8 +4,6 @@ Default arguments for the CITNP package.
 
 import argparse
 
-import torch
-
 
 def parse_default_args():
     """
@@ -52,10 +50,18 @@ def parse_default_args():
         default=False,
         help="Whether to run in debug mode.",
     )
-    parser.add_argument("--model_type", choices=["cnp", "locallatent"], default="cnp")
-    parser.add_argument("--d_model", type=int, default=256, help="Model dimension.")
-    parser.add_argument("--emb_depth", type=int, default=2, help="Embedding depth.")
-    parser.add_argument("--decoder_depth", type=int, default=0, help="Decoder depth.")
+    parser.add_argument(
+        "--model_type", choices=["cnp", "locallatent"], default="cnp"
+    )
+    parser.add_argument(
+        "--d_model", type=int, default=256, help="Model dimension."
+    )
+    parser.add_argument(
+        "--emb_depth", type=int, default=2, help="Embedding depth."
+    )
+    parser.add_argument(
+        "--decoder_depth", type=int, default=0, help="Decoder depth."
+    )
     parser.add_argument(
         "--dim_feedforward",
         type=int,
@@ -156,7 +162,9 @@ def parse_default_args():
     parser.add_argument(
         "--learning_rate", type=float, default=0.0005, help="Learning rate."
     )
-    parser.add_argument("--run_name", type=str, default=None, help="Name of the run.")
+    parser.add_argument(
+        "--run_name", type=str, default=None, help="Name of the run."
+    )
 
     # Training args
     parser.add_argument("--epochs", type=int, default=2, help="Number of epochs.")

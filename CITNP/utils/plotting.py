@@ -166,7 +166,7 @@ def plot_predictions_to_wandb(
                 single_batch = take_single_dataset(list(batch), batch_idx)
 
                 context, target, intvn_indices, outcome_indices, masks, graph = (
-                    send_to_device(single_batch, device=device)
+                    send_to_device(single_batch[:6], device=device)
                 )
 
                 num_nodes = context.size(2)
