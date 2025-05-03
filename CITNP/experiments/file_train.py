@@ -107,11 +107,11 @@ def main(args: argparse.Namespace):
             model = MoGCausalInferenceModel(config)
         else:
             model = CausalInferenceModel(config)
-        project_name = "meta_causal_inference"
+        # project_name = "meta_causal_inference"
     else:
         config = LocalLatentConfig(**MODEL_ARGS)
         model = LocalLatentCausalInferenceModel(config)
-        project_name = "meta_causal_inference"
+        # project_name = "meta_causal_inference"
 
     dataconfig = DataConfig(
         batch_size=args.batch_size,

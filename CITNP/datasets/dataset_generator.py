@@ -17,6 +17,8 @@ from CITNP.datasets.functions_generator import (
     SimpleGPLVMFunctionGenerator,
     SinusoidFunctionGenerator,
     UniformLinearFunctionGenerator,
+    LinearFixedStdFunctionGenerator,
+    LinearNonIdentifiableFunctionGenerator,
 )
 
 
@@ -61,6 +63,8 @@ class InterventionDatasetGenerator(IterableDataset):
         graph_type: List[str],
         graph_degrees: List[int],
         iterations_per_epoch: Optional[int] = 1000,
+        return_functions: Optional[bool] = False,
+        normalise: Optional[bool] = True,
     ):
         self.function_generator = function_generator
         self.num_variables = num_variables
@@ -71,25 +75,37 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_degrees = graph_degrees
 
         self.max_num_variables = (
-            max(num_variables) if isinstance(num_variables, list) else num_variables
+            max(num_variables)
+            if isinstance(num_variables, list)
+            else num_variables
         )
 
         self.iterations_per_epoch = iterations_per_epoch
 
-        if self.function_generator == "gp":
-            self.data_generator = partial(GPFunctionGenerator)
-        elif self.function_generator == "sinusoid":
-            self.data_generator = partial(SinusoidFunctionGenerator)  # type: ignore[arg-type]
-        elif self.function_generator == "neuralnet":
-            self.data_generator = partial(NeuralNetFunctionGenerator)  # type: ignore[arg-type]
-        elif self.function_generator == "simplegp":
-            self.data_generator = partial(SimpleGPFunctionGenerator)  # type: ignore[arg-type]
-        elif self.function_generator == "simplegplvm":
-            self.data_generator = partial(SimpleGPLVMFunctionGenerator)
-        elif self.function_generator == "uniformlinear":
-            self.data_generator = partial(UniformLinearFunctionGenerator)
-        elif self.function_generator == "neuralgplvm":
-            self.data_generator = partial(NeuralGPLVMFunctionGenerator)
+        valid_generators = {
+            "gp": GPFunctionGenerator,
+            "sinusoid": SinusoidFunctionGenerator,
+            "neuralnet": NeuralNetFunctionGenerator,
+            "simplegp": SimpleGPFunctionGenerator,
+            "simplegplvm": SimpleGPLVMFunctionGenerator,
+            "uniformlinear": UniformLinearFunctionGenerator,
+            "linearfixedstd": LinearFixedStdFunctionGenerator,
+            "linearnonidentifiable": LinearNonIdentifiableFunctionGenerator,
+            "neuralgplvm": NeuralGPLVMFunctionGenerator,
+        }
+
+        if self.function_generator in valid_generators:
+            self.data_generator = partial(
+                valid_generators[self.function_generator]
+            )  # type: ignore[arg-type]
+        else:
+            valid_types = ", ".join(valid_generators.keys())
+            raise ValueError(
+                f"{self.function_generator} is not a valid function generator. Valid options are: {valid_types}."
+            )
+
+        self.return_functions = return_functions
+        self.normalise = normalise
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """
@@ -109,7 +125,9 @@ class InterventionDatasetGenerator(IterableDataset):
         permuted_data = [data[:, permutation_indices] for data in args]
         return permuted_data
 
-    def permute_causal_graph(self, *args, permutation_indices: np.ndarray) -> list:
+    def permute_causal_graph(
+        self, *args, permutation_indices: np.ndarray
+    ) -> list:
         """
         Permutes the causal graph.
 
@@ -140,7 +158,9 @@ class InterventionDatasetGenerator(IterableDataset):
         degree = np.random.choice(self.graph_degrees)
         return degree
 
-    def randomly_intervene_on_dag(self, dag: np.ndarray) -> Tuple[np.ndarray, int]:
+    def randomly_intervene_on_dag(
+        self, dag: np.ndarray
+    ) -> Tuple[np.ndarray, int]:
         """
         Randomly intervene on a variable in the DAG.
 
@@ -230,6 +250,9 @@ class InterventionDatasetGenerator(IterableDataset):
         causal_graphs_array = np.zeros(
             (self.batch_size, self.max_num_variables, self.max_num_variables)
         )
+        functions_array = np.zeros(
+            (self.batch_size, self.max_num_variables, self.max_num_variables)
+        )
         intvn_indices = np.zeros(self.batch_size, dtype=int)
         variable_counts = np.zeros(self.batch_size, dtype=int)
         masks = np.zeros((self.batch_size, self.max_num_variables))
@@ -260,14 +283,19 @@ class InterventionDatasetGenerator(IterableDataset):
             # We do this by randomly intervening on a variable
             intvn_index = self.randomly_intervene_on_dag(dag)
 
-            (
-                obs_data,
-                intvn_data,
-            ) = current_data_generator.generate_data(
+            data = current_data_generator.generate_data(
                 causal_graph=dag,
                 sample_size=self.sample_size,
                 intervention_index=intvn_index,
+                return_functions=self.return_functions,
+                normalise=self.normalise,
             )
+
+            # Unpack data
+            if self.return_functions:
+                obs_data, intvn_data, functions = data
+            else:
+                obs_data, intvn_data = data
 
             # Permute the data and graphs
             permutation_indices = np.random.permutation(current_num_variables)
@@ -302,12 +330,18 @@ class InterventionDatasetGenerator(IterableDataset):
             intvn_indices[b] = intvn_index
             variable_counts[b] = current_num_variables
             masks[b] = mask
+            if self.return_functions:
+                functions = self.permute_causal_graph(
+                    functions,
+                    permutation_indices=permutation_indices,
+                )[0]
+                functions_array[b] = functions
 
         # If num_variables is not a list, masks will be None
         if not isinstance(self.num_variables, list):
             masks = None
 
-        yield (
+        output = (
             obs_data_array,
             int_data_array,
             causal_graphs_array,
@@ -315,6 +349,11 @@ class InterventionDatasetGenerator(IterableDataset):
             variable_counts,
             masks,
         )
+
+        if self.return_functions:
+            output += (functions_array,)
+
+        yield output
 
     def __iter__(self):
         for _ in range(self.iterations_per_epoch):

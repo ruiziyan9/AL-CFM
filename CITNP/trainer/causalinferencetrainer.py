@@ -2,6 +2,7 @@
 File to train the transformer NP classifier model.
 """
 
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -60,6 +61,7 @@ class CausalInferenceTrainer:
         self.train_dtype = getattr(th, self.dataconfig.train_dtype)
         self.eval_dtype = getattr(th, self.dataconfig.eval_dtype)
 
+        self.normalise = normalise
         self.initialise_loaders()
 
         # Training state

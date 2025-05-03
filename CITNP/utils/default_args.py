@@ -27,12 +27,24 @@ def parse_default_args():
         "--data_file",
         type=str,
         # default="anticausal_simplegplvm_['ER']_2_1000",
-        default="simplegp_['ER']_3_1000",
+        # default="simplegp_ER_3_1000",
+        # default="3_var_simpleGP_ER_3_1000",
+        # default="unnormalised_linearfixedstd_ER_2_1000",
+        # default="unnorm_small_std_linearfixedstd_ER_2_1000",
+        # default="unnorm_small_scale_linearfixedstd_ER_2_1000",
+        default="unnorm_linearnonidentifiable_ER_2_1000",
         help="Name of the data file to use.",
     )
 
     parser.add_argument(
         "--seed", type=int, default=0, help="Seed for random number generation."
+    )
+    parser.add_argument(
+        "--no-normalise",
+        action="store_false",
+        dest="normalise",
+        default=True,
+        help="Disable normalisation in the collator (default is normalise=True).",
     )
     parser.add_argument(
         "--debug",
@@ -74,7 +86,7 @@ def parse_default_args():
     parser.add_argument(
         "--mean_loss_across_samples",
         action="store_true",
-        default=True,
+        default=False,
         help="Whether to average the loss across samples.",
     )
     # MoG args
@@ -143,7 +155,7 @@ def parse_default_args():
     parser.add_argument(
         "--iterations_per_epoch",
         type=int,
-        default=10000,
+        default=10,
         help="Number of iterations per epoch.",
     )
     parser.add_argument(
@@ -184,6 +196,12 @@ def parse_default_args():
         type=int,
         default=8,
         help="Number of workers for data loading.",
+    )
+    parser.add_argument(
+        "--model_chkpt_path",
+        type=str,
+        default="",
+        help="Checkpoint path for testing.",
     )
 
     return parser.parse_args()

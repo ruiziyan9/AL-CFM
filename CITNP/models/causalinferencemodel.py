@@ -147,6 +147,7 @@ class CausalInferenceModel(BaseCausalInference):
         model_output: ModelOutput,
         target: torch.tensor,
         outcome_index: torch.Tensor,
+        test: bool = False,
     ):
         """
         Calculate the loss for the model.
@@ -159,7 +160,9 @@ class CausalInferenceModel(BaseCausalInference):
             )
         else:
             return self.eval_loss.calculate_loss(
-                model_output=model_output, trgt_outcome=target
+                model_output=model_output,
+                trgt_outcome=target,
+                test=test,
             )
 
     def forward(
@@ -365,6 +368,7 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
         model_output: ModelOutput,
         target: torch.Tensor,
         outcome_index: torch.Tensor,
+        test: bool = False,
     ):
         trgt_outcome = gather_by_node(target, outcome_index)
         if self.training:
@@ -373,7 +377,9 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
             )
         else:
             return self.eval_loss.calculate_loss(
-                model_output=model_output, trgt_outcome=trgt_outcome
+                model_output=model_output,
+                trgt_outcome=trgt_outcome,
+                test=test,
             )
 
     def forward(
