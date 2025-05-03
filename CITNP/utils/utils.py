@@ -3,16 +3,23 @@ File for random utility functions.
 """
 
 import copy
-from pathlib import Path
 import random
+import re
 from datetime import datetime
 from functools import partial
-import re
-from typing import List, Union, Tuple
+from pathlib import Path
+from typing import List, Tuple, Union
 
 import numpy as np
 import torch
 from torch import nn
+
+from CITNP.utils.configs import (
+    DataConfig,
+    LoggingConfig,
+    OptimizerConfig,
+    TrainingConfig,
+)
 
 
 def _get_clones(
@@ -175,9 +182,7 @@ def set_all_except_batchindex_to_zero(
 
     # Create a tensor that lists node indices for broadcasting.
     # Shape: (1, 1, num_nodes, 1)
-    node_range = torch.arange(num_nodes, device=data.device).view(
-        1, 1, num_nodes, 1
-    )
+    node_range = torch.arange(num_nodes, device=data.device).view(1, 1, num_nodes, 1)
 
     # Reshape intervention_index to (batch_size, 1, 1, 1) for broadcasting.
     intervention_index = batch_index.view(batch_size, 1, 1, 1)
@@ -308,3 +313,47 @@ def get_causal_direction(
         else:
             dirs.append("independent")
     return dirs
+
+
+def convert_trainerdict_to_config(
+    trainer_dict: dict,
+) -> dict:
+    """
+    Converts a trainer dictionary to a configuration dictionary.
+
+    Args:
+        trainer_dict (dict): The trainer dictionary to convert.
+
+    Returns:
+        dict: The converted configuration dictionary.
+    """
+    dataconfig = DataConfig(
+        batch_size=trainer_dict["batch_size"],
+        num_workers=trainer_dict["num_workers"],
+        cntxt_split=trainer_dict["cntxt_split"],
+        sample_size=trainer_dict["sample_size"],
+        train_dtype=trainer_dict["train_dtype"],
+        eval_dtype=trainer_dict["eval_dtype"],
+        pin_memory=trainer_dict["pin_memory"],
+        normalise=trainer_dict["normalise"],
+    )
+    optimconfig = OptimizerConfig(
+        optimizer=trainer_dict["optimizer"],
+        scheduler=None,
+        learning_rate=trainer_dict["learning_rate"],
+        lr_warmup_ratio=trainer_dict["lr_warmup_ratio"],
+    )
+    trainingconfig = TrainingConfig(
+        epochs=trainer_dict["epochs"],
+        gradient_clip_val=trainer_dict["gradient_clip_val"],
+        device=trainer_dict["device"],
+    )
+    loggingconfig = LoggingConfig(
+        save_dir=trainer_dict["save_dir"],
+        use_wandb=trainer_dict["use_wandb"],
+        log_step=trainer_dict["log_step"],
+        save_checkpoint_every_n_steps=trainer_dict["save_checkpoint_every_n_steps"],
+        plot_validation_samples=trainer_dict["plot_validation_samples"],
+        num_validation_plots=trainer_dict["num_validation_plots"],
+    )
+    return dataconfig, optimconfig, trainingconfig, loggingconfig

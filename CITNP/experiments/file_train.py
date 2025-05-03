@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Union
 
 import torch
-import wandb
+from torch.optim import Adam
 
 from CITNP.models.causalinferencemodel import (
     CausalInferenceModel,
@@ -21,17 +21,14 @@ from CITNP.trainer.callbacks import (
     WandbLoggingCallback,
 )
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
-from CITNP.utils.configs import (
-    CausalInfModelConfig,
-    DataConfig,
-    LocalLatentConfig,
-    LoggingConfig,
-    OptimizerConfig,
-    TrainingConfig,
-)
+from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.datautils import MultipleFileDataset
 from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
-from CITNP.utils.utils import _generate_experiment_name, set_seed
+from CITNP.utils.utils import (
+    _generate_experiment_name,
+    convert_trainerdict_to_config,
+    set_seed,
+)
 
 
 def main(args: argparse.Namespace):
@@ -112,37 +109,30 @@ def main(args: argparse.Namespace):
         model = LocalLatentCausalInferenceModel(config)
     project_name = "meta_causal_inference"
 
-    dataconfig = DataConfig(
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        cntxt_split=[0.05, 0.75],
-        sample_size=args.sample_size,
-        train_dtype="bfloat16",
-        eval_dtype="float32",
-        pin_memory=True,
-        normalise=True,
-    )
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    optimizerconfig = OptimizerConfig(
-        optimizer=optimizer,
-        scheduler=None,
-        learning_rate=args.learning_rate,
-        lr_warmup_ratio=args.lr_warmup_ratio,
-    )
-
-    loggingconfig = LoggingConfig(
-        save_dir=model_save_dir,
-        use_wandb=not args.no_wandb,
-        log_step=args.log_step,
-        save_checkpoint_every_n_steps=args.save_checkpoint_every_n_steps,
-        plot_validation_samples=True,
-        num_validation_plots=10,
-    )
-    trainingconfig = TrainingConfig(
-        epochs=args.epochs,
-        gradient_clip_val=1.0,
-        device=args.device,
+    TRAINER_CONFIG = {
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "use_wandb": not args.no_wandb,
+        "lr_warmup_ratio": args.lr_warmup_ratio,
+        "num_workers": args.num_workers,
+        "save_dir": model_save_dir,
+        "cntxt_split": [0.05, 0.75],
+        "sample_size": args.sample_size,
+        "log_step": args.log_step,
+        "save_checkpoint_every_n_steps": args.save_checkpoint_every_n_steps,
+        "normalise": args.normalise,
+        "train_dtype": args.dtype,
+        "eval_dtype": "float32",
+        "pin_memory": True,
+        "learning_rate": args.learning_rate,
+        "optimizer": Adam(model.parameters(), lr=args.learning_rate),
+        "gradient_clip_val": 1.0,
+        "device": args.device,
+        "plot_validation_samples": True,
+        "num_validation_plots": 10,
+    }
+    dataconfig, optimizerconfig, trainingconfig, loggingconfig = (
+        convert_trainerdict_to_config(TRAINER_CONFIG)
     )
 
     # Callbacks

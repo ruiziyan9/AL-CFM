@@ -117,14 +117,9 @@ def parse_default_args():
         help='Computation device to use (e.g., "cuda" or "cpu").',
     )
 
-    # For dtype, pass a string such as "bfloat16", then convert it to torch.dtype.
-    # You could customize str_to_dtype if you want to restrict or handle other dtypes.
-    def str_to_dtype(s):
-        return getattr(torch, s, torch.bfloat16)
-
     parser.add_argument(
         "--dtype",
-        type=str_to_dtype,
+        type=str,
         default="bfloat16",
         help='Torch data type (e.g., "bfloat16" or "float32").',
     )
@@ -214,11 +209,11 @@ def overwrite_debug_args(args):
     args.sample_size = 100
     args.iterations_per_epoch = 100
     args.epochs = 1
-    args.d_model = 64
-    args.dim_feedforward = 128
+    args.d_model = 32
+    args.dim_feedforward = 32
     args.num_layers_encoder = 4
     args.lr_warmup_ratio = 0.0
     args.no_wandb = True
     args.run_name = "debug"
-    args.nhead = 4
+    args.nhead = 2
     return args
