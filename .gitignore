@@ -1,3 +1,6 @@
+# Notebooks
+CITNP/notebooks/tests
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -172,6 +175,10 @@ cython_debug/
 
 # Ignore all files with .pt at the end
 *.pt
+# Ignore all files with .pkl at the end
+*.pkl
+# Ignore all files with .json at the end
+*.json
 # Ignore all folders called wandb no matter where they are
 **/wandb/
 wandb/

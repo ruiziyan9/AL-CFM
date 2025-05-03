@@ -38,12 +38,12 @@ class CausalInfTransformerEncoder(nn.Module):
         assert len(sample_layers) + len(node_layers) > 0, (
             "Encoder must have at least one layer."
         )
-        assert (len(sample_layers) + len(node_layers)) % 2 == 0, (
-            "Encoder must have an even number of layers."
-        )
         if sample_attn_mode == "MHSA":
             assert len(sample_layers) == len(node_layers), (
                 "For MHSA, the number of sample and node layers must be equal.",
+            )
+            assert (len(sample_layers) + len(node_layers)) % 2 == 0, (
+                "Encoder must have an even number of layers."
             )
         elif sample_attn_mode == "MHCA":
             assert len(sample_layers) == 2 * len(node_layers), (

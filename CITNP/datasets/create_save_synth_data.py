@@ -31,6 +31,7 @@ def generate_and_save_data(
     name_prefix: str = "",
 ):
     for i in trange(data_start, data_end):
+        result = next(generator.generate_next_dataset())
         (
             obs_data_array,
             int_data_array,
@@ -38,7 +39,10 @@ def generate_and_save_data(
             intvn_indices,
             variable_counts,
             masks,
-        ) = next(generator.generate_next_dataset())
+        ) = result[:6]
+
+        # If functions are included in the dataset, extract them
+        functions = result[6] if len(result) > 6 else None
 
         all_data = {
             "obs_data": obs_data_array,
@@ -48,6 +52,10 @@ def generate_and_save_data(
             "variable_counts": variable_counts,
             "masks": masks,
         }
+
+        # Add functions if available
+        if functions is not None:
+            all_data["functions"] = functions
 
         fn = generator_args["function_generator"]
         gt = " ".join(generator_args["graph_type"])
@@ -69,11 +77,11 @@ def main(
     data_end: int,
     split: str,
     name_prefix: str = "",
-    sample_size: int = 500,
-    num_variables: List[int] = 3,
-    function_generator: str = "simplegp",
+    sample_size: int = 1000,
+    num_variables: List[int] | int = 2,
+    function_generator: str = "linearnonidentifiable",
     graph_type: List[str] = ["ER"],
-    graph_degrees: List[int] = [1, 2, 3],
+    graph_degrees: List[int] = [1],
 ):
     batch_sizes = {"train": 50000, "val": 100, "test": 100}
 
@@ -90,9 +98,10 @@ def main(
         "graph_degrees": graph_degrees,
         "iterations_per_epoch": 1,
         "batch_size": batch_sizes[split],
+        "normalise": False,
     }
 
-    generator = InterventionDatasetGenerator(**GENERATOR_ARGS)
+    generator = InterventionDatasetGenerator(**GENERATOR_ARGS)  # type: ignore
 
     generate_and_save_data(
         generator,
