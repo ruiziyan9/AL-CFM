@@ -41,7 +41,7 @@ class Callback:
     def on_validation_end(self, trainer, validation_logs):
         pass
 
-    def on_test_begin(self, trainer):
+    def on_test_begin(self, trainer, checkpoint_name):
         pass
 
 
@@ -55,7 +55,7 @@ class ProgressBarCallback(Callback):
     def on_epoch_begin(self, trainer, epoch):
         self.train_pbar = tqdm(
             total=trainer.steps_per_epoch,
-            desc=f"Epoch {epoch+1}/{trainer.trainingconfig.epochs} Training",
+            desc=f"Epoch {epoch + 1}/{trainer.trainingconfig.epochs} Training",
             leave=True,
         )
 
@@ -86,6 +86,7 @@ class WandbLoggingCallback(Callback):
 
     def __init__(
         self,
+        entity_name: str,
         project_name: str,
         run_name: str,
         log_config: LoggingConfig,
@@ -94,6 +95,7 @@ class WandbLoggingCallback(Callback):
         model_config: BaseModelConfig,
         train_config: TrainingConfig,
     ):
+        self.entity_name = entity_name
         self.project_name = project_name
         self.run_name = run_name
         self.log_config = log_config
@@ -105,8 +107,8 @@ class WandbLoggingCallback(Callback):
 
     def _initialize_wandb(self, trainer):
         if self.log_config.use_wandb and not self._wandb_initialized:
-
             wandb.init(
+                entity=self.entity_name,
                 project=self.project_name,
                 name=self.run_name,
                 config={
@@ -118,7 +120,9 @@ class WandbLoggingCallback(Callback):
                 },
             )
             wandb.watch(
-                trainer.model, log="gradients", log_freq=self.log_config.log_step * 10
+                trainer.model,
+                log="gradients",
+                log_freq=self.log_config.log_step * 10,
             )
             self._wandb_initialized = True
 
@@ -133,7 +137,9 @@ class WandbLoggingCallback(Callback):
         ):
             # Log learning rate and batch loss
             log_data = {f"train/{k}": v for k, v in batch_logs.items()}
-            log_data["train/learning_rate"] = trainer.optimizer.param_groups[0]["lr"]
+            log_data["train/learning_rate"] = trainer.optimizer.param_groups[0][
+                "lr"
+            ]
             wandb.log(log_data, step=trainer.global_step)
 
     def on_validation_end(self, trainer, validation_logs):
@@ -183,10 +189,10 @@ class CheckpointCallback(Callback):
             self._save_checkpoint(trainer, "best_model")
 
     def on_epoch_end(self, trainer, epoch, epoch_logs):
-        pass
+        self._save_checkpoint(trainer, "last_model")
 
     def _save_checkpoint(self, trainer, filename_suffix: str):
-        save_path = self.log_config.save_dir / f"model_{filename_suffix}.pt"
+        save_path = self.log_config.save_dir / f"{filename_suffix}.pt"
         state = {
             "model_state_dict": trainer.model.state_dict(),
             "optimizer_state_dict": trainer.optimizer.state_dict(),
@@ -200,19 +206,28 @@ class CheckpointCallback(Callback):
         th.save(state, save_path)
         print(f"Checkpoint saved to {save_path}")
 
-    def on_test_begin(self, trainer):
-        # Load the best model for testing
-        best_model_path = self.log_config.save_dir / "model_best_model.pt"
-        if best_model_path.exists():
-            print(f"Loading best model from {best_model_path}")
-            state = th.load(best_model_path, map_location=trainer.device)
-            trainer.model.load_state_dict(state["model_state_dict"])
-            if trainer.optimizer:
-                trainer.optimizer.load_state_dict(state["optimizer_state_dict"])
-            if trainer.scheduler and state["scheduler_state_dict"]:
-                trainer.scheduler.load_state_dict(state["scheduler_state_dict"])
-        else:
-            print(f"No best model found at {best_model_path}. Using current model.")
+    def on_test_begin(self, trainer, checkpoint_name: str = "last_model"):
+        # Load the specified model checkpoint for testing
+        # If it doesn't exist, look for last_model or best_model
+        candidate_names = [checkpoint_name, "last_model", "best_model"]
+
+        path = None
+        for name in candidate_names:
+            candidate_path = self.log_config.save_dir / f"{name}.pt"
+            if candidate_path.exists():
+                path = candidate_path
+                print(f"Found checkpoint: {name}. Loading from {candidate_path}")
+                break
+        if path is None:
+            print(f"No model found at {path}. Using current model.")
+            return
+
+        state = th.load(path, map_location=trainer.device)
+        trainer.model.load_state_dict(state["model_state_dict"])
+        if trainer.optimizer:
+            trainer.optimizer.load_state_dict(state["optimizer_state_dict"])
+        if trainer.scheduler and state["scheduler_state_dict"]:
+            trainer.scheduler.load_state_dict(state["scheduler_state_dict"])
 
 
 class LRSchedulerCallback(Callback):
@@ -233,7 +248,9 @@ class LRSchedulerCallback(Callback):
     def on_batch_begin(self, trainer, batch_idx):
         # Apply warmup scaling *before* the optimizer step
         if trainer.global_step < self.warmup_steps:
-            lr_scale = (trainer.global_step + 1) / self.warmup_steps  # Linear warmup
+            lr_scale = (
+                trainer.global_step + 1
+            ) / self.warmup_steps  # Linear warmup
             new_lr = self.base_lr * lr_scale
             for param_group in trainer.optimizer.param_groups:
                 param_group["lr"] = new_lr

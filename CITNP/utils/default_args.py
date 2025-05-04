@@ -17,8 +17,8 @@ def parse_default_args():
     parser.add_argument(
         "--work_dir",
         type=str,
-        default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
-        # default="/scratches/cartwright/cdd43/CausalInferenceNeuralProcess/CITNP",
+        # default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
+        default="/scratches/cartwright/cdd43/CausalInferenceNeuralProcess/CITNP",
         help="Path to the working directory.",
     )
     parser.add_argument(
@@ -30,7 +30,8 @@ def parse_default_args():
         # default="unnormalised_linearfixedstd_ER_2_1000",
         # default="unnorm_small_std_linearfixedstd_ER_2_1000",
         # default="unnorm_small_scale_linearfixedstd_ER_2_1000",
-        default="unnorm_linearnonidentifiable_ER_2_1000",
+        default="neuralgplvm_ER_3_1000",
+        # default="linearnonidentifiable_ER_2_1000",
         help="Name of the data file to use.",
     )
 
@@ -164,6 +165,12 @@ def parse_default_args():
     )
     parser.add_argument(
         "--run_name", type=str, default=None, help="Name of the run."
+    )
+    parser.add_argument(
+        "--entity_name",
+        type=str,
+        default="npcausalinf",
+        help="Name of the wandb entity.",
     )
 
     # Training args

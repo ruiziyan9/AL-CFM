@@ -53,11 +53,15 @@ def main(args: argparse.Namespace):
 
     val_dir = data_dir / "val"
     val_files = list(val_dir.iterdir())
-    val_dataset = MultipleFileDataset([i for i in val_files if i.suffix == ".hdf5"])
+    val_dataset = MultipleFileDataset(
+        [i for i in val_files if i.suffix == ".hdf5"]
+    )
 
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
-    test_dataset = MultipleFileDataset([i for i in test_files if i.suffix == ".hdf5"])
+    test_dataset = MultipleFileDataset(
+        [i for i in test_files if i.suffix == ".hdf5"]
+    )
 
     MODEL_ARGS = {
         "d_model": args.d_model,
@@ -95,6 +99,8 @@ def main(args: argparse.Namespace):
     save_dir = results_path / "results"
     save_dir.mkdir(parents=True, exist_ok=True)
     model_save_dir = save_dir / f"{args.run_name}"
+    # Don't allow to override models
+    model_save_dir.mkdir(parents=False, exist_ok=False)
 
     # All the configs
     config: Union[CausalInfModelConfig, LocalLatentConfig]
@@ -107,7 +113,9 @@ def main(args: argparse.Namespace):
     else:
         config = LocalLatentConfig(**MODEL_ARGS)
         model = LocalLatentCausalInferenceModel(config)
-    project_name = "meta_causal_inference"
+    # project_name = "meta_causal_inference"
+    project_name = args.data_file
+    entity_name = args.entity_name
 
     TRAINER_CONFIG = {
         "batch_size": args.batch_size,
@@ -137,6 +145,7 @@ def main(args: argparse.Namespace):
 
     # Callbacks
     wandbcallback = WandbLoggingCallback(
+        entity_name=entity_name,
         project_name=project_name,
         run_name=args.run_name,
         log_config=loggingconfig,
@@ -171,7 +180,8 @@ def main(args: argparse.Namespace):
         callbacks=callbacks,
     )
     trainer.train()
-    test_stats = trainer.test()
+    # Currently we aren't running testing on the entire test set so will comment out for now
+    # test_stats = trainer.test()
 
 
 if __name__ == "__main__":

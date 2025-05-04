@@ -1,28 +1,34 @@
 """
-File to train the model.
+File to test the model.
 """
 
 import argparse
 from pathlib import Path
+from typing import Union
 import json
 
 import torch
-import wandb
+from torch.optim import Adam
 
-from typing import Union
 from CITNP.models.causalinferencemodel import (
     CausalInferenceModel,
-    MoGCausalInferenceModel,
     LocalLatentCausalInferenceModel,
+    MoGCausalInferenceModel,
 )
-from CITNP.trainer.causalinferencetrainer import CausalInferenceTester
+from CITNP.trainer.callbacks import (
+    CheckpointCallback,
+    LRSchedulerCallback,
+    ProgressBarCallback,
+    WandbLoggingCallback,
+)
+from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.datautils import MultipleFileDataset
-from CITNP.utils.default_args import overwrite_debug_args, parse_args
+from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
 from CITNP.utils.utils import (
     _generate_experiment_name,
+    convert_trainerdict_to_config,
     set_seed,
-    load_latest_checkpoint,
 )
 
 
@@ -40,6 +46,18 @@ def main(args: argparse.Namespace):
     work_dir = Path(args.work_dir)
     data_dir = work_dir / "datasets/synth_training_data" / args.data_file
     # Get the training and validation datasets
+    train_dir = data_dir / "train"
+    train_files = list(train_dir.iterdir())
+    train_hdf5_files = [i for i in train_files if i.suffix == ".hdf5"]
+    train_hdf5_files = [train_hdf5_files[0]] if args.debug else train_hdf5_files
+    train_dataset = MultipleFileDataset(train_hdf5_files)
+
+    val_dir = data_dir / "val"
+    val_files = list(val_dir.iterdir())
+    val_dataset = MultipleFileDataset(
+        [i for i in val_files if i.suffix == ".hdf5"]
+    )
+
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
     test_dataset = MultipleFileDataset(
@@ -75,19 +93,6 @@ def main(args: argparse.Namespace):
     else:
         raise ValueError(f"Unknown model type: {args.model_type}")
 
-    config: Union[CausalInfModelConfig, LocalLatentConfig]
-    if args.model_type == "cnp":
-        config = CausalInfModelConfig(**MODEL_ARGS)
-        if args.num_mixture_components > 1:
-            model = MoGCausalInferenceModel(config)
-        else:
-            model = CausalInferenceModel(config)
-        project_name = "meta_causal_inference"
-    else:
-        config = LocalLatentConfig(**MODEL_ARGS)
-        model = LocalLatentCausalInferenceModel(config)
-        project_name = "meta_causal_inference"
-
     if args.results_path is None:
         results_path = Path.cwd()
     else:
@@ -96,42 +101,87 @@ def main(args: argparse.Namespace):
     save_dir.mkdir(parents=True, exist_ok=True)
     model_save_dir = save_dir / f"{args.run_name}"
 
-    if args.model_chkpt_path == "":
-        model, _ = load_latest_checkpoint(model, model_save_dir)
+    # All the configs
+    config: Union[CausalInfModelConfig, LocalLatentConfig]
+    if args.model_type == "cnp":
+        config = CausalInfModelConfig(**MODEL_ARGS)
+        if args.num_mixture_components > 1:
+            model = MoGCausalInferenceModel(config)
+        else:
+            model = CausalInferenceModel(config)
     else:
-        model = model.load_state_dict(torch.load(args.model_chkpt_path))
+        config = LocalLatentConfig(**MODEL_ARGS)
+        model = LocalLatentCausalInferenceModel(config)
+    # project_name = "meta_causal_inference"
+    project_name = args.data_file
+    entity_name = args.entity_name
 
-    model = model.to(args.device)
-
-    TRAINER_ARGS = {
+    TRAINER_CONFIG = {
         "batch_size": args.batch_size,
+        "epochs": args.epochs,
         "use_wandb": not args.no_wandb,
+        "lr_warmup_ratio": args.lr_warmup_ratio,
         "num_workers": args.num_workers,
+        "save_dir": model_save_dir,
+        "cntxt_split": [0.05, 0.75],
         "sample_size": args.sample_size,
+        "log_step": args.log_step,
+        "save_checkpoint_every_n_steps": args.save_checkpoint_every_n_steps,
+        "normalise": args.normalise,
+        "train_dtype": args.dtype,
+        "eval_dtype": "float32",
+        "pin_memory": True,
+        "learning_rate": args.learning_rate,
+        "optimizer": Adam(model.parameters(), lr=args.learning_rate),
+        "gradient_clip_val": 1.0,
+        "device": args.device,
+        "plot_validation_samples": True,
+        "num_validation_plots": 10,
     }
-    if not args.no_wandb:
-        wandb.init(  # type: ignore
-            # Set the entity
-            entity="npcausalinf",
-            # Set the project where this run will be logged
-            project=project_name,
-            name=args.run_name,
-            resume="allow",
-            # Track hyperparameters and run metadata
-            config={**vars(args), **TRAINER_ARGS, **MODEL_ARGS},
-        )
-    else:
-        pass
-
-    tester = CausalInferenceTester(
-        model=model,
-        test_dataset=test_dataset,
-        **TRAINER_ARGS,
+    dataconfig, optimizerconfig, trainingconfig, loggingconfig = (
+        convert_trainerdict_to_config(TRAINER_CONFIG)
     )
-    test_metrics = tester.test()
-    print(f"Test metrics: {test_metrics}")
+
+    # Callbacks
+    wandbcallback = WandbLoggingCallback(
+        entity_name=entity_name,
+        project_name=project_name,
+        run_name=args.run_name,
+        log_config=loggingconfig,
+        optim_config=optimizerconfig,
+        data_config=dataconfig,
+        model_config=config,
+        train_config=trainingconfig,
+    )
+    progress_callback = ProgressBarCallback()
+    checkpoint_callback = CheckpointCallback(
+        log_config=loggingconfig,
+    )
+    lr_scheduler_callback = LRSchedulerCallback(
+        optim_config=optimizerconfig,
+    )
+    callbacks = [
+        wandbcallback,
+        progress_callback,
+        checkpoint_callback,
+        lr_scheduler_callback,
+    ]
+
+    trainer = CausalInferenceTrainer(
+        train_dataset=train_dataset,
+        validation_dataset=val_dataset,
+        test_dataset=test_dataset,
+        model=model,
+        dataconfig=dataconfig,
+        trainingconfig=trainingconfig,
+        optimizerconfig=optimizerconfig,
+        loggingconfig=loggingconfig,
+        callbacks=callbacks,
+    )
+    test_stats = trainer.test()
+    print(f"Test metrics: {test_stats}")
     with open(model_save_dir / f"test_metrics_{args.data_file}.json", "w") as f:
-        json.dump(test_metrics, f, indent=4)
+        json.dump(test_stats, f, indent=4)
 
 
 if __name__ == "__main__":
@@ -140,5 +190,5 @@ if __name__ == "__main__":
     torch.backends.cuda.enable_flash_sdp(True)
 
     parser = argparse.ArgumentParser()
-    args = parse_args()
+    args = parse_default_args()
     main(args)

@@ -4,7 +4,7 @@ File to train the transformer NP classifier model.
 
 from collections import defaultdict
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Sequence
 
 import numpy as np
 import torch as th
@@ -16,6 +16,7 @@ from CITNP.utils.configs import (
     OptimizerConfig,
     TrainingConfig,
 )
+from CITNP.trainer.callbacks import Callback
 from CITNP.utils.datautils import transformer_inference_split_withpadding
 from CITNP.utils.utils import get_causal_direction, send_to_device
 
@@ -40,7 +41,7 @@ class CausalInferenceTrainer:
         optimizerconfig: OptimizerConfig,
         trainingconfig: TrainingConfig,
         loggingconfig: LoggingConfig,
-        callbacks: Optional[List[Callable]] = None,
+        callbacks: Optional[Sequence[Callback]] = None,
     ):
         self.train_dataset = train_dataset
         self.validation_dataset = validation_dataset
@@ -306,7 +307,7 @@ class CausalInferenceTrainer:
         return metric_dict
 
     def test(self):
-        self._run_callbacks("on_test_begin")
+        self._run_callbacks("on_test_begin", checkpoint_name="last_model")
         return self.test_epoch(
             test_loader=self.test_loader,
             metric_dict={},

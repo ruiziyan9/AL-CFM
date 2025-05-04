@@ -39,8 +39,8 @@ class BaseCausalInference(nn.Module, ABC):
         self.sample_attn_mode = config.sample_attn_mode
         self.linear_attention = config.linear_attention
         self.mean_loss_across_samples = config.mean_loss_across_samples
-        self.device = config.device
-        self.dtype = config.dtype
+        self.device = torch.device(config.device)
+        self.dtype = getattr(torch, config.dtype)
 
         self.encoder = CausalInfEncoder(
             d_model=self.d_model,
@@ -130,7 +130,7 @@ class CausalInferenceModel(BaseCausalInference):
         )
         self.eval_loss: BaseLoss = CNPLoss(
             mean_loss_across_samples=self.mean_loss_across_samples,
-            reduce="sum",
+            reduce="mean",
         )
 
         self.predictor = Predictor(
@@ -232,7 +232,7 @@ class MoGCausalInferenceModel(CausalInferenceModel):
         )
         self.eval_loss = MixtureGaussianLoss(
             mean_loss_across_samples=self.mean_loss_across_samples,
-            reduce="sum",
+            reduce="mean",
             num_mixture_components=config.num_mixture_components,
         )
 
@@ -287,7 +287,7 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
             mean_loss_across_samples=self.mean_loss_across_samples, reduce="mean"
         )
         self.eval_loss = NLLLoss(
-            mean_loss_across_samples=self.mean_loss_across_samples, reduce="sum"
+            mean_loss_across_samples=self.mean_loss_across_samples, reduce="mean"
         )
 
         self.predictor = Predictor(
