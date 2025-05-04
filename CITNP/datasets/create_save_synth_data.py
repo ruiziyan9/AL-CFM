@@ -77,13 +77,13 @@ def main(
     data_end: int,
     split: str,
     name_prefix: str = "",
-    sample_size: int = 1000,
-    num_variables: List[int] | int = 2,
-    function_generator: str = "linearnonidentifiable",
+    sample_size: int = 500,
+    num_variables: List[int] | int = 50,
+    function_generator: str = "neuralgplvm",
     graph_type: List[str] = ["ER"],
-    graph_degrees: List[int] = [1],
+    graph_degrees: List[int] = [50, 100, 150, 200, 250],
 ):
-    batch_sizes = {"train": 50000, "val": 100, "test": 100}
+    batch_sizes = {"train": 1000, "val": 100, "test": 100}
 
     if split not in batch_sizes:
         raise ValueError(
@@ -120,7 +120,7 @@ if __name__ == "__main__":
         "--data_start", type=int, default=0, help="Index to start saving data."
     )
     parser.add_argument(
-        "--data_end", type=int, default=10, help="Index to end saving data."
+        "--data_end", type=int, default=1, help="Index to end saving data."
     )
     parser.add_argument(
         "--split",
