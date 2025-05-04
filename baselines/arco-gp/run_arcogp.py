@@ -31,8 +31,6 @@ def get_config():
     cfg.num_mc_graphs = 10
     cfg.num_samples_per_graph = 10
     cfg.compute_distributional_stats = False
-    cfg.es_threshold = 1e-8
-    cfg.es_win_size = 10
     return cfg
 
 

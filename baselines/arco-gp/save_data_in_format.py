@@ -113,7 +113,7 @@ def main(
 
 if __name__ == "__main__":
 
-    data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/3var_simplegp_ER_3_500/test"
+    data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/3var_neuralgplvm/test"
     data_path = Path(data_folder) / "data_idx0.hdf5"
 
     save_folder = Path(
