@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -l walltime=02:00:00
-#PBS -l select=1:ncpus=15:mem=10gb:ngpus=1:gpu_type=A100
+#PBS -l select=1:ncpus=12:mem=32gb:ngpus=1:gpu_type=A100
 
 eval "$(~/miniconda3/bin/conda shell.bash hook)"
 
@@ -26,4 +26,4 @@ python3 /gpfs/home/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiment
     --learning_rate=$LR \
     --run_name=$RUN_NAME \
     --sample_size=500 \
-    --num_epochs=1 \
+    --epochs=1 \

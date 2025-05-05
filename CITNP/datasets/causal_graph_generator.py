@@ -63,6 +63,8 @@ if __name__ == "__main__":
     # dag = generate_random_dag(2, )
     # print(np.mean(np.sum(dag, axis=1)))
     # Get 2 node DAG
-    for i in range(10):
-        dag = generate_synthetic_dag(5, 5, "ER")
+    num_nodes = 9
+    density = 4
+    for i in range(1):
+        dag = generate_synthetic_dag(num_nodes, num_nodes * density, "ER")
         print(dag)

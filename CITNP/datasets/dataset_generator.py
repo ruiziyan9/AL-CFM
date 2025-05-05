@@ -11,14 +11,14 @@ from torch.utils.data import IterableDataset
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (
     GPFunctionGenerator,
+    LinearFixedStdFunctionGenerator,
+    LinearNonIdentifiableFunctionGenerator,
     NeuralGPLVMFunctionGenerator,
     NeuralNetFunctionGenerator,
     SimpleGPFunctionGenerator,
     SimpleGPLVMFunctionGenerator,
     SinusoidFunctionGenerator,
     UniformLinearFunctionGenerator,
-    LinearFixedStdFunctionGenerator,
-    LinearNonIdentifiableFunctionGenerator,
 )
 
 
@@ -61,7 +61,7 @@ class InterventionDatasetGenerator(IterableDataset):
         sample_size: int,
         batch_size: int,
         graph_type: List[str],
-        graph_degrees: List[int],
+        graph_degrees: List[int] | dict[int, List[int]],
         iterations_per_epoch: Optional[int] = 1000,
         return_functions: Optional[bool] = False,
         normalise: Optional[bool] = True,
@@ -75,9 +75,7 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_degrees = graph_degrees
 
         self.max_num_variables = (
-            max(num_variables)
-            if isinstance(num_variables, list)
-            else num_variables
+            max(num_variables) if isinstance(num_variables, list) else num_variables
         )
 
         self.iterations_per_epoch = iterations_per_epoch
@@ -125,9 +123,7 @@ class InterventionDatasetGenerator(IterableDataset):
         permuted_data = [data[:, permutation_indices] for data in args]
         return permuted_data
 
-    def permute_causal_graph(
-        self, *args, permutation_indices: np.ndarray
-    ) -> list:
+    def permute_causal_graph(self, *args, permutation_indices: np.ndarray) -> list:
         """
         Permutes the causal graph.
 
@@ -147,7 +143,7 @@ class InterventionDatasetGenerator(IterableDataset):
         ]
         return permuted_causal_graphs
 
-    def sample_uniform_expected_degree(self) -> int:
+    def sample_uniform_expected_degree(self, current_num_variables: int) -> int:
         """
         Sample a degree from the list of expected degrees.
 
@@ -155,12 +151,16 @@ class InterventionDatasetGenerator(IterableDataset):
         ----------
         degree : int
         """
-        degree = np.random.choice(self.graph_degrees)
+        if isinstance(self.graph_degrees, dict):
+            possible_degrees = self.graph_degrees.get(
+                current_num_variables, self.graph_degrees
+            )
+        else:
+            possible_degrees = self.graph_degrees
+        degree = np.random.choice(possible_degrees)
         return degree
 
-    def randomly_intervene_on_dag(
-        self, dag: np.ndarray
-    ) -> Tuple[np.ndarray, int]:
+    def randomly_intervene_on_dag(self, dag: np.ndarray) -> Tuple[np.ndarray, int]:
         """
         Randomly intervene on a variable in the DAG.
 
@@ -266,7 +266,9 @@ class InterventionDatasetGenerator(IterableDataset):
                 current_num_variables = self.num_variables
 
             # Sample graph type and expected degree
-            expected_node_degree = self.sample_uniform_expected_degree()
+            expected_node_degree = self.sample_uniform_expected_degree(
+                current_num_variables=current_num_variables
+            )
             curr_graph_type = np.random.choice(self.graph_type)
             # Generate the causal graph
             dag = generate_synthetic_dag(
