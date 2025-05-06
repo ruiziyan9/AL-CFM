@@ -4,20 +4,23 @@ File to train the transformer NP classifier model.
 
 from collections import defaultdict
 from functools import partial
-from typing import Any, Dict, Optional, Tuple, Sequence
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch as th
 from tqdm import tqdm
 
+from CITNP.trainer.callbacks import Callback
 from CITNP.utils.configs import (
     DataConfig,
     LoggingConfig,
     OptimizerConfig,
     TrainingConfig,
 )
-from CITNP.trainer.callbacks import Callback
-from CITNP.utils.datautils import transformer_inference_split_withpadding
+from CITNP.utils.datautils import (
+    ChunkMultipleFileDataset,
+    transformer_inference_split_withpadding,
+)
 from CITNP.utils.utils import get_causal_direction, send_to_device
 
 
@@ -67,9 +70,7 @@ class CausalInferenceTrainer:
         # Training state
         self.current_epoch = 0
         self.global_step = 0
-        self.total_train_steps = self.trainingconfig.epochs * len(
-            self.train_loader
-        )
+        self.total_train_steps = self.trainingconfig.epochs * len(self.train_loader)
         self.steps_per_epoch = len(self.train_loader)
 
         self.callbacks = self._initialise_default_callbacks(callbacks)
@@ -80,10 +81,14 @@ class CausalInferenceTrainer:
     def initialise_loaders(self):
         # For iterable datasets, we don't need to specify the batch size
         if isinstance(self.train_dataset, th.utils.data.IterableDataset):
-            self.batch_size = None
+            batch_size = None
             shuffle = False
+        elif isinstance(self.train_dataset, ChunkMultipleFileDataset):
+            batch_size = 1
+            shuffle = True
         else:
             shuffle = True
+            batch_size = self.dataconfig.batch_size
 
         collator = partial(
             transformer_inference_split_withpadding,
@@ -95,7 +100,7 @@ class CausalInferenceTrainer:
         persistent_workers = True if self.dataconfig.num_workers > 0 else False
         self.train_loader = th.utils.data.DataLoader(
             self.train_dataset,
-            batch_size=self.dataconfig.batch_size,
+            batch_size=batch_size,
             shuffle=shuffle,
             num_workers=self.dataconfig.num_workers,
             pin_memory=True,
@@ -104,7 +109,7 @@ class CausalInferenceTrainer:
         )
         self.val_loader = th.utils.data.DataLoader(
             self.validation_dataset,
-            batch_size=self.dataconfig.batch_size,
+            batch_size=batch_size,
             shuffle=False,
             num_workers=self.dataconfig.num_workers,
             pin_memory=True,
@@ -113,7 +118,7 @@ class CausalInferenceTrainer:
         )
         self.test_loader = th.utils.data.DataLoader(
             self.test_dataset,
-            batch_size=self.dataconfig.batch_size,
+            batch_size=batch_size,
             shuffle=False,
             num_workers=self.dataconfig.num_workers,
             pin_memory=True,
@@ -128,12 +133,10 @@ class CausalInferenceTrainer:
             if method:
                 method(self, *args, **kwargs)
 
-    def _prepare_batch(
-        self, batch: Tuple, dtype: th.dtype
-    ) -> Dict[str, th.Tensor]:
+    def _prepare_batch(self, batch: Tuple, dtype: th.dtype) -> Dict[str, th.Tensor]:
         """Sends batch data to the correct device and converts type."""
-        context, target, intvn_indices, outcome_indices, masks, graph = (
-            send_to_device(list(batch[:6]), self.device)
+        context, target, intvn_indices, outcome_indices, masks, graph = send_to_device(
+            list(batch[:6]), self.device
         )
 
         # Convert relevant tensors to the training dtype
@@ -270,9 +273,7 @@ class CausalInferenceTrainer:
             self.model.to(self.device)
 
             losses = defaultdict(list)
-            for i, batch in enumerate(
-                tqdm(test_loader, desc="Test", leave=False)
-            ):
+            for i, batch in enumerate(tqdm(test_loader, desc="Test", leave=False)):
                 # Get the inputs and targets
 
                 prepared_batch = self._prepare_batch(batch, dtype=self.eval_dtype)

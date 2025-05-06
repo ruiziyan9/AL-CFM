@@ -1,5 +1,5 @@
 """
-We use the following code to run the ARCO-GP algorithm on a given dataset.
+We use the following code to run the DiBS-GP algorithm on a given dataset.
 
 Metric:
 - log p(y' | do(x'), D) for each dataset across all the intervention samples
@@ -16,20 +16,18 @@ from tqdm import trange
 arcopath = "/vol/bitbucket/ad6013/Research/bci-arco-gp"
 sys.path.append(arcopath)
 
-from src.abci_arco_gp import ABCIArCOGP as ABCI
-from src.config import ABCIArCOGPConfig
+from src.abci_dibs_gp import ABCIDiBSGP as ABCI
+from src.config import ABCIDiBSGPConfig
 from src.environments.environment import Environment
 from src.utils.graphs import adj_mat_to_graph, get_parents, graph_from_csv
 
 
 def get_config():
-    cfg = ABCIArCOGPConfig()
+    cfg = ABCIDiBSGPConfig()
     cfg.policy = "static-obs-dataset"
-    cfg.max_ps_size = 2
-    cfg.num_arco_steps = 200
-    cfg.num_mc_cos = 100
-    cfg.num_mc_graphs = 10
-    cfg.num_samples_per_graph = 10
+    cfg.num_particles = 5
+    cfg.num_mc_graphs = 100
+    cfg.num_svgd_steps = 100
     cfg.compute_distributional_stats = False
     return cfg
 
@@ -108,8 +106,7 @@ def calculate_nlpd(model: ABCI, intvn_index: int):
     # Get the node to test
     node = "X0" if intvn_index != 0 else "X1"
 
-    def test_ll(adj_mat):
-        graph = adj_mat_to_graph(adj_mat, model.mechanism_model.node_labels)
+    def test_ll(graph):
         model.mechanism_model.init_topological_order(graph, model.sample_time)
         parents = get_parents(node, graph)
         return model.mechanism_model.node_mll(
@@ -124,7 +121,8 @@ def calculate_nlpd(model: ABCI, intvn_index: int):
 
     model.mechanism_model.clear_posterior_mll_cache()
     with torch.no_grad():
-        node_ll = model.graph_posterior_expectation_mc(test_ll)
+        mc_graphs, mc_adj_mats = model.sample_mc_graphs(set_data=True)
+        node_ll = model.graph_posterior_expectation(test_ll, mc_graphs, mc_adj_mats)
         # Calculate the log likelihood
     return -node_ll.sum().item()
 
@@ -165,7 +163,7 @@ def main(data_path: Path, num_datasets: int, sample_size: int):
     print(f"Average NLL: {sum(all_nlpd) / len(all_nlpd)}")
 
     # Save the results
-    save_name = data_path.name + f"_nlpd.csv"
+    save_name = data_path.name + f"_dibs_nlpd.csv"
     save_folder = data_path.parent.parent / "results"
     save_folder.mkdir(parents=True, exist_ok=True)
     save_path = save_folder / save_name
@@ -176,9 +174,9 @@ def main(data_path: Path, num_datasets: int, sample_size: int):
 if __name__ == "__main__":
 
     data_folder = Path(
-        "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-gp/datasets"
+        "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
     )
-    data_name = "3var_simplegp_ER_3_500"
+    data_name = "3var_neuralgplvm"
     data_path = data_folder / data_name
 
     num_datasets = 100

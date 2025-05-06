@@ -3,6 +3,7 @@ File to train the model.
 """
 
 import argparse
+from functools import partial
 from pathlib import Path
 from typing import Union
 
@@ -22,7 +23,7 @@ from CITNP.trainer.callbacks import (
 )
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
-from CITNP.utils.datautils import MultipleFileDataset
+from CITNP.utils.datautils import ChunkMultipleFileDataset, MultipleFileDataset
 from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
 from CITNP.utils.utils import (
     _generate_experiment_name,
@@ -42,6 +43,12 @@ def main(args: argparse.Namespace):
 
     set_seed(args.seed)
 
+    dataset_obj = (
+        partial(ChunkMultipleFileDataset, batch_size=args.batch_size)
+        if "alldata" in args.data_file
+        else MultipleFileDataset
+    )
+
     work_dir = Path(args.work_dir)
     data_dir = work_dir / "datasets/synth_training_data" / args.data_file
     # Get the training and validation datasets
@@ -49,19 +56,15 @@ def main(args: argparse.Namespace):
     train_files = list(train_dir.iterdir())
     train_hdf5_files = [i for i in train_files if i.suffix == ".hdf5"]
     train_hdf5_files = [train_hdf5_files[0]] if args.debug else train_hdf5_files
-    train_dataset = MultipleFileDataset(train_hdf5_files)
+    train_dataset = dataset_obj(train_hdf5_files)
 
     val_dir = data_dir / "val"
     val_files = list(val_dir.iterdir())
-    val_dataset = MultipleFileDataset(
-        [i for i in val_files if i.suffix == ".hdf5"]
-    )
+    val_dataset = dataset_obj([i for i in val_files if i.suffix == ".hdf5"])
 
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
-    test_dataset = MultipleFileDataset(
-        [i for i in test_files if i.suffix == ".hdf5"]
-    )
+    test_dataset = dataset_obj([i for i in test_files if i.suffix == ".hdf5"])
 
     MODEL_ARGS = {
         "d_model": args.d_model,
@@ -186,7 +189,7 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     # These fixed some attention errors for me
-    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
     torch.backends.cuda.enable_flash_sdp(True)
 
     parser = argparse.ArgumentParser()

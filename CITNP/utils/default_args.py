@@ -17,8 +17,8 @@ def parse_default_args():
     parser.add_argument(
         "--work_dir",
         type=str,
-        # default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
-        default="/scratches/cartwright/cdd43/CausalInferenceNeuralProcess/CITNP",
+        default="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP",
+        # default="/scratches/cartwright/cdd43/CausalInferenceNeuralProcess/CITNP",
         help="Path to the working directory.",
     )
     parser.add_argument(
@@ -30,7 +30,8 @@ def parse_default_args():
         # default="unnormalised_linearfixedstd_ER_2_1000",
         # default="unnorm_small_std_linearfixedstd_ER_2_1000",
         # default="unnorm_small_scale_linearfixedstd_ER_2_1000",
-        default="neuralgplvm_ER_3_1000",
+        # default="neuralgplvm_ER_3_1000",
+        default="alldata_neuralgplvm_1000",
         # default="linearnonidentifiable_ER_2_1000",
         help="Name of the data file to use.",
     )

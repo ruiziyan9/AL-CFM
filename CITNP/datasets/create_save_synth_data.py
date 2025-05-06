@@ -83,7 +83,7 @@ def main(
     graph_type: List[str] = ["ER", "SF"],
     graph_degrees: List[int] | dict = [50, 100, 150, 200, 250],
 ):
-    batch_sizes = {"train": 8 * 8000, "val": 8, "test": 100}
+    batch_sizes = {"train": 8 * 8000, "val": 32, "test": 128}
 
     if split not in batch_sizes:
         raise ValueError(

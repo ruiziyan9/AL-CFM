@@ -17,7 +17,7 @@ def stack_list_of_arrays(list_of_arrays):
     """
     if list_of_arrays[0] is None:
         return None
-    return np.stack(list_of_arrays, axis=0)
+    return np.stack(list_of_arrays, axis=0).squeeze(axis=0)
 
 
 def sample_context_size(
@@ -230,3 +230,113 @@ class MultipleFileDataset(th.utils.data.Dataset):
 
     def __len__(self):
         return sum([i.shape[0] for i in self.all_obs_data])
+
+
+class ChunkMultipleFileDataset(th.utils.data.Dataset):
+    """
+    Dataset for chunked data loading from multiple files.
+
+    We assume that the data is stored in HDF5 files and that each file contains
+    multiple datasets. The datasets are assumed to have the same size.
+
+    This class will pick out contiguous chunks of size "batch_size" from
+    the datasets. This is useful when there are multiple files with
+    different sizes, and we want to load them in chunks.
+
+
+    Set batch size to 1 in the dataloader to load the data in a single chunk!
+    """
+
+    def __init__(self, file_list: list, batch_size: int):
+        super().__init__()
+        self.all_obs_data = []
+        self.all_int_data = []
+        self.all_graphs = []
+        self.all_intvn_indices = []
+        self.all_variable_counts = []
+        self.all_masks = []
+        self.all_functions = []
+
+        self.batch_size = batch_size
+
+        for idx, file in enumerate(file_list):
+            f = h5py.File(file, "r")
+            self.all_obs_data.append(f["obs_data"])
+            self.all_int_data.append(f["int_data"])
+            self.all_graphs.append(f["causal_graphs"])
+            self.all_intvn_indices.append(f["intvn_indices"])
+            self.all_variable_counts.append(f["variable_counts"])
+            if "masks" in f:
+                self.all_masks.append(f["masks"])
+            else:
+                self.all_masks.append(None)
+            if "functions" in f:
+                self.all_functions.append(f["functions"])
+            else:
+                self.all_functions.append(None)
+        # Assume all datasets have the same size
+        self.num_files = len(self.all_obs_data)
+        self.size_each_dataset = self.all_obs_data[0].shape[0]
+        self.num_chunks = self.size_each_dataset // self.batch_size
+
+        if self.size_each_dataset % self.batch_size != 0:
+            raise ValueError(
+                "The size of each dataset should be divisible by the batch size."
+            )
+
+    def return_chunk(self, array, chunk_idx):
+        """
+        Return a chunk of the array.
+        """
+        start_idx = chunk_idx * self.batch_size
+        end_idx = (chunk_idx + 1) * self.batch_size
+        chunk = array[start_idx:end_idx]
+        return chunk
+
+    def load_data(self, chunk_idx, file_counter):
+        obs_data = self.all_obs_data[file_counter]
+        int_data = self.all_int_data[file_counter]
+        causal_graph = self.all_graphs[file_counter]
+        intvn_indices = self.all_intvn_indices[file_counter]
+        variable_counts = self.all_variable_counts[file_counter]
+
+        if self.all_masks[file_counter] is not None:
+            masks = self.all_masks[file_counter]
+        else:
+            masks = None
+
+        # Get the chunk of data
+        obs_data = self.return_chunk(obs_data, chunk_idx)
+        int_data = self.return_chunk(int_data, chunk_idx)
+        causal_graph = self.return_chunk(causal_graph, chunk_idx)
+        intvn_indices = self.return_chunk(intvn_indices, chunk_idx)
+        variable_counts = self.return_chunk(variable_counts, chunk_idx)
+        if masks is not None:
+            masks = self.return_chunk(masks, chunk_idx)
+
+        output = (
+            obs_data,
+            int_data,
+            causal_graph,
+            intvn_indices,
+            variable_counts,
+            masks,
+        )
+        if self.all_functions[file_counter] is not None:
+            functions = self.all_functions[file_counter]
+            functions = self.return_chunk(functions, chunk_idx)
+            output = output + (functions,)
+
+        yield output
+
+    def __getitem__(self, idx):
+        # Make sure the same item is not returned twice in parallel
+        file_counter = idx // self.num_chunks
+        chunk_idx = idx % self.num_chunks
+
+        all_data = next(self.load_data(chunk_idx, file_counter))
+        return all_data
+
+    def __len__(self):
+        # We want the indices to index the number of files and the number of chunks
+        return self.num_files * self.num_chunks
