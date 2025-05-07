@@ -15,6 +15,7 @@ from CITNP.datasets.functions_generator import (
     LinearNonIdentifiableFunctionGenerator,
     NeuralGPLVMFunctionGenerator,
     NeuralNetFunctionGenerator,
+    NeuralSimpleGPFunctionGenerator,
     SimpleGPFunctionGenerator,
     SimpleGPLVMFunctionGenerator,
     SinusoidFunctionGenerator,
@@ -75,7 +76,9 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_degrees = graph_degrees
 
         self.max_num_variables = (
-            max(num_variables) if isinstance(num_variables, list) else num_variables
+            max(num_variables)
+            if isinstance(num_variables, list)
+            else num_variables
         )
 
         self.iterations_per_epoch = iterations_per_epoch
@@ -90,6 +93,7 @@ class InterventionDatasetGenerator(IterableDataset):
             "linearfixedstd": LinearFixedStdFunctionGenerator,
             "linearnonidentifiable": LinearNonIdentifiableFunctionGenerator,
             "neuralgplvm": NeuralGPLVMFunctionGenerator,
+            "neuralsimplegp": NeuralSimpleGPFunctionGenerator,
         }
 
         if self.function_generator in valid_generators:
@@ -123,7 +127,9 @@ class InterventionDatasetGenerator(IterableDataset):
         permuted_data = [data[:, permutation_indices] for data in args]
         return permuted_data
 
-    def permute_causal_graph(self, *args, permutation_indices: np.ndarray) -> list:
+    def permute_causal_graph(
+        self, *args, permutation_indices: np.ndarray
+    ) -> list:
         """
         Permutes the causal graph.
 
@@ -160,7 +166,9 @@ class InterventionDatasetGenerator(IterableDataset):
         degree = np.random.choice(possible_degrees)
         return degree
 
-    def randomly_intervene_on_dag(self, dag: np.ndarray) -> Tuple[np.ndarray, int]:
+    def randomly_intervene_on_dag(
+        self, dag: np.ndarray
+    ) -> Tuple[np.ndarray, int]:
         """
         Randomly intervene on a variable in the DAG.
 
@@ -250,9 +258,7 @@ class InterventionDatasetGenerator(IterableDataset):
         causal_graphs_array = np.zeros(
             (self.batch_size, self.max_num_variables, self.max_num_variables)
         )
-        functions_array = np.zeros(
-            (self.batch_size, self.max_num_variables, self.max_num_variables)
-        )
+        functions_array = np.zeros((self.batch_size, self.max_num_variables, 3))
         intvn_indices = np.zeros(self.batch_size, dtype=int)
         variable_counts = np.zeros(self.batch_size, dtype=int)
         masks = np.zeros((self.batch_size, self.max_num_variables))
@@ -333,10 +339,7 @@ class InterventionDatasetGenerator(IterableDataset):
             variable_counts[b] = current_num_variables
             masks[b] = mask
             if self.return_functions:
-                functions = self.permute_causal_graph(
-                    functions,
-                    permutation_indices=permutation_indices,
-                )[0]
+                functions = functions[permutation_indices]
                 functions_array[b] = functions
 
         # If num_variables is not a list, masks will be None

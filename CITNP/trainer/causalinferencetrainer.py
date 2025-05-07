@@ -70,7 +70,9 @@ class CausalInferenceTrainer:
         # Training state
         self.current_epoch = 0
         self.global_step = 0
-        self.total_train_steps = self.trainingconfig.epochs * len(self.train_loader)
+        self.total_train_steps = self.trainingconfig.epochs * len(
+            self.train_loader
+        )
         self.steps_per_epoch = len(self.train_loader)
 
         self.callbacks = self._initialise_default_callbacks(callbacks)
@@ -133,10 +135,12 @@ class CausalInferenceTrainer:
             if method:
                 method(self, *args, **kwargs)
 
-    def _prepare_batch(self, batch: Tuple, dtype: th.dtype) -> Dict[str, th.Tensor]:
+    def _prepare_batch(
+        self, batch: Tuple, dtype: th.dtype
+    ) -> Dict[str, th.Tensor]:
         """Sends batch data to the correct device and converts type."""
-        context, target, intvn_indices, outcome_indices, masks, graph = send_to_device(
-            list(batch[:6]), self.device
+        context, target, intvn_indices, outcome_indices, masks, graph = (
+            send_to_device(list(batch[:6]), self.device)
         )
 
         # Convert relevant tensors to the training dtype
@@ -273,7 +277,9 @@ class CausalInferenceTrainer:
             self.model.to(self.device)
 
             losses = defaultdict(list)
-            for i, batch in enumerate(tqdm(test_loader, desc="Test", leave=False)):
+            for i, batch in enumerate(
+                tqdm(test_loader, desc="Test", leave=False)
+            ):
                 # Get the inputs and targets
 
                 prepared_batch = self._prepare_batch(batch, dtype=self.eval_dtype)
@@ -307,8 +313,8 @@ class CausalInferenceTrainer:
 
         return metric_dict
 
-    def test(self):
-        self._run_callbacks("on_test_begin", checkpoint_name="last_model")
+    def test(self, checkpoint_name="last_model"):
+        self._run_callbacks("on_test_begin", checkpoint_name=checkpoint_name)
         return self.test_epoch(
             test_loader=self.test_loader,
             metric_dict={},

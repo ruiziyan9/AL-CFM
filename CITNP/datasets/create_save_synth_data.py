@@ -98,7 +98,8 @@ def main(
         "graph_degrees": graph_degrees,
         "iterations_per_epoch": 1,
         "batch_size": batch_sizes[split],
-        "normalise": False,
+        "normalise": True,
+        "return_functions": False,
     }
 
     generator = InterventionDatasetGenerator(**GENERATOR_ARGS)  # type: ignore
@@ -160,7 +161,6 @@ if __name__ == "__main__":
     all_num_var = np.arange(args.var_start, args.var_end, dtype=int).tolist()
 
     for num_var in all_num_var:
-
         main(
             save_dir=save_dir,
             data_start=args.data_start,

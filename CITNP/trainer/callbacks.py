@@ -223,11 +223,15 @@ class CheckpointCallback(Callback):
             return
 
         state = th.load(path, map_location=trainer.device)
-        trainer.model.load_state_dict(state["model_state_dict"])
-        if trainer.optimizer:
-            trainer.optimizer.load_state_dict(state["optimizer_state_dict"])
-        if trainer.scheduler and state["scheduler_state_dict"]:
-            trainer.scheduler.load_state_dict(state["scheduler_state_dict"])
+        try:
+            trainer.model.load_state_dict(state["model_state_dict"])
+            if trainer.optimizer:
+                trainer.optimizer.load_state_dict(state["optimizer_state_dict"])
+            if trainer.scheduler and state["scheduler_state_dict"]:
+                trainer.scheduler.load_state_dict(state["scheduler_state_dict"])
+        except:  # noqa: E722
+            # For backwards compatibility with older checkpoints
+            trainer.model.load_state_dict(state)
 
 
 class LRSchedulerCallback(Callback):

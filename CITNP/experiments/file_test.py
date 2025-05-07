@@ -45,24 +45,15 @@ def main(args: argparse.Namespace):
 
     work_dir = Path(args.work_dir)
     data_dir = work_dir / "datasets/synth_training_data" / args.data_file
-    # Get the training and validation datasets
-    train_dir = data_dir / "train"
-    train_files = list(train_dir.iterdir())
-    train_hdf5_files = [i for i in train_files if i.suffix == ".hdf5"]
-    train_hdf5_files = [train_hdf5_files[0]] if args.debug else train_hdf5_files
-    train_dataset = MultipleFileDataset(train_hdf5_files)
-
-    val_dir = data_dir / "val"
-    val_files = list(val_dir.iterdir())
-    val_dataset = MultipleFileDataset(
-        [i for i in val_files if i.suffix == ".hdf5"]
-    )
-
+    # Get the test datasets
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
     test_dataset = MultipleFileDataset(
         [i for i in test_files if i.suffix == ".hdf5"]
     )
+    # Set the train and validation datasets as the test one during testing---they are not used
+    train_dataset = test_dataset
+    val_dataset = test_dataset
 
     MODEL_ARGS = {
         "d_model": args.d_model,
@@ -178,7 +169,7 @@ def main(args: argparse.Namespace):
         loggingconfig=loggingconfig,
         callbacks=callbacks,
     )
-    test_stats = trainer.test()
+    test_stats = trainer.test(checkpoint_name="model_1")
     print(f"Test metrics: {test_stats}")
     with open(model_save_dir / f"test_metrics_{args.data_file}.json", "w") as f:
         json.dump(test_stats, f, indent=4)

@@ -57,7 +57,7 @@ class LinearFixedStd:
         num_parents: int,
     ):
         self.num_parents = num_parents
-        self.weight = np.random.normal(loc=0, scale=1.0, size=(num_parents,))
+        self.weight = np.random.normal(loc=0, scale=1.0, size=(num_parents, 1))
         self.scale = 0.1
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
@@ -75,9 +75,9 @@ class LinearFixedStd:
             else:
                 feature = np.dot(inputs, self.weight)
                 outputs = feature + np.random.normal(
-                    loc=0, scale=self.scale, size=(inputs.shape[0])
+                    loc=0, scale=self.scale, size=(inputs.shape[0], 1)
                 )
-                return outputs[:, None]
+                return outputs
 
 
 class LinearNonIdentifiable:
@@ -86,28 +86,35 @@ class LinearNonIdentifiable:
         num_parents: int,
     ):
         self.num_parents = num_parents
-        self.weight = np.random.normal(loc=0, scale=1.0, size=(num_parents,))
-        self.scale = invgamma.rvs(a=3, scale=1, size=(1))
-        self.eta = 2
+        self.var1 = invgamma.rvs(a=3, scale=0.5, size=(1))
+        self.var2 = invgamma.rvs(a=3 - 1 / 2, scale=0.5, size=(1))
+        self.eta = 1
+        self.weight = None
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
         """
-        Generate a uniform noise function.
+        Generate a linear model (non-identifiable??).
         """
         with th.no_grad():
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
                 outputs = np.random.normal(
-                    loc=0, scale=self.scale, size=(inputs.shape[0], 1)
+                    loc=0, scale=np.sqrt(self.var2), size=(inputs.shape[0], 1)
                 )
                 return outputs
             else:
-                feature = np.dot(inputs, self.weight)
-                outputs = feature + np.random.normal(
-                    loc=0, scale=self.scale, size=(inputs.shape[0])
+                weight = np.random.normal(
+                    loc=0,
+                    scale=np.sqrt(self.eta * self.var1),
+                    size=(inputs.shape[1], 1),
                 )
-                return outputs[:, None]
+                self.weight = weight
+                feature = np.dot(inputs, weight)
+                outputs = feature + np.random.normal(
+                    loc=0, scale=np.sqrt(self.var1), size=(inputs.shape[0], 1)
+                )
+                return outputs
 
 
 class SinFunction:
@@ -449,7 +456,7 @@ class DataGenerator(ABC):
         """
         # Functions will be a dict with keys being the variable number
         function_dict = self.generate_functions(causal_graph)
-        functions = np.zeros((self.number_of_variables, self.number_of_variables))
+        functions = np.zeros((self.number_of_variables, 3))
         obs_data = np.zeros((sample_size, self.number_of_variables))
         intvn_data = np.zeros((sample_size, self.number_of_variables))
         # Causal graph row i is a parent of column j.
@@ -464,9 +471,9 @@ class DataGenerator(ABC):
             function_for_i = function_dict[i]
             parents_of_i = causal_graph[:, i]
 
-            if return_functions:
-                non_zero_parents = np.where(parents_of_i == 1)[0]
-                functions[:, i][non_zero_parents] = function_dict[i].weight
+            # if return_functions:
+            #     non_zero_parents = np.where(parents_of_i == 1)[0]
+            #     functions[:, i] = function_dict[i].weight[0]
 
             # Observational data
             # Inputs will be an empty array if there are no parents.
@@ -500,6 +507,20 @@ class DataGenerator(ABC):
                     variable_intvn = normalise_variable(
                         variable_intvn, axis=0, mean=mean_obs, std=std_obs
                     )
+            if return_functions:
+                if isinstance(function_dict[0], LinearNonIdentifiable):
+                    if function_dict[i].weight is not None:
+                        functions[i] = (
+                            function_dict[i].weight[0][0],
+                            function_dict[i].var1[0],
+                            function_dict[i].var2[0],
+                        )
+                    else:
+                        functions[i] = (
+                            None,
+                            function_dict[i].var1[0],
+                            function_dict[i].var2[0],
+                        )
 
             obs_data[:, i : i + 1] = variable_obs
             intvn_data[:, i : i + 1] = variable_intvn
@@ -833,6 +854,45 @@ class NeuralGPLVMFunctionGenerator(DataGenerator):
             # Randomly choose between GPLVM and NeuralNet
             if np.random.rand() > 0.5:
                 function = SimpleGPLVMFunctions(num_parents=num_parents)
+            else:
+                function = NeuralNetFunctions(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class NeuralSimpleGPFunctionGenerator(DataGenerator):
+    """
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function: SimpleGPFunctions | NeuralNetFunctions
+            # Randomly choose between simple GP and NeuralNet
+            if np.random.rand() > 0.5:
+                function = SimpleGPFunctions(num_parents=num_parents)
             else:
                 function = NeuralNetFunctions(num_parents=num_parents)
             function_dict[i] = function

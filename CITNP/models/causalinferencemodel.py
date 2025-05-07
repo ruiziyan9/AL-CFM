@@ -40,7 +40,10 @@ class BaseCausalInference(nn.Module, ABC):
         self.linear_attention = config.linear_attention
         self.mean_loss_across_samples = config.mean_loss_across_samples
         self.device = torch.device(config.device)
-        self.dtype = getattr(torch, config.dtype)
+        try:
+            self.dtype = getattr(torch, config.dtype)
+        except AttributeError:
+            self.dtype = config.dtype
 
         self.encoder = CausalInfEncoder(
             d_model=self.d_model,
