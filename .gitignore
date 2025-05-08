@@ -188,3 +188,5 @@ wandb/
 **/synth_training_data/
 
 *.csv
+
+lightning_logs/
