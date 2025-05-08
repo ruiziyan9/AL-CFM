@@ -196,7 +196,7 @@ def parse_default_args():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=12,
+        default=8,
         help="Number of workers for data loading.",
     )
     parser.add_argument(
