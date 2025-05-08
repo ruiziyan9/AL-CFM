@@ -2,7 +2,8 @@
 
 # List of parameters as space-separated strings
 param_list=(
-    "sizetest_neuralgplvm_ER_50_500,cnp,512,1024,8,8,10,32,0.0005"
+    "alldata_neuralgplvm_1000,cnp,512,1024,8,20,10,32,0.0005"
+    "alldata_neuralgplvm_1000,cnp,512,1024,8,18,10,32,0.0005"
 )
 
 # Iterate over each parameter set

@@ -10,6 +10,8 @@ module load cuDNN/8.6.0.163-CUDA-11.8.0
 
 export XLA_FLAGS=--xla_gpu_cuda_data_dir=/gpfs/easybuild/prod/software/CUDA/11.8.0/
 
+export WANDB_API_KEY="bc359b26d166ea6980eb0e231060bd7b8c06925e"
+
 # Construct the run_name using the desired variables
 RUN_NAME="DF${DF}_MT${MT}_DM${DM}_DFF${DFF}_NH${NH}_NL${NL}_NC${NC}_BS${BS}_LR${LR}"
 
@@ -26,4 +28,4 @@ python3 /gpfs/home/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiment
     --learning_rate=$LR \
     --run_name=$RUN_NAME \
     --sample_size=500 \
-    --epochs=1 \
+    --epochs=2 \
