@@ -100,6 +100,7 @@ def main(
         "batch_size": batch_sizes[split],
         "normalise": True,
         "return_functions": False,
+        "show_progress": True,
     }
 
     generator = InterventionDatasetGenerator(**GENERATOR_ARGS)  # type: ignore

@@ -7,20 +7,15 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from torch.utils.data import IterableDataset
+from tqdm import trange
 
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (
-    GPFunctionGenerator,
-    LinearFixedStdFunctionGenerator,
-    LinearNonIdentifiableFunctionGenerator,
-    NeuralGPLVMFunctionGenerator,
-    NeuralNetFunctionGenerator,
-    NeuralSimpleGPFunctionGenerator,
-    SimpleGPFunctionGenerator,
-    SimpleGPLVMFunctionGenerator,
-    SinusoidFunctionGenerator,
-    UniformLinearFunctionGenerator,
-)
+    GPFunctionGenerator, LinearFixedStdFunctionGenerator,
+    LinearNonIdentifiableFunctionGenerator, NeuralGPLVMFunctionGenerator,
+    NeuralNetFunctionGenerator, NeuralSimpleGPFunctionGenerator,
+    SimpleGPFunctionGenerator, SimpleGPLVMFunctionGenerator,
+    SinusoidFunctionGenerator, UniformLinearFunctionGenerator)
 
 
 class InterventionDatasetGenerator(IterableDataset):
@@ -66,6 +61,7 @@ class InterventionDatasetGenerator(IterableDataset):
         iterations_per_epoch: Optional[int] = 1000,
         return_functions: Optional[bool] = False,
         normalise: Optional[bool] = True,
+        show_progress: Optional[bool] = False,
     ):
         self.function_generator = function_generator
         self.num_variables = num_variables
@@ -76,9 +72,7 @@ class InterventionDatasetGenerator(IterableDataset):
         self.graph_degrees = graph_degrees
 
         self.max_num_variables = (
-            max(num_variables)
-            if isinstance(num_variables, list)
-            else num_variables
+            max(num_variables) if isinstance(num_variables, list) else num_variables
         )
 
         self.iterations_per_epoch = iterations_per_epoch
@@ -108,6 +102,7 @@ class InterventionDatasetGenerator(IterableDataset):
 
         self.return_functions = return_functions
         self.normalise = normalise
+        self.show_progress = show_progress
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """
@@ -127,9 +122,7 @@ class InterventionDatasetGenerator(IterableDataset):
         permuted_data = [data[:, permutation_indices] for data in args]
         return permuted_data
 
-    def permute_causal_graph(
-        self, *args, permutation_indices: np.ndarray
-    ) -> list:
+    def permute_causal_graph(self, *args, permutation_indices: np.ndarray) -> list:
         """
         Permutes the causal graph.
 
@@ -166,9 +159,7 @@ class InterventionDatasetGenerator(IterableDataset):
         degree = np.random.choice(possible_degrees)
         return degree
 
-    def randomly_intervene_on_dag(
-        self, dag: np.ndarray
-    ) -> Tuple[np.ndarray, int]:
+    def randomly_intervene_on_dag(self, dag: np.ndarray) -> Tuple[np.ndarray, int]:
         """
         Randomly intervene on a variable in the DAG.
 
@@ -264,7 +255,12 @@ class InterventionDatasetGenerator(IterableDataset):
         masks = np.zeros((self.batch_size, self.max_num_variables))
 
         # Each batch is a different dataset
-        for b in range(self.batch_size):
+        bar = (
+            range(self.batch_size)
+            if not self.show_progress
+            else trange(self.batch_size)
+        )
+        for b in bar:
             # Sample number of variables
             if isinstance(self.num_variables, list):
                 current_num_variables = np.random.choice(self.num_variables)
