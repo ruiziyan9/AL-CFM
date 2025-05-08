@@ -109,7 +109,7 @@ def calculate_intvn_dist(
 def main(data_path: Path, data_name: str):
     data = load_data(data_path)
 
-    all_obs_data = data["obs_data"][:1]
+    all_obs_data = data["obs_data"]
     all_int_data = data["int_data"]
     all_intvn_indices = data["intvn_indices"]
 
