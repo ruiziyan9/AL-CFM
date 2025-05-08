@@ -31,3 +31,4 @@ python3 /gpfs/home/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiment
     --epochs=3 \
     --mean_loss_across_samples \
     --lr_warmup_ratio=$WR \
+    --results_path="/gpfs/home/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments/results" \
