@@ -15,6 +15,7 @@ import numpy as np
 import torch as th
 from scipy.stats import invgamma
 
+from CITNP.models.nncomponents import ResidualEncoderBlock
 from CITNP.utils.gplvm_utils import RBFKernel, SumExpGammaKernels
 from CITNP.utils.processing import normalise_variable
 
@@ -35,14 +36,10 @@ class UniformLinear:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
                 return outputs
             else:
-                weight = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[1], 1)
-                )
+                weight = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[1], 1))
                 weight = np.clip(weight, -1, 1)
                 feature = np.dot(inputs, weight)
                 outputs = feature + np.random.uniform(
@@ -136,9 +133,7 @@ class SinFunction:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
                 return outputs
             else:
                 outputs = np.sin(
@@ -194,14 +189,10 @@ class GPFunctions:
                 .to(self.device)
                 .to(th.float64)
             )
-            covariance = covariance + 1e-4 * th.eye(
-                inputs.shape[0], device=self.device
-            )
+            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device)
             mean = th.zeros(inputs.shape[0], device=self.device)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(
-                mean
-            )
+            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(mean)
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
 
@@ -225,12 +216,18 @@ class NeuralNetFunctions:
     ):
         self.num_parents = num_parents + 1 if num_parents > 0 else 1
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+        num_blocks = np.random.randint(1, 8)
+        hidden_dim = 2 ** np.random.randint(5, 12)
         self.model = th.nn.Sequential(
-            th.nn.Linear(self.num_parents, 128),
-            th.nn.ReLU(),
-            th.nn.Linear(128, 128),
-            th.nn.ReLU(),
-            th.nn.Linear(128, 1),
+            *[
+                ResidualEncoderBlock(
+                    input_dim=(self.num_parents if i == 0 else hidden_dim),
+                    hidden_dim=hidden_dim,
+                    output_dim=hidden_dim if i < num_blocks - 1 else 1,
+                    zero_init=False,
+                )
+                for i in range(num_blocks)
+            ]
         ).to(self.device)
         self.noise_dist = th.distributions.Gamma(1, 10)
 
@@ -239,14 +236,10 @@ class NeuralNetFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
             else:
                 # If there are parents, append latent.
-                latent = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
                 inputs = np.concatenate([inputs, latent], axis=-1)
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
@@ -298,9 +291,7 @@ class SimpleGPFunctions:
         inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
         covariance = self.kernel(inputs, inputs)
         noise_value = (
-            self.noise_dist.sample((inputs.shape[0],))
-            .to(self.device)
-            .to(self.dtype)
+            self.noise_dist.sample((inputs.shape[0],)).to(self.device).to(self.dtype)
         )
         covariance = covariance + 1e-4 * th.eye(
             inputs.shape[0], device=self.device, dtype=self.dtype
@@ -320,9 +311,7 @@ class SimpleGPFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(
-                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
-                )
+                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
 
             outputs = self.sample_gp(inputs)
         return outputs
@@ -345,12 +334,20 @@ class SimpleGPLVMFunctions:
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         self.dtype = th.float64
 
+        # num_kernels = 3
+
         lengthscale_values = np.random.lognormal(
-            -0.5, 1, size=(self.num_parents + 1)
+            -0.5, 1, size=(num_kernels, self.num_parents + 1)
         )
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
+        # gamma_values = np.random.uniform(0.1, 1, size=(num_kernels,))
         # Define the kernel
+        # self.kernel = SumExpGammaKernels(
+        #     num_kernels=num_kernels,
+        #     gamma_vals=th.from_numpy(gamma_values).to(self.device),
+        #     lengthscale_vals=th.from_numpy(lengthscale_values).to(self.device),
+        # )
         self.kernel = RBFKernel(
             lengthscale=th.from_numpy(lengthscale_values)
             .to(self.device)
@@ -366,9 +363,7 @@ class SimpleGPLVMFunctions:
                 # Latent as the mean
                 mean = th.from_numpy(inputs[:, -1]).to(self.device).to(self.dtype)
             else:
-                mean = th.zeros(
-                    inputs.shape[0], device=self.device, dtype=self.dtype
-                )
+                mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
 
             inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
             covariance = self.kernel(inputs, inputs)
@@ -413,9 +408,7 @@ class DataGenerator(ABC):
     ):
         self.number_of_variables = num_variables
 
-    def _get_inputs(
-        self, parents_of_i: np.ndarray, data: np.ndarray
-    ) -> np.ndarray:
+    def _get_inputs(self, parents_of_i: np.ndarray, data: np.ndarray) -> np.ndarray:
         """
         Get the inputs for the variable i.
         """

@@ -199,7 +199,7 @@ def main(data_path: Path, data_name: str):
 
 
 if __name__ == "__main__":
-    data_name = "3var_simplegp_ER_3_500"
+    data_name = "3var_neuralnet"
 
     data_path = Path(
         f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/{data_name}/test/data_idx0.hdf5"

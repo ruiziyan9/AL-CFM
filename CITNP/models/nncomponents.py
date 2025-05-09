@@ -35,9 +35,7 @@ class BasePredictor(nn.Module):
             depth=depth,
         )
 
-        total_output_dim = (
-            self.num_heads * num_outcome_nodes * num_mixture_components
-        )
+        total_output_dim = self.num_heads * num_outcome_nodes * num_mixture_components
         self.output_layer = nn.Linear(d_model, total_output_dim)
         self._init_weights()
 
@@ -47,9 +45,7 @@ class BasePredictor(nn.Module):
         self.output_layer.weight.data *= 0.01
 
     def forward(self, x):
-        raise NotImplementedError(
-            "Use a subclass like Predictor or MoGPredictor."
-        )
+        raise NotImplementedError("Use a subclass like Predictor or MoGPredictor.")
 
 
 class Predictor(BasePredictor):
@@ -67,9 +63,7 @@ class Predictor(BasePredictor):
         D = self.num_outcome_nodes
 
         out = self.output_layer(act_out)  # [B, N, 2 * D]
-        out = einops.rearrange(
-            out, "... n (h d) -> h ... n d", h=self.num_heads, d=D
-        )
+        out = einops.rearrange(out, "... n (h d) -> h ... n d", h=self.num_heads, d=D)
         mean, pre_std = out[0], out[1]
         std = F.softplus(pre_std)  # [B, N, D]
         return mean, std
@@ -146,20 +140,10 @@ class FlashMHCA(nn.Module):
         value = self.layernormV(value)
 
         q = (
-            self.q_proj(query)
-            .view(B, T_q, self.nhead, self.head_dim)
-            .transpose(1, 2)
+            self.q_proj(query).view(B, T_q, self.nhead, self.head_dim).transpose(1, 2)
         )  # [B, H, T, D]
-        k = (
-            self.k_proj(key)
-            .view(B, T_k, self.nhead, self.head_dim)
-            .transpose(1, 2)
-        )
-        v = (
-            self.v_proj(value)
-            .view(B, T_k, self.nhead, self.head_dim)
-            .transpose(1, 2)
-        )
+        k = self.k_proj(key).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
+        v = self.v_proj(value).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
 
         attn_output = F.scaled_dot_product_attention(
             q, k, v, is_causal=False
@@ -219,6 +203,11 @@ class MHCA(nn.Module):
         return output
 
 
+class SineActivation(nn.Module):
+    def forward(self, x):
+        return torch.sin(2 * x)
+
+
 class ResidualEncoderBlock(nn.Module):
     """
     A modular encoder block with a residual connection.
@@ -228,7 +217,7 @@ class ResidualEncoderBlock(nn.Module):
       3) Xavier initialization for all linear layers
     """
 
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_dim, hidden_dim, output_dim, zero_init=True):
         super(ResidualEncoderBlock, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, output_dim)
@@ -237,6 +226,14 @@ class ResidualEncoderBlock(nn.Module):
         self.projection = None
         if input_dim != output_dim:
             self.projection = nn.Linear(input_dim, output_dim)
+
+        # Randomly choose betwen Sine and GELU activation
+        if torch.rand(1).item() > 0.5:
+            self.activation = SineActivation()
+        else:
+            self.activation = F.gelu
+
+        self.zero_init = zero_init
 
         self.init_weights()
 
@@ -248,14 +245,15 @@ class ResidualEncoderBlock(nn.Module):
             if isinstance(layer, nn.Linear):
                 nn.init.kaiming_normal_(layer.weight)
                 nn.init.zeros_(layer.bias)
-        self.fc2.weight.data[:] = 0
+        if self.zero_init:
+            self.fc2.weight.data[:] = 0
 
     def forward(self, x):
         # Store the original input for the residual connection
         residual = x
 
         # Pass through MLP
-        out = F.gelu(self.fc1(x))
+        out = self.activation(self.fc1(x))
         out = self.fc2(out)
 
         # If dimension changed, project residual to match out
