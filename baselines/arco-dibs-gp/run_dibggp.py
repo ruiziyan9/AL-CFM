@@ -4,7 +4,7 @@ We use the following code to run the DiBS-GP algorithm on a given dataset.
 Metric:
 - log p(y' | do(x'), D) for each dataset across all the intervention samples
 """
-
+import argparse
 import sys
 from pathlib import Path
 
@@ -120,19 +120,18 @@ def calculate_nlpd(model: ABCI, intvn_index: int):
         )
 
     model.mechanism_model.clear_posterior_mll_cache()
-    with torch.no_grad():
-        mc_graphs, mc_adj_mats = model.sample_mc_graphs(set_data=True)
-        node_ll = model.graph_posterior_expectation(test_ll, mc_graphs, mc_adj_mats)
+    mc_graphs, mc_adj_mats = model.sample_mc_graphs(set_data=True)
+    node_ll = model.graph_posterior_expectation(test_ll, mc_graphs, mc_adj_mats)
         # Calculate the log likelihood
     return -node_ll.sum().item()
 
 
-def main(data_path: Path, num_datasets: int, sample_size: int):
+def main(data_path: Path, num_datasets: int, sample_size: int, data_start: int, data_end: int):
 
     config = get_config()
 
     all_nlpd = []
-    for i in trange(num_datasets):
+    for i in trange(data_start, data_end):
         # Load data
         graph, obs_train, int_test = load_data(data_path, i)
         intvn_index = get_intvn_index(int_test)
@@ -158,17 +157,18 @@ def main(data_path: Path, num_datasets: int, sample_size: int):
             intvn_index=intvn_index,
         )
         all_nlpd.append(nlpd)
+
+        # Save the results
+        save_name = data_path.name + f"_dibs_nlpd_data{i}.csv"
+        save_folder = data_path.parent.parent / "dibs_results" / data_path.name
+        save_folder.mkdir(parents=True, exist_ok=True)
+        save_path = save_folder / save_name
+        df = pd.DataFrame([nlpd], columns=["NLL"])
+        df.to_csv(save_path, index=False)
+
         print(f"Dataset {i}: NLL = {nlpd}")
 
     print(f"Average NLL: {sum(all_nlpd) / len(all_nlpd)}")
-
-    # Save the results
-    save_name = data_path.name + f"_dibs_nlpd.csv"
-    save_folder = data_path.parent.parent / "results"
-    save_folder.mkdir(parents=True, exist_ok=True)
-    save_path = save_folder / save_name
-    df = pd.DataFrame(all_nlpd, columns=["NLL"])
-    df.to_csv(save_path, index=False)
 
 
 if __name__ == "__main__":
@@ -176,10 +176,31 @@ if __name__ == "__main__":
     data_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
     )
-    data_name = "3var_neuralnet"
+    data_name = "30var_ER4_neuralgplvm_1000"
     data_path = data_folder / data_name
 
     num_datasets = 100
     sample_size = 500
 
-    main(data_path=data_path, num_datasets=num_datasets, sample_size=sample_size)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data_start",
+        type=int,
+        default=0,
+        help="data_start",
+    )
+    parser.add_argument(
+        "--data_end",
+        type=int,
+        default=1,
+        help="data_end",
+    )
+    args = parser.parse_args()
+
+    main(
+        data_path=data_path,
+        num_datasets=num_datasets,
+        sample_size=sample_size,
+        data_start=args.data_start,
+        data_end=args.data_end,
+    )

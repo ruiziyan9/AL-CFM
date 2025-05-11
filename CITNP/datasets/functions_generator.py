@@ -209,7 +209,7 @@ class GPFunctions:
         return outputs
 
 
-class NeuralNetFunctions:
+class ResNeuralNetFunctions:
     def __init__(
         self,
         num_parents: int,
@@ -217,7 +217,7 @@ class NeuralNetFunctions:
         self.num_parents = num_parents + 1 if num_parents > 0 else 1
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         num_blocks = np.random.randint(1, 8)
-        hidden_dim = 2 ** np.random.randint(5, 12)
+        hidden_dim = 2 ** np.random.randint(5, 10)
         self.model = th.nn.Sequential(
             *[
                 ResidualEncoderBlock(
@@ -229,6 +229,50 @@ class NeuralNetFunctions:
                 for i in range(num_blocks)
             ]
         ).to(self.device)
+        self.noise_dist = th.distributions.Gamma(1, 10)
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                # If there is no parent, we sample from a normal distribution.
+                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            else:
+                # If there are parents, append latent.
+                latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                inputs = np.concatenate([inputs, latent], axis=-1)
+            inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
+            outputs = self.model(inputs).detach()
+            noise_scale = (
+                self.noise_dist.sample((inputs.shape[0], 1))
+                .to(self.device)
+                .to(th.float32)
+            )
+            outputs = (
+                (outputs + noise_scale * th.randn_like(outputs))
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
+            return outputs
+
+
+class NeuralNetFunctions:
+    def __init__(
+        self,
+        num_parents: int,
+    ):
+        self.num_parents = num_parents + 1 if num_parents > 0 else 1
+        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+
+        self.model = th.nn.Sequential(
+            th.nn.Linear(self.num_parents, 128),
+            th.nn.ReLU(),
+            th.nn.Linear(128, 128),
+            th.nn.ReLU(),
+            th.nn.Linear(128, 1),
+        ).to(self.device)
+
         self.noise_dist = th.distributions.Gamma(1, 10)
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
@@ -336,9 +380,7 @@ class SimpleGPLVMFunctions:
 
         # num_kernels = 3
 
-        lengthscale_values = np.random.lognormal(
-            -0.5, 1, size=(num_kernels, self.num_parents + 1)
-        )
+        lengthscale_values = np.random.lognormal(-0.5, 1, size=(self.num_parents + 1))
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
         # gamma_values = np.random.uniform(0.1, 1, size=(num_kernels,))

@@ -106,11 +106,11 @@ def calculate_intvn_dist(
     return -1 * all_scm_log_prob.mean(axis=0).sum()
 
 
-def main(data_path: Path, data_name: str):
+def main(data_path: Path, data_name: str, sample_size: int = 500):
     data = load_data(data_path)
 
-    all_obs_data = data["obs_data"]
-    all_int_data = data["int_data"]
+    all_obs_data = data["obs_data"][:, :sample_size, :]
+    all_int_data = data["int_data"][:, :sample_size, :]
     all_intvn_indices = data["intvn_indices"]
 
     all_post_int_neg_log_prob = np.zeros((all_obs_data.shape[0]))
@@ -204,7 +204,9 @@ if __name__ == "__main__":
     data_path = Path(
         f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/{data_name}/test/data_idx0.hdf5"
     )
+    sample_size = 500
     main(
         data_path=data_path,
         data_name=data_name,
+        sample_size=sample_size,
     )

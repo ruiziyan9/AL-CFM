@@ -227,11 +227,7 @@ class ResidualEncoderBlock(nn.Module):
         if input_dim != output_dim:
             self.projection = nn.Linear(input_dim, output_dim)
 
-        # Randomly choose betwen Sine and GELU activation
-        if torch.rand(1).item() > 0.5:
-            self.activation = SineActivation()
-        else:
-            self.activation = F.gelu
+        self.activation = F.gelu
 
         self.zero_init = zero_init
 

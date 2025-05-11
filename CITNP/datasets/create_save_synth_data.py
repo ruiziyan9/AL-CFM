@@ -83,7 +83,7 @@ def main(
     graph_type: List[str] = ["ER", "SF"],
     graph_degrees: List[int] | dict = [50, 100, 150, 200, 250],
 ):
-    batch_sizes = {"train": 8 * 8000, "val": 32, "test": 128}
+    batch_sizes = {"train": 8 * 8000, "val": 32, "test": 100}
 
     if split not in batch_sizes:
         raise ValueError(
@@ -124,13 +124,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_end", type=int, default=1, help="Index to end saving data."
     )
-    parser.add_argument("--var_start", type=int, default=5)
-    parser.add_argument("--var_end", type=int, default=51)
+    parser.add_argument("--var_start", type=int, default=30)
+    parser.add_argument("--var_end", type=int, default=31)
     parser.add_argument(
         "--split",
         type=str,
         choices=["train", "val", "test"],
-        default="train",
+        default="test",
         help="Dataset split to create.",
     )
     parser.add_argument(
@@ -144,20 +144,23 @@ if __name__ == "__main__":
     save_dir = Path("synth_training_data")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    few_nodes_graph_degrees = {
-        5: np.arange(5, 10, dtype=int).tolist(),
-        6: np.arange(6, 15, dtype=int).tolist(),
-        7: np.arange(7, 21, dtype=int).tolist(),
-        8: np.arange(8, 28, dtype=int).tolist(),
-        9: np.arange(9, 36, dtype=int).tolist(),
-        10: np.arange(10, 45, dtype=int).tolist(),
-        11: np.arange(11, 55, dtype=int).tolist(),
-        12: np.arange(12, 66, dtype=int).tolist(),
-    }
-    large_graph_degrees = {
-        k: np.arange(k, 6 * k, dtype=int).tolist() for k in range(13, 51)
-    }
-    graph_degrees = {**few_nodes_graph_degrees, **large_graph_degrees}
+    # few_nodes_graph_degrees = {
+    #     5: np.arange(5, 10, dtype=int).tolist(),
+    #     6: np.arange(6, 15, dtype=int).tolist(),
+    #     7: np.arange(7, 21, dtype=int).tolist(),
+    #     8: np.arange(8, 28, dtype=int).tolist(),
+    #     9: np.arange(9, 36, dtype=int).tolist(),
+    #     10: np.arange(10, 45, dtype=int).tolist(),
+    #     11: np.arange(11, 55, dtype=int).tolist(),
+    #     12: np.arange(12, 66, dtype=int).tolist(),
+    # }
+    # large_graph_degrees = {
+    #     k: np.arange(k, 6 * k, dtype=int).tolist() for k in range(13, 51)
+    # }
+    # graph_degrees = {**few_nodes_graph_degrees, **large_graph_degrees}
+
+    graph_degrees = {30: [30 * 4]}
+    graph_type = ["ER"]
 
     all_num_var = np.arange(args.var_start, args.var_end, dtype=int).tolist()
 
@@ -170,4 +173,5 @@ if __name__ == "__main__":
             name_prefix=args.name_prefix,
             num_variables=num_var,
             graph_degrees=graph_degrees,
+            graph_type=graph_type,
         )
