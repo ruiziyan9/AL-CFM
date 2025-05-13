@@ -212,6 +212,7 @@ if __name__ == "__main__":
     data_path_name = "sachs"
 
     all_data_names = [
+        "data_idx0",
         "data_idx1",
         "data_idx2",
         "data_idx3",
@@ -234,3 +235,5 @@ if __name__ == "__main__":
             data_start=data_start,
             data_end=data_start + 1,
         )
+        data_start += 1
+        data_start += 1

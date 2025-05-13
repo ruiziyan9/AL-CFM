@@ -83,6 +83,7 @@ class CausalInferenceTrainer:
         if isinstance(self.train_dataset, th.utils.data.IterableDataset):
             batch_size = None
             shuffle = False
+            iterable_mode = True
         elif isinstance(self.train_dataset, ChunkMultipleFileDataset):
             batch_size = 1
             shuffle = True
@@ -95,6 +96,7 @@ class CausalInferenceTrainer:
             cntxt_split=self.dataconfig.cntxt_split,
             sample_size=self.dataconfig.sample_size,
             normalise=self.normalise,
+            iterable_mode=iterable_mode,
         )
         # Get loaders
         persistent_workers = True if self.dataconfig.num_workers > 0 else False

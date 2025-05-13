@@ -11,11 +11,19 @@ from tqdm import trange
 
 from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (
-    GPFunctionGenerator, LinearFixedStdFunctionGenerator,
-    LinearNonIdentifiableFunctionGenerator, NeuralGPLVMFunctionGenerator,
-    NeuralNetFunctionGenerator, NeuralSimpleGPFunctionGenerator,
-    SimpleGPFunctionGenerator, SimpleGPLVMFunctionGenerator,
-    SinusoidFunctionGenerator, UniformLinearFunctionGenerator)
+    GPFunctionGenerator,
+    LinearFixedStdFunctionGenerator,
+    LinearNonIdentifiableFunctionGenerator,
+    NeuralGPLVMFunctionGenerator,
+    NeuralNetFunctionGenerator,
+    NeuralSimpleGPFunctionGenerator,
+    ResNeuralFunctionGenerator,
+    ResNeuralGPLVMFunctionGenerator,
+    SimpleGPFunctionGenerator,
+    SimpleGPLVMFunctionGenerator,
+    SinusoidFunctionGenerator,
+    UniformLinearFunctionGenerator,
+)
 
 
 class InterventionDatasetGenerator(IterableDataset):
@@ -62,6 +70,7 @@ class InterventionDatasetGenerator(IterableDataset):
         return_functions: Optional[bool] = False,
         normalise: Optional[bool] = True,
         show_progress: Optional[bool] = False,
+        same_variablenum_per_batch: Optional[bool] = False,
     ):
         self.function_generator = function_generator
         self.num_variables = num_variables
@@ -88,6 +97,8 @@ class InterventionDatasetGenerator(IterableDataset):
             "linearnonidentifiable": LinearNonIdentifiableFunctionGenerator,
             "neuralgplvm": NeuralGPLVMFunctionGenerator,
             "neuralsimplegp": NeuralSimpleGPFunctionGenerator,
+            "resnet": ResNeuralFunctionGenerator,
+            "resnetgplvm": ResNeuralGPLVMFunctionGenerator,
         }
 
         if self.function_generator in valid_generators:
@@ -103,6 +114,13 @@ class InterventionDatasetGenerator(IterableDataset):
         self.return_functions = return_functions
         self.normalise = normalise
         self.show_progress = show_progress
+        self.same_variablenum_per_batch = same_variablenum_per_batch
+
+    def _get_num_variables(self):
+        if isinstance(self.num_variables, list):
+            return np.random.choice(self.num_variables)
+        else:
+            return self.num_variables
 
     def permute_data(self, *args, permutation_indices: np.ndarray) -> list:
         """
@@ -173,7 +191,9 @@ class InterventionDatasetGenerator(IterableDataset):
         # intervention_index = np.zeros(1)
         return intervention_index
 
-    def pad_data(self, data: np.ndarray, current_vars: int) -> np.ndarray:
+    def pad_data(
+        self, data: np.ndarray, current_vars: int, max_size: int
+    ) -> np.ndarray:
         """
         Pad data to match the maximum number of variables.
 
@@ -189,7 +209,7 @@ class InterventionDatasetGenerator(IterableDataset):
         padded_data : np.ndarray
             Padded data
         """
-        if current_vars == self.max_num_variables:
+        if current_vars == max_size:
             return data
 
         pad_width: Union[
@@ -199,13 +219,13 @@ class InterventionDatasetGenerator(IterableDataset):
 
         # For 2D data: samples x variables
         if data.ndim == 2:
-            pad_width = ((0, 0), (0, self.max_num_variables - current_vars))
+            pad_width = ((0, 0), (0, max_size - current_vars))
         # For 3D data: variables x variables (adjacency matrix)
         elif data.ndim == 3:
             pad_width = (
                 (0, 0),
-                (0, self.max_num_variables - current_vars),
-                (0, self.max_num_variables - current_vars),
+                (0, max_size - current_vars),
+                (0, max_size - current_vars),
             )
 
         return np.pad(data, pad_width, mode="constant", constant_values=0)
@@ -239,20 +259,20 @@ class InterventionDatasetGenerator(IterableDataset):
         masks : np.ndarray shape (batch_size, max_num_variables)
             Binary masks indicating which variables are valid (1) vs padding (0)
         """
+        if self.same_variablenum_per_batch:
+            current_num_variables = self._get_num_variables()
+            max_size = current_num_variables
+        else:
+            max_size = self.max_num_variables
+
         # Lists to store data for each batch
-        obs_data_array = np.zeros(
-            (self.batch_size, self.sample_size, self.max_num_variables)
-        )
-        int_data_array = np.zeros(
-            (self.batch_size, self.sample_size, self.max_num_variables)
-        )
-        causal_graphs_array = np.zeros(
-            (self.batch_size, self.max_num_variables, self.max_num_variables)
-        )
-        functions_array = np.zeros((self.batch_size, self.max_num_variables, 3))
+        obs_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
+        int_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
+        causal_graphs_array = np.zeros((self.batch_size, max_size, max_size))
+        functions_array = np.zeros((self.batch_size, max_size, 3))
         intvn_indices = np.zeros(self.batch_size, dtype=int)
         variable_counts = np.zeros(self.batch_size, dtype=int)
-        masks = np.zeros((self.batch_size, self.max_num_variables))
+        masks = np.zeros((self.batch_size, max_size))
 
         # Each batch is a different dataset
         bar = (
@@ -260,12 +280,11 @@ class InterventionDatasetGenerator(IterableDataset):
             if not self.show_progress
             else trange(self.batch_size)
         )
+
         for b in bar:
             # Sample number of variables
-            if isinstance(self.num_variables, list):
-                current_num_variables = np.random.choice(self.num_variables)
-            else:
-                current_num_variables = self.num_variables
+            if not self.same_variablenum_per_batch:
+                current_num_variables = self._get_num_variables()
 
             # Sample graph type and expected degree
             expected_node_degree = self.sample_uniform_expected_degree(
@@ -318,14 +337,15 @@ class InterventionDatasetGenerator(IterableDataset):
             )
 
             # Create mask for valid variables (1 for valid, 0 for padding)
-            mask = np.zeros(self.max_num_variables)
+            mask = np.zeros(max_size)
             mask[:current_num_variables] = 1
-
             # Pad data if necessary
             # This does not do anything if the number of variables is already the maximum
-            obs_data = self.pad_data(obs_data, current_num_variables)
-            intvn_data = self.pad_data(intvn_data, current_num_variables)
-            dag = self.pad_data(dag, current_num_variables)
+            obs_data = self.pad_data(obs_data, current_num_variables, max_size=max_size)
+            intvn_data = self.pad_data(
+                intvn_data, current_num_variables, max_size=max_size
+            )
+            dag = self.pad_data(dag, current_num_variables, max_size=max_size)
 
             # Store data for this batch
             obs_data_array[b] = obs_data

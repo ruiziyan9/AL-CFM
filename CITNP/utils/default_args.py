@@ -135,7 +135,7 @@ def parse_default_args():
     parser.add_argument(
         "--function_generator",
         type=str,
-        default="simplegp",
+        default="resnet",
         help="Type of function to generate.",
     )
     parser.add_argument(

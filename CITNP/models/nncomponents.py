@@ -205,8 +205,13 @@ class MHCA(nn.Module):
 
 
 class SineActivation(nn.Module):
+
+    def __init__(self, omega=2.0):
+        super().__init__()
+        self.omega = omega
+
     def forward(self, x):
-        return torch.sin(2 * x)
+        return torch.sin(self.omega * x)
 
 
 class ResidualEncoderBlock(nn.Module):
@@ -234,10 +239,14 @@ class ResidualEncoderBlock(nn.Module):
             # Randomly choose between GELU and sine
             if np.random.rand() > 0.5:
                 self.activation = F.gelu
+                self.is_sine = False
             else:
-                self.activation = SineActivation()
+                omega_init = np.random.uniform(0.5, 10.0)
+                self.activation = SineActivation(omega=omega_init)
+                self.is_sine = True
         else:
             self.activation = F.gelu
+            self.is_sine = False
 
         self.zero_init = zero_init
 

@@ -215,9 +215,9 @@ class ResNeuralNetFunctions:
         num_parents: int,
     ):
         self.num_parents = num_parents + 1 if num_parents > 0 else 1
-        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+        self.device = th.device("cpu")
         num_blocks = np.random.randint(1, 8)
-        hidden_dim = 2 ** np.random.randint(5, 10)
+        hidden_dim = 2 ** np.random.randint(5, 11)
         self.model = th.nn.Sequential(
             *[
                 ResidualEncoderBlock(
@@ -379,23 +379,25 @@ class SimpleGPLVMFunctions:
         self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         self.dtype = th.float64
 
-        # num_kernels = 3
+        num_kernels = 3
 
-        lengthscale_values = np.random.lognormal(-0.5, 1, size=(self.num_parents + 1))
+        lengthscale_values = np.random.lognormal(
+            -0.75, 1, size=(num_kernels, self.num_parents + 1)
+        )
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
-        # gamma_values = np.random.uniform(0.1, 1, size=(num_kernels,))
+        gamma_values = np.random.uniform(0.2, 1, size=(num_kernels,))
         # Define the kernel
-        # self.kernel = SumExpGammaKernels(
-        #     num_kernels=num_kernels,
-        #     gamma_vals=th.from_numpy(gamma_values).to(self.device),
-        #     lengthscale_vals=th.from_numpy(lengthscale_values).to(self.device),
-        # )
-        self.kernel = RBFKernel(
-            lengthscale=th.from_numpy(lengthscale_values)
-            .to(self.device)
-            .to(self.dtype),
+        self.kernel = SumExpGammaKernels(
+            num_kernels=num_kernels,
+            gamma_vals=th.from_numpy(gamma_values).to(self.device),
+            lengthscale_vals=th.from_numpy(lengthscale_values).to(self.device),
         )
+        # self.kernel = RBFKernel(
+        #     lengthscale=th.from_numpy(lengthscale_values)
+        #     .to(self.device)
+        #     .to(self.dtype),
+        # )
 
     def sample_gplvm(self, inputs: np.ndarray) -> np.ndarray:
         """
@@ -931,6 +933,81 @@ class NeuralSimpleGPFunctionGenerator(DataGenerator):
                 function = SimpleGPFunctions(num_parents=num_parents)
             else:
                 function = NeuralNetFunctions(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class ResNeuralFunctionGenerator(DataGenerator):
+    """
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function: ResNeuralNetFunctions
+            # Randomly choose between GPLVM and NeuralNet
+            function = ResNeuralNetFunctions(num_parents=num_parents)
+            function_dict[i] = function
+
+        return function_dict
+
+
+class ResNeuralGPLVMFunctionGenerator(DataGenerator):
+    """
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    num_samples : int
+        Number of samples to generate.
+    """
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph.
+
+        This will instantiate a class that can then be used to generate data.
+        This is necessary as we have to save the functions to generate
+        interventional data.
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            parents_of_i = causal_graph[:, i]
+            num_parents = int(np.sum(parents_of_i))
+
+            function: SimpleGPLVMFunctions | NeuralNetFunctions
+            # Randomly choose between GPLVM and NeuralNet
+            if np.random.rand() > 0.5:
+                function = SimpleGPLVMFunctions(num_parents=num_parents)
+            else:
+                function = ResNeuralNetFunctions(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict

@@ -79,6 +79,7 @@ def transformer_inference_split_withpadding(
     sample_size: int,
     is_training: bool = False,
     normalise: bool = True,
+    iterable_mode: bool = False,
 ):
     if is_training:
         min_context = int(sample_size * cntxt_split[0])
@@ -89,7 +90,7 @@ def transformer_inference_split_withpadding(
 
     def mycollate(batch):
         # There are two modes
-        if len(batch[0]) >= 6:
+        if not iterable_mode:
             (
                 obs_data_array,
                 int_data_array,

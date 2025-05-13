@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Union
 
+import numpy as np
 import torch
 from torch.optim import Adam
 
@@ -23,7 +24,7 @@ from CITNP.trainer.callbacks import (
 )
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
-from CITNP.utils.default_args import overwrite_debug_args, parse_args
+from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
 from CITNP.utils.utils import (
     _generate_experiment_name,
     convert_trainerdict_to_config,
@@ -42,24 +43,40 @@ def main(args: argparse.Namespace):
 
     set_seed(args.seed)
 
+    few_nodes_graph_degrees = {
+        5: np.arange(5, 10, dtype=int).tolist(),
+        6: np.arange(6, 15, dtype=int).tolist(),
+        7: np.arange(7, 21, dtype=int).tolist(),
+        8: np.arange(8, 28, dtype=int).tolist(),
+        9: np.arange(9, 36, dtype=int).tolist(),
+        10: np.arange(10, 45, dtype=int).tolist(),
+        11: np.arange(11, 55, dtype=int).tolist(),
+        12: np.arange(12, 66, dtype=int).tolist(),
+    }
+    large_graph_degrees = {
+        k: np.arange(k, 6 * k, dtype=int).tolist() for k in range(13, 51)
+    }
+    graph_degrees = {**few_nodes_graph_degrees, **large_graph_degrees}
+
     DATA_ARGS = {
         "sample_size": args.sample_size,
-        "num_variables": args.num_variables,
+        "num_variables": list(np.arange(8, 12)),
         "function_generator": args.function_generator,
-        "graph_type": args.graph_type,
-        "graph_degrees": args.graph_degrees,
+        "graph_type": ["ER", "SF"],
+        "graph_degrees": graph_degrees,
         "iterations_per_epoch": args.iterations_per_epoch,
         "batch_size": args.batch_size,
+        "same_variablenum_per_batch": True,
     }
 
     train_dataset = InterventionDatasetGenerator(**DATA_ARGS)
     DATA_ARGS.pop("iterations_per_epoch")
     val_dataset = InterventionDatasetGenerator(
-        iterations_per_epoch=100,
+        iterations_per_epoch=100 // args.batch_size,
         **DATA_ARGS,
     )
     test_dataset = InterventionDatasetGenerator(
-        iterations_per_epoch=100,
+        iterations_per_epoch=100 // args.batch_size,
         **DATA_ARGS,
     )
 
@@ -71,9 +88,8 @@ def main(args: argparse.Namespace):
         "dropout": 0.0,
         "num_layers_encoder": args.num_layers_encoder,
         "num_nodes": args.num_variables,
-        "num_z_samples_train": args.num_z_samples_train,
-        "num_z_samples_eval": args.num_z_samples_eval,
-        "decoder_depth": args.decoder_depth,
+        "sample_attn_mode": args.sample_attn_mode,
+        "linear_attention": args.linear_attention,
         "mean_loss_across_samples": args.mean_loss_across_samples,
         "device": args.device,
         "dtype": args.dtype,
@@ -100,6 +116,10 @@ def main(args: argparse.Namespace):
     save_dir = results_path / "results"
     save_dir.mkdir(parents=True, exist_ok=True)
     model_save_dir = save_dir / f"{args.run_name}"
+    # Don't allow to override models
+    model_save_dir.mkdir(parents=False, exist_ok=False)
+    entity_name = args.entity_name
+    project_name = args.data_file
 
     # All the configs
     config: Union[CausalInfModelConfig, LocalLatentConfig]
@@ -142,6 +162,7 @@ def main(args: argparse.Namespace):
 
     # Callbacks
     wandbcallback = WandbLoggingCallback(
+        entity_name=entity_name,
         project_name=project_name,
         run_name=args.run_name,
         log_config=loggingconfig,
@@ -181,8 +202,9 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     # These fixed some attention errors for me
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
     torch.backends.cuda.enable_flash_sdp(True)
 
     parser = argparse.ArgumentParser()
-    args = parse_args()
+    args = parse_default_args()
     main(args)
