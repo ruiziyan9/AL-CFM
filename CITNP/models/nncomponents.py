@@ -1,4 +1,5 @@
 import einops
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -217,7 +218,9 @@ class ResidualEncoderBlock(nn.Module):
       3) Xavier initialization for all linear layers
     """
 
-    def __init__(self, input_dim, hidden_dim, output_dim, zero_init=True):
+    def __init__(
+        self, input_dim, hidden_dim, output_dim, zero_init=True, random_activation=False
+    ):
         super(ResidualEncoderBlock, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, output_dim)
@@ -227,7 +230,14 @@ class ResidualEncoderBlock(nn.Module):
         if input_dim != output_dim:
             self.projection = nn.Linear(input_dim, output_dim)
 
-        self.activation = F.gelu
+        if random_activation:
+            # Randomly choose between GELU and sine
+            if np.random.rand() > 0.5:
+                self.activation = F.gelu
+            else:
+                self.activation = SineActivation()
+        else:
+            self.activation = F.gelu
 
         self.zero_init = zero_init
 

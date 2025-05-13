@@ -225,6 +225,7 @@ class ResNeuralNetFunctions:
                     hidden_dim=hidden_dim,
                     output_dim=hidden_dim if i < num_blocks - 1 else 1,
                     zero_init=False,
+                    random_activation=True,
                 )
                 for i in range(num_blocks)
             ]

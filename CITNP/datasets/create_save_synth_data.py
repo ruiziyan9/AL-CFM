@@ -124,8 +124,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_end", type=int, default=1, help="Index to end saving data."
     )
-    parser.add_argument("--var_start", type=int, default=30)
-    parser.add_argument("--var_end", type=int, default=31)
+    parser.add_argument("--var_start", type=int, default=40)
+    parser.add_argument("--var_end", type=int, default=41)
     parser.add_argument(
         "--split",
         type=str,
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     # }
     # graph_degrees = {**few_nodes_graph_degrees, **large_graph_degrees}
 
-    graph_degrees = {30: [30 * 4]}
+    graph_degrees = {40: [40 * 4]}
     graph_type = ["ER"]
 
     all_num_var = np.arange(args.var_start, args.var_end, dtype=int).tolist()

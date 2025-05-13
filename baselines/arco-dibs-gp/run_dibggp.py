@@ -4,6 +4,7 @@ We use the following code to run the DiBS-GP algorithm on a given dataset.
 Metric:
 - log p(y' | do(x'), D) for each dataset across all the intervention samples
 """
+
 import argparse
 import sys
 from pathlib import Path
@@ -122,11 +123,13 @@ def calculate_nlpd(model: ABCI, intvn_index: int):
     model.mechanism_model.clear_posterior_mll_cache()
     mc_graphs, mc_adj_mats = model.sample_mc_graphs(set_data=True)
     node_ll = model.graph_posterior_expectation(test_ll, mc_graphs, mc_adj_mats)
-        # Calculate the log likelihood
+    # Calculate the log likelihood
     return -node_ll.sum().item()
 
 
-def main(data_path: Path, num_datasets: int, sample_size: int, data_start: int, data_end: int):
+def main(
+    data_path: Path, num_datasets: int, sample_size: int, data_start: int, data_end: int
+):
 
     config = get_config()
 
@@ -176,7 +179,7 @@ if __name__ == "__main__":
     data_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
     )
-    data_name = "30var_ER4_neuralgplvm_1000"
+    data_name = "40var_ER4_neuralgplvm_1000"
     data_path = data_folder / data_name
 
     num_datasets = 100

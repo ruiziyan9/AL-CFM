@@ -17,7 +17,7 @@ def stack_list_of_arrays(list_of_arrays):
     """
     if list_of_arrays[0] is None:
         return None
-    return np.stack(list_of_arrays, axis=0).squeeze(axis=0)
+    return np.stack(list_of_arrays, axis=0)
 
 
 def sample_context_size(

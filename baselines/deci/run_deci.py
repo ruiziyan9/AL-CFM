@@ -1,3 +1,4 @@
+import argparse
 import os
 from pathlib import Path
 from typing import List
@@ -80,7 +81,7 @@ def calculate_intvn_dist(
     outcome_node = int_data[:, outcome_idx]
 
     all_scm_log_prob = np.zeros((len(sem_list), outcome_node.shape[0]))
-    for sem_idx, sem in tqdm(enumerate(sem_list)):
+    for sem_idx, sem in tqdm(enumerate(sem_list), total=len(sem_list)):
         outcome_log_prob = np.zeros_like(outcome_node)
         for idx, curr_int in enumerate(int_values):
 
@@ -106,15 +107,29 @@ def calculate_intvn_dist(
     return -1 * all_scm_log_prob.mean(axis=0).sum()
 
 
-def main(data_path: Path, data_name: str, sample_size: int = 500):
+def main(
+    data_path: Path,
+    data_path_name: str,
+    sample_size: int = 500,
+    data_start: int = 0,
+    data_end: int = 100,
+):
+
+    result_folder = (
+        Path("/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines")
+        / "deci"
+        / "results"
+        / data_path_name
+    )
+    result_folder.mkdir(parents=True, exist_ok=True)
+
     data = load_data(data_path)
 
     all_obs_data = data["obs_data"][:, :sample_size, :]
     all_int_data = data["int_data"][:, :sample_size, :]
     all_intvn_indices = data["intvn_indices"]
 
-    all_post_int_neg_log_prob = np.zeros((all_obs_data.shape[0]))
-    for i in range(all_obs_data.shape[0]):
+    for i in range(data_start, data_end):
         pl.seed_everything(seed=1)  # set the random seed
 
         obs_data = all_obs_data[i]
@@ -183,30 +198,45 @@ def main(data_path: Path, data_name: str, sample_size: int = 500):
             int_data=int_data,
             int_data_dict=int_data_module.dataset_train,
         )
-        all_post_int_neg_log_prob[i] = average_neg_log_prob
-        print(f"Average log prob for dataset {i}: {average_neg_log_prob}")
 
-    all_results = pd.DataFrame(
-        all_post_int_neg_log_prob,
-        columns=["NLL"],
-    )
-    save_path = Path(
-        "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/deci/results"
-    )
-    save_path.mkdir(parents=True, exist_ok=True)
-    save_name = f"{data_name}_int_log_prob.csv"
-    all_results.to_csv(save_path / save_name, index=False)
+        # Save the results
+        save_name = data_path_name + f"_deci_nlpd_data{i}.csv"
+        save_path = result_folder / save_name
+        df = pd.DataFrame([average_neg_log_prob], columns=["NLL"])
+        df.to_csv(save_path, index=False)
+
+        print(f"Average log prob for dataset {i}: {average_neg_log_prob}")
 
 
 if __name__ == "__main__":
-    data_name = "3var_neuralnet"
+    data_path_name = "40var_ER4_neuralgplvm_1000"
+    data_name = "data_idx40"
 
     data_path = Path(
-        f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/{data_name}/test/data_idx0.hdf5"
+        f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/{data_path_name}/test/{data_name}.hdf5"
     )
+
     sample_size = 500
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data_start",
+        type=int,
+        default=0,
+        help="data_start",
+    )
+    parser.add_argument(
+        "--data_end",
+        type=int,
+        default=100,
+        help="data_end",
+    )
+    args = parser.parse_args()
+
     main(
         data_path=data_path,
-        data_name=data_name,
+        data_path_name=data_path_name,
         sample_size=sample_size,
+        data_start=args.data_start,
+        data_end=args.data_end,
     )

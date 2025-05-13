@@ -190,3 +190,5 @@ wandb/
 *.csv
 
 lightning_logs/
+
+*.log.*

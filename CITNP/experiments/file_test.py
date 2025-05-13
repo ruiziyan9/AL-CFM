@@ -3,9 +3,9 @@ File to test the model.
 """
 
 import argparse
+import json
 from pathlib import Path
 from typing import Union
-import json
 
 import torch
 from torch.optim import Adam
@@ -48,9 +48,7 @@ def main(args: argparse.Namespace):
     # Get the test datasets
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
-    test_dataset = MultipleFileDataset(
-        [i for i in test_files if i.suffix == ".hdf5"]
-    )
+    test_dataset = MultipleFileDataset([i for i in test_files if i.suffix == ".hdf5"])
     # Set the train and validation datasets as the test one during testing---they are not used
     train_dataset = test_dataset
     val_dataset = test_dataset
@@ -169,7 +167,7 @@ def main(args: argparse.Namespace):
         loggingconfig=loggingconfig,
         callbacks=callbacks,
     )
-    test_stats = trainer.test(checkpoint_name="model_1")
+    test_stats = trainer.test(checkpoint_name="best_model")
     print(f"Test metrics: {test_stats}")
     with open(model_save_dir / f"test_metrics_{args.data_file}.json", "w") as f:
         json.dump(test_stats, f, indent=4)

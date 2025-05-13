@@ -4,6 +4,7 @@ We use the following code to run the ARCO-GP algorithm on a given dataset.
 Metric:
 - log p(y' | do(x'), D) for each dataset across all the intervention samples
 """
+
 import argparse
 import sys
 import time
@@ -130,7 +131,9 @@ def calculate_nlpd(model: ABCI, intvn_index: int):
     return -node_ll.sum().item()
 
 
-def main(data_path: Path, num_datasets: int, sample_size: int, data_start: int, data_end: int):
+def main(
+    data_path: Path, num_datasets: int, sample_size: int, data_start: int, data_end: int
+):
 
     config = get_config()
 
@@ -166,10 +169,10 @@ def main(data_path: Path, num_datasets: int, sample_size: int, data_start: int, 
 
         # Save the results
         save_name = data_path.name + f"_arco_nlpd_data{i}.csv"
-        save_folder = data_path.parent.parent / "results" / data_path.name
+        save_folder = data_path.parent.parent / "arco_results" / data_path.name
         save_folder.mkdir(parents=True, exist_ok=True)
         save_path = save_folder / save_name
-        df = pd.DataFrame(all_nlpd, columns=["NLL"])
+        df = pd.DataFrame([nlpd], columns=["NLL"])
         df.to_csv(save_path, index=False)
 
     end_time = time.time()
@@ -182,7 +185,7 @@ if __name__ == "__main__":
     data_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
     )
-    data_name = "30var_ER4_neuralgplvm_1000"
+    data_name = "40var_ER4_neuralgplvm_1000"
     data_path = data_folder / data_name
 
     num_datasets = 100
@@ -208,5 +211,5 @@ if __name__ == "__main__":
         num_datasets=num_datasets,
         sample_size=sample_size,
         data_start=args.data_start,
-        data_end=args.data_end
+        data_end=args.data_end,
     )
