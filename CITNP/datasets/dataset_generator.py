@@ -6,6 +6,7 @@ from functools import partial
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
+import torch
 from torch.utils.data import IterableDataset
 from tqdm import trange
 
@@ -377,7 +378,28 @@ class InterventionDatasetGenerator(IterableDataset):
         yield output
 
     def __iter__(self):
-        for _ in range(self.iterations_per_epoch):
+        # Get worker info for proper sharding
+        worker_info = torch.utils.data.get_worker_info()
+
+        # If no worker info or single worker, use the parent's iterator
+        if worker_info is None:
+            iterations = self.iterations_per_epoch
+            worker_id = 0
+            num_workers = 1
+        else:
+            # Partition iterations among workers
+            iterations = self.iterations_per_epoch // worker_info.num_workers
+            # Handle remainder if needed
+            if worker_info.id < self.iterations_per_epoch % worker_info.num_workers:
+                iterations += 1
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+
+        # Set different random seed for each worker to ensure diversity
+        np.random.seed(42 + worker_id)
+
+        # Generate data for assigned iterations
+        for _ in range(iterations):
             yield next(self.generate_next_dataset())
 
     def __len__(self):

@@ -2,6 +2,7 @@ import time
 
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm, trange
 
 from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
 
@@ -14,12 +15,12 @@ def get_datagenerator():
         batch_size=16,
         graph_type=["ER"],
         graph_degrees=[15 * 4],
-        iterations_per_epoch=1,
+        iterations_per_epoch=1000,
     )
     return datagenerator
 
 
-def measure_dataset_time(datagenerator):
+def measure_dataset_time(datagenerator, num_batches=20):
     # Measure single batch generation time
     start_time = time.time()
     batch = next(iter(datagenerator))
@@ -28,17 +29,17 @@ def measure_dataset_time(datagenerator):
     # Measure multiple batches
     start_time = time.time()
     batches = []
-    for i, batch in enumerate(datagenerator):
-        if i >= 100:  # Measure 10 batches
+    for i, batch in tqdm(enumerate(datagenerator), total=num_batches):
+        if i >= num_batches:  # Measure 10 batches
             break
         batches.append(batch)
-    avg_batch_time = (time.time() - start_time) / 100
+    avg_batch_time = (time.time() - start_time) / num_batches
 
     print(f"First batch time: {first_batch_time:.4f}s")
     print(f"Average batch time: {avg_batch_time:.4f}s")
 
 
-def _benchmark_dataloader(dataset, num_workers_list, num_batches=100):
+def _benchmark_dataloader(dataset, num_workers_list, num_batches=20):
     results = {}
 
     for num_workers in num_workers_list:
@@ -48,20 +49,38 @@ def _benchmark_dataloader(dataset, num_workers_list, num_batches=100):
             batch_size=None,  # Your generator already creates batches
             num_workers=num_workers,
             pin_memory=True,
+            persistent_workers=True if num_workers > 0 else False,
         )
 
         # Warmup
-        for _ in range(2):
+        start_time = time.time()
+        for _ in range(10):
             next(iter(loader))
+        elapsed = time.time() - start_time
+        print(f"Warmup time: {elapsed:.4f}s")
 
         # Timing
-        start_time = time.time()
-        for i, _ in enumerate(loader):
-            if i >= num_batches:
+        batch_times = []
+        iterator = iter(loader)
+
+        for i in trange(num_batches):
+            start_time = time.time()
+            try:
+                _ = next(iterator)
+                end_time = time.time()
+                time_for_batch = end_time - start_time
+                batch_times.append(time_for_batch)
+            except StopIteration:
+                print(f"Reached end of dataset at batch {i}")
                 break
 
-        elapsed = time.time() - start_time
-        results[num_workers] = elapsed / num_batches
+        if batch_times:
+            avg_time = sum(batch_times) / len(batch_times)
+            results[num_workers] = avg_time
+            print(f"Average batch time with {num_workers} workers: {avg_time:.4f}s")
+        else:
+            results[num_workers] = None
+            print(f"No batches processed with {num_workers} workers")
 
     return results
 
@@ -70,7 +89,7 @@ def measure_dataloader_time(datagenerator):
 
     # Test with different worker counts
     dataset = datagenerator
-    worker_counts = [0, 1, 2, 4, 8, 16]  # Adjust based on your CPU
+    worker_counts = [8]  # Adjust based on your CPU
     results = _benchmark_dataloader(dataset, worker_counts)
 
     for workers, avg_time in results.items():
@@ -79,7 +98,7 @@ def measure_dataloader_time(datagenerator):
 
 def main():
     datagenerator = get_datagenerator()
-    measure_dataset_time(datagenerator)
+    # measure_dataset_time(datagenerator)
     measure_dataloader_time(datagenerator)
 
 
