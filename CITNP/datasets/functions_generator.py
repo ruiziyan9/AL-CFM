@@ -10,6 +10,7 @@ Contains:
 """
 
 from abc import ABC, abstractmethod
+from functools import partial
 
 import numpy as np
 import torch as th
@@ -232,15 +233,20 @@ class ResNeuralNetFunctions:
         ).to(self.device)
         self.noise_dist = th.distributions.Gamma(1, 10)
 
+        if np.random.rand() > 0.5:
+            self.latent_dist = partial(np.random.normal, loc=0, scale=1.0)
+        else:
+            self.latent_dist = partial(np.random.uniform, low=-1, high=1)
+
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
         with th.no_grad():
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                inputs = self.latent_dist(size=(inputs.shape[0], 1))
             else:
                 # If there are parents, append latent.
-                latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                latent = self.latent_dist(size=(inputs.shape[0], 1))
                 inputs = np.concatenate([inputs, latent], axis=-1)
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
@@ -398,6 +404,10 @@ class SimpleGPLVMFunctions:
         #     .to(self.device)
         #     .to(self.dtype),
         # )
+        if np.random.rand() > 0.5:
+            self.latent_dist = partial(np.random.normal, loc=0, scale=1.0)
+        else:
+            self.latent_dist = partial(np.random.uniform, low=-1, high=1)
 
     def sample_gplvm(self, inputs: np.ndarray) -> np.ndarray:
         """
@@ -433,9 +443,9 @@ class SimpleGPLVMFunctions:
         input_num = inputs.shape[-1]
         if input_num == 0:
             # If there is no parent, we sample from a normal distribution.
-            inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            inputs = self.latent_dist(size=(inputs.shape[0], 1))
         else:
-            latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+            latent = self.latent_dist(size=(inputs.shape[0], 1))
             inputs = np.concatenate([inputs, latent], axis=-1)
 
         outputs = self.sample_gplvm(inputs)

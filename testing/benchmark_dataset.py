@@ -4,11 +4,11 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 
-from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
+from CITNP.datasets.dataset_generator import QueuedInterventionDatasetGenerator
 
 
 def get_datagenerator():
-    datagenerator = InterventionDatasetGenerator(
+    datagenerator = QueuedInterventionDatasetGenerator(
         function_generator="resnet",
         num_variables=[15],
         sample_size=1000,
@@ -54,7 +54,7 @@ def _benchmark_dataloader(dataset, num_workers_list, num_batches=20):
 
         # Warmup
         start_time = time.time()
-        for _ in range(10):
+        for _ in trange(5, desc="warmup", leave=False):
             next(iter(loader))
         elapsed = time.time() - start_time
         print(f"Warmup time: {elapsed:.4f}s")
@@ -89,7 +89,7 @@ def measure_dataloader_time(datagenerator):
 
     # Test with different worker counts
     dataset = datagenerator
-    worker_counts = [8]  # Adjust based on your CPU
+    worker_counts = [2, 4, 8, 10, 16]  # Adjust based on your CPU
     results = _benchmark_dataloader(dataset, worker_counts)
 
     for workers, avg_time in results.items():

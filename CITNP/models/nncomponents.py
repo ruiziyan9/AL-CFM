@@ -236,17 +236,24 @@ class ResidualEncoderBlock(nn.Module):
             self.projection = nn.Linear(input_dim, output_dim)
 
         if random_activation:
-            # Randomly choose between GELU and sine
-            if np.random.rand() > 0.5:
+            # Choose from multiple activations
+            choice = np.random.choice(["relu", "leaky_relu", "gelu", "sine", "swish"])
+
+            if choice == "relu":
+                self.activation = F.relu
+            elif choice == "leaky_relu":
+                # Random leaky slope
+                alpha = np.random.uniform(0.01, 0.3)
+                self.activation = lambda x: F.leaky_relu(x, negative_slope=alpha)
+            elif choice == "gelu":
                 self.activation = F.gelu
-                self.is_sine = False
-            else:
+            elif choice == "sine":
                 omega_init = np.random.uniform(0.5, 10.0)
                 self.activation = SineActivation(omega=omega_init)
-                self.is_sine = True
+            elif choice == "swish":
+                self.activation = lambda x: x * torch.sigmoid(x)
         else:
             self.activation = F.gelu
-            self.is_sine = False
 
         self.zero_init = zero_init
 
