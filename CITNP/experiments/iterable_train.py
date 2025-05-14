@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.optim import Adam
 
-from CITNP.datasets.dataset_generator import InterventionDatasetGenerator
+from CITNP.datasets.dataset_generator import QueuedInterventionDatasetGenerator
 from CITNP.models.causalinferencemodel import (
     CausalInferenceModel,
     LocalLatentCausalInferenceModel,
@@ -60,7 +60,7 @@ def main(args: argparse.Namespace):
 
     DATA_ARGS = {
         "sample_size": args.sample_size,
-        "num_variables": list(np.arange(8, 12)),
+        "num_variables": list(np.arange(8, 14)),
         "function_generator": args.function_generator,
         "graph_type": ["ER", "SF"],
         "graph_degrees": graph_degrees,
@@ -69,15 +69,21 @@ def main(args: argparse.Namespace):
         "same_variablenum_per_batch": True,
     }
 
-    train_dataset = InterventionDatasetGenerator(**DATA_ARGS)
-    DATA_ARGS.pop("iterations_per_epoch")
-    val_dataset = InterventionDatasetGenerator(
-        iterations_per_epoch=100 // args.batch_size,
-        **DATA_ARGS,
+    train_dataset = QueuedInterventionDatasetGenerator(
+        **DATA_ARGS, prefetch_factor=5, queue_workers=4
     )
-    test_dataset = InterventionDatasetGenerator(
-        iterations_per_epoch=100 // args.batch_size,
+    DATA_ARGS.pop("iterations_per_epoch")
+    val_dataset = QueuedInterventionDatasetGenerator(
+        iterations_per_epoch=50,
         **DATA_ARGS,
+        prefetch_factor=2,
+        queue_workers=1,
+    )
+    test_dataset = QueuedInterventionDatasetGenerator(
+        iterations_per_epoch=1,
+        **DATA_ARGS,
+        prefetch_factor=2,
+        queue_workers=1,
     )
 
     MODEL_ARGS = {
@@ -119,7 +125,6 @@ def main(args: argparse.Namespace):
     # Don't allow to override models
     model_save_dir.mkdir(parents=False, exist_ok=False)
     entity_name = args.entity_name
-    project_name = args.data_file
 
     # All the configs
     config: Union[CausalInfModelConfig, LocalLatentConfig]

@@ -382,15 +382,15 @@ class SimpleGPLVMFunctions:
         num_parents: int,
     ):
         self.num_parents = num_parents if num_parents > 0 else 1
-        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
-        self.dtype = th.float64
+        self.device = th.device("cpu")
+        self.dtype = th.float32
 
         num_kernels = 3
 
         lengthscale_values = np.random.lognormal(
             -0.75, 1, size=(num_kernels, self.num_parents + 1)
         )
-        lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
+        lengthscale_values = np.clip(lengthscale_values, 0.2, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
         gamma_values = np.random.uniform(0.2, 1, size=(num_kernels,))
         # Define the kernel
@@ -427,7 +427,7 @@ class SimpleGPLVMFunctions:
                 .to(self.device)
                 .to(self.dtype)
             )
-            covariance = covariance + 1e-4 * th.eye(
+            covariance = covariance + 1e-3 * th.eye(
                 inputs.shape[0], device=self.device, dtype=self.dtype
             )
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)

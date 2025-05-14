@@ -1,6 +1,5 @@
 import time
 
-import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 
@@ -89,7 +88,7 @@ def measure_dataloader_time(datagenerator):
 
     # Test with different worker counts
     dataset = datagenerator
-    worker_counts = [2, 4, 8, 10, 16]  # Adjust based on your CPU
+    worker_counts = [0, 1]  # Adjust based on your CPU
     results = _benchmark_dataloader(dataset, worker_counts)
 
     for workers, avg_time in results.items():
@@ -98,7 +97,7 @@ def measure_dataloader_time(datagenerator):
 
 def main():
     datagenerator = get_datagenerator()
-    # measure_dataset_time(datagenerator)
+    measure_dataset_time(datagenerator)
     measure_dataloader_time(datagenerator)
 
 

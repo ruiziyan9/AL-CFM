@@ -30,43 +30,8 @@ from CITNP.datasets.functions_generator import (
 )
 
 
-class QueuedInterventionDatasetGenerator(IterableDataset):
-    """Generate datasets using a function generator with queue-based prefetching.
-    This generates observational data along with interventional datasets in a background
-    thread pool to improve performance.
-
-    Args:
-    ----------
-    function_generator : str
-        The function generator to use.
-
-    num_variables : Union[int, List[int]]
-        The number of variables in the dataset. If a list is provided,
-        the number of variables will be randomly sampled from this list for each dataset.
-
-    sample_size : int
-        The maximum number of samples to generate.
-
-    batch_size : int
-        The number of datasets to generate per batch.
-
-    graph_type : List[str]
-        The type of graph to generate.
-        - "ER": Erdos-Renyi
-        - "SF": Scale-free, Barabasi-Albert
-
-    graph_degrees : List[int]
-        The expected degrees of the graph.
-
-    iterations_per_epoch : Optional[int] = 1000
-        Number of iterations per epoch.
-
-    prefetch_factor : Optional[int] = 2
-        Number of batches to prefetch per worker.
-
-    queue_workers : Optional[int] = 4
-        Number of worker threads for data generation.
-    """
+class BaseInterventionDatasetGenerator(IterableDataset):
+    """Base class for interventional datasets."""
 
     def __init__(
         self,
@@ -81,8 +46,6 @@ class QueuedInterventionDatasetGenerator(IterableDataset):
         normalise: Optional[bool] = True,
         show_progress: Optional[bool] = False,
         same_variablenum_per_batch: Optional[bool] = False,
-        prefetch_factor: Optional[int] = 3,
-        queue_workers: Optional[int] = 2,
     ):
         # Initialize parameters
         self.function_generator = function_generator
@@ -99,15 +62,6 @@ class QueuedInterventionDatasetGenerator(IterableDataset):
         self.normalise = normalise
         self.show_progress = show_progress
         self.same_variablenum_per_batch = same_variablenum_per_batch
-
-        # Queue parameters
-        self.prefetch_factor = prefetch_factor
-        self.queue_workers = queue_workers
-
-        # Flag to indicate if queue is initialized
-        self.queue_initialized = False
-        self.worker_id = None
-        self.worker_count = None
 
         # Set up function generator
         valid_generators = {
@@ -132,60 +86,6 @@ class QueuedInterventionDatasetGenerator(IterableDataset):
             raise ValueError(
                 f"{self.function_generator} is not a valid function generator. Valid options are: {valid_types}."
             )
-
-    def _initialize_queue(self):
-        """Initialize the prefetching queue and worker threads.
-        This is now called in __iter__ to ensure it happens in the worker process."""
-        if self.queue_initialized:
-            return
-
-        # Queue size is based on number of workers and prefetch factor
-        self.queue_size = self.queue_workers * self.prefetch_factor
-        self.data_queue = queue.Queue(maxsize=self.queue_size)
-
-        # Synchronization
-        self.stop_event = threading.Event()
-        self.workers = []
-
-        # Start worker threads (only in the process where this is called)
-        for worker_id in range(self.queue_workers):
-            worker = threading.Thread(
-                target=self._data_generation_worker,
-                args=(
-                    worker_id + (self.worker_id or 0) * 1000,
-                ),  # Ensure unique seeds across processes
-                daemon=True,
-            )
-            worker.start()
-            self.workers.append(worker)
-
-        self.queue_initialized = True
-
-    def _data_generation_worker(self, worker_id):
-        """Worker thread that generates data and adds it to the queue."""
-        # Set worker-specific random seed
-        np.random.seed(42 + 1000 + worker_id)
-
-        while not self.stop_event.is_set():
-            try:
-                # Generate a batch
-                batch_data = next(self.generate_next_dataset())
-
-                # Try to add to queue with timeout
-                self.data_queue.put(batch_data, timeout=1.0)
-            except queue.Full:
-                # Queue is full, wait briefly and retry
-                time.sleep(0.1)
-                continue
-            except Exception as e:
-                print(f"Error in data generation worker {worker_id}: {e}")
-                # Add a sentinel to avoid deadlocking the training process
-                if not self.stop_event.is_set():
-                    try:
-                        self.data_queue.put(None, timeout=1.0)
-                    except queue.Full:
-                        pass
-                break
 
     def _get_num_variables(self):
         if isinstance(self.num_variables, list):
@@ -375,6 +275,257 @@ class QueuedInterventionDatasetGenerator(IterableDataset):
 
         yield output
 
+
+class QueuedInterventionDatasetGenerator(BaseInterventionDatasetGenerator):
+    """Generate datasets using a function generator with queue-based prefetching.
+    This generates observational data along with interventional datasets in a background
+    thread pool to improve performance.
+
+    Args:
+    ----------
+    function_generator : str
+        The function generator to use.
+
+    num_variables : Union[int, List[int]]
+        The number of variables in the dataset. If a list is provided,
+        the number of variables will be randomly sampled from this list for each dataset.
+
+    sample_size : int
+        The maximum number of samples to generate.
+
+    batch_size : int
+        The number of datasets to generate per batch.
+
+    graph_type : List[str]
+        The type of graph to generate.
+        - "ER": Erdos-Renyi
+        - "SF": Scale-free, Barabasi-Albert
+
+    graph_degrees : List[int]
+        The expected degrees of the graph.
+
+    iterations_per_epoch : Optional[int] = 1000
+        Number of iterations per epoch.
+
+    prefetch_factor : Optional[int] = 2
+        Number of batches to prefetch per worker.
+
+    queue_workers : Optional[int] = 4
+        Number of worker threads for data generation.
+    """
+
+    def __init__(
+        self,
+        function_generator: str,
+        num_variables: Union[int, List[int]],
+        sample_size: int,
+        batch_size: int,
+        graph_type: List[str],
+        graph_degrees: List[int] | dict[int, List[int]],
+        iterations_per_epoch: Optional[int] = 1000,
+        return_functions: Optional[bool] = False,
+        normalise: Optional[bool] = True,
+        show_progress: Optional[bool] = False,
+        same_variablenum_per_batch: Optional[bool] = False,
+        prefetch_factor: Optional[int] = 3,
+        queue_workers: Optional[int] = 2,
+    ):
+        super().__init__(
+            function_generator=function_generator,
+            num_variables=num_variables,
+            sample_size=sample_size,
+            batch_size=batch_size,
+            graph_type=graph_type,
+            graph_degrees=graph_degrees,
+            iterations_per_epoch=iterations_per_epoch,
+            return_functions=return_functions,
+            normalise=normalise,
+            show_progress=show_progress,
+            same_variablenum_per_batch=same_variablenum_per_batch,
+        )
+
+        # Queue parameters
+        self.prefetch_factor = prefetch_factor
+        self.queue_workers = queue_workers
+
+        # Flag to indicate if queue is initialized
+        self.queue_initialized = False
+        self.worker_id = None
+        self.worker_count = None
+
+    def _initialize_queue(self):
+        """Initialize the prefetching queue and worker threads.
+        This is now called in __iter__ to ensure it happens in the worker process."""
+        if self.queue_initialized:
+            return
+
+        # Queue size is based on number of workers and prefetch factor
+        self.queue_size = self.queue_workers * self.prefetch_factor
+        self.data_queue = queue.Queue(maxsize=self.queue_size)
+
+        # Synchronization
+        self.stop_event = threading.Event()
+        self.workers = []
+
+        # Start worker threads (only in the process where this is called)
+        for worker_id in range(self.queue_workers):
+            worker = threading.Thread(
+                target=self._data_generation_worker,
+                args=(
+                    worker_id + (self.worker_id or 0) * 1000,
+                ),  # Ensure unique seeds across processes
+                daemon=True,
+            )
+            worker.start()
+            self.workers.append(worker)
+
+        self.queue_initialized = True
+
+    def _data_generation_worker(self, worker_id):
+        """Worker thread that generates data and adds it to the queue."""
+        # Set worker-specific random seed
+        np.random.seed(42 + 1000 + worker_id)
+
+        while not self.stop_event.is_set():
+            try:
+                # Generate a batch
+                batch_data = next(self.generate_next_dataset())
+
+                # Try to add to queue with timeout
+                self.data_queue.put(batch_data, timeout=1.0)
+            except queue.Full:
+                # Queue is full, wait briefly and retry
+                time.sleep(0.1)
+                continue
+            except Exception as e:
+                print(f"Error in data generation worker {worker_id}: {e}")
+                # Add a sentinel to avoid deadlocking the training process
+                if not self.stop_event.is_set():
+                    try:
+                        self.data_queue.put(None, timeout=1.0)
+                    except queue.Full:
+                        pass
+                break
+
+    # def generate_next_dataset(self):
+    #     """
+    #     Generate the next dataset batch.
+    #     """
+    #     if self.same_variablenum_per_batch:
+    #         current_num_variables = self._get_num_variables()
+    #         max_size = current_num_variables
+    #     else:
+    #         max_size = self.max_num_variables
+
+    #     # Arrays to store data for each batch
+    #     obs_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
+    #     int_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
+    #     causal_graphs_array = np.zeros((self.batch_size, max_size, max_size))
+    #     functions_array = np.zeros((self.batch_size, max_size, 3))
+    #     intvn_indices = np.zeros(self.batch_size, dtype=int)
+    #     variable_counts = np.zeros(self.batch_size, dtype=int)
+    #     masks = np.zeros((self.batch_size, max_size))
+
+    #     # Generate each dataset in the batch
+    #     for b in range(self.batch_size):
+    #         # Sample number of variables
+    #         if not self.same_variablenum_per_batch:
+    #             current_num_variables = self._get_num_variables()
+
+    #         # Sample graph type and expected degree
+    #         expected_node_degree = self.sample_uniform_expected_degree(
+    #             current_num_variables=current_num_variables
+    #         )
+    #         curr_graph_type = np.random.choice(self.graph_type)
+
+    #         # Generate the causal graph
+    #         dag = generate_synthetic_dag(
+    #             d=current_num_variables,
+    #             s0=expected_node_degree,
+    #             graph_type=curr_graph_type,
+    #         )
+
+    #         # Generate data
+    #         current_data_generator = self.data_generator(
+    #             num_variables=current_num_variables,
+    #         )
+
+    #         # Create intervention
+    #         intvn_index = self.randomly_intervene_on_dag(dag)
+
+    #         # Generate data for this graph
+    #         data = current_data_generator.generate_data(
+    #             causal_graph=dag,
+    #             sample_size=self.sample_size,
+    #             intervention_index=intvn_index,
+    #             return_functions=self.return_functions,
+    #             normalise=self.normalise,
+    #         )
+
+    #         # Unpack data
+    #         if self.return_functions:
+    #             obs_data, intvn_data, functions = data
+    #         else:
+    #             obs_data, intvn_data = data
+
+    #         # Permute the data and graphs
+    #         permutation_indices = np.random.permutation(current_num_variables)
+    #         dag = self.permute_causal_graph(
+    #             dag,
+    #             permutation_indices=permutation_indices,
+    #         )[0]
+
+    #         # Find the index of the intervened variable post permutation
+    #         intvn_index = np.where(permutation_indices == intvn_index)[0][0]
+
+    #         # Permute data
+    #         obs_data, intvn_data = self.permute_data(
+    #             obs_data,
+    #             intvn_data,
+    #             permutation_indices=permutation_indices,
+    #         )
+
+    #         # Create mask for valid variables
+    #         mask = np.zeros(max_size)
+    #         mask[:current_num_variables] = 1
+
+    #         # Pad data if necessary
+    #         obs_data = self.pad_data(obs_data, current_num_variables, max_size=max_size)
+    #         intvn_data = self.pad_data(
+    #             intvn_data, current_num_variables, max_size=max_size
+    #         )
+    #         dag = self.pad_data(dag, current_num_variables, max_size=max_size)
+
+    #         # Store data for this dataset
+    #         obs_data_array[b] = obs_data
+    #         int_data_array[b] = intvn_data
+    #         causal_graphs_array[b] = dag
+    #         intvn_indices[b] = intvn_index
+    #         variable_counts[b] = current_num_variables
+    #         masks[b] = mask
+
+    #         if self.return_functions:
+    #             functions = functions[permutation_indices]
+    #             functions_array[b] = functions
+
+    #     # If num_variables is not a list, masks will be None
+    #     if not isinstance(self.num_variables, list):
+    #         masks = None
+
+    #     output = (
+    #         obs_data_array,
+    #         int_data_array,
+    #         causal_graphs_array,
+    #         intvn_indices,
+    #         variable_counts,
+    #         masks,
+    #     )
+
+    #     if self.return_functions:
+    #         output += (functions_array,)
+
+    #     yield output
+
     def __iter__(self):
         """Return an iterator for the dataset."""
         # Get worker info from PyTorch DataLoader
@@ -448,3 +599,238 @@ class QueuedInterventionDatasetGenerator(IterableDataset):
     def __del__(self):
         """Ensure resources are properly released when the object is deleted."""
         self.shutdown()
+
+
+class InterventionDatasetGenerator(BaseInterventionDatasetGenerator):
+    """Generate datasets using a function generator. This will generate
+    observational data along with interventional datasets.
+
+    Args:
+    ----------
+    function_generator : str
+        The function generator to use. This can be one of the following:
+        - "gp": Gaussian process function generator.
+
+    num_variables : Union[int, List[int]]
+        The number of variables in the dataset. If a list is provided,
+        the number of variables will be randomly sampled from this list for each dataset.
+
+    sample_size : int
+        The maximum number of samples to generate.
+
+    batch_size : int
+        The number of datasets to generate.
+
+    graph_type : List[str]
+        The type of graph to generate. This can be one
+        or a list of the following. If it is a list, then for each
+        dataset a different graph type will be sampled.
+        - "ER": Erdos-Renyi
+        - "SF": Scale-free, Barabasi-Albert
+
+    graph_degrees : List[int]
+        The expected degrees of the graph. If it is a list, then for eac
+        dataset the degree will be sampled from this list.
+    """
+
+    def __init__(
+        self,
+        function_generator: str,
+        num_variables: Union[int, List[int]],
+        sample_size: int,
+        batch_size: int,
+        graph_type: List[str],
+        graph_degrees: List[int] | dict[int, List[int]],
+        iterations_per_epoch: Optional[int] = 1000,
+        return_functions: Optional[bool] = False,
+        normalise: Optional[bool] = True,
+        show_progress: Optional[bool] = False,
+        same_variablenum_per_batch: Optional[bool] = False,
+    ):
+        super().__init__(
+            function_generator=function_generator,
+            num_variables=num_variables,
+            sample_size=sample_size,
+            batch_size=batch_size,
+            graph_type=graph_type,
+            graph_degrees=graph_degrees,
+            iterations_per_epoch=iterations_per_epoch,
+            return_functions=return_functions,
+            normalise=normalise,
+            show_progress=show_progress,
+            same_variablenum_per_batch=same_variablenum_per_batch,
+        )
+
+    # def generate_next_dataset(
+    #     self,
+    # ):
+    #     """
+    #     Generate the next dataset point.
+
+    #     This will be done by sampling a causal graph, and then using the data
+    #     generation functions to generate the data.
+
+    #     This will generate the observational and interventional data.
+
+    #     Args:
+    #     ----------
+
+    #     Yields:
+    #     ----------
+    #     obs_data_array : np.ndarray shape (batch_size, sample_size, num_variables)
+    #         The observational data.
+    #     int_data_array : np.ndarray shape (batch_size, sample_size, num_variables)
+    #         The interventional data.
+    #     causal_graphs_array : np.ndarray shape (batch_size, num_variables, num_variables)
+    #         The causal graphs.
+    #     intervened_causal_graphs_array : np.ndarray shape (batch_size, num_variables, num_variables)
+    #         The intervened causal graphs.
+    #     variable_counts : np.ndarray shape (batch_size,)
+    #         The number of variables in each dataset.
+    #     masks : np.ndarray shape (batch_size, max_num_variables)
+    #         Binary masks indicating which variables are valid (1) vs padding (0)
+    #     """
+    #     if self.same_variablenum_per_batch:
+    #         current_num_variables = self._get_num_variables()
+    #         max_size = current_num_variables
+    #     else:
+    #         max_size = self.max_num_variables
+
+    #     # Lists to store data for each batch
+    #     obs_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
+    #     int_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
+    #     causal_graphs_array = np.zeros((self.batch_size, max_size, max_size))
+    #     functions_array = np.zeros((self.batch_size, max_size, 3))
+    #     intvn_indices = np.zeros(self.batch_size, dtype=int)
+    #     variable_counts = np.zeros(self.batch_size, dtype=int)
+    #     masks = np.zeros((self.batch_size, max_size))
+
+    #     # Each batch is a different dataset
+    #     bar = (
+    #         range(self.batch_size)
+    #         if not self.show_progress
+    #         else trange(self.batch_size)
+    #     )
+
+    #     for b in bar:
+    #         # Sample number of variables
+    #         if not self.same_variablenum_per_batch:
+    #             current_num_variables = self._get_num_variables()
+
+    #         # Sample graph type and expected degree
+    #         expected_node_degree = self.sample_uniform_expected_degree(
+    #             current_num_variables=current_num_variables
+    #         )
+    #         curr_graph_type = np.random.choice(self.graph_type)
+    #         # Generate the causal graph
+    #         dag = generate_synthetic_dag(
+    #             d=current_num_variables,
+    #             s0=expected_node_degree,
+    #             graph_type=curr_graph_type,
+    #         )
+
+    #         # Generate data
+    #         current_data_generator = self.data_generator(
+    #             num_variables=current_num_variables,
+    #         )
+    #         # Create interventional DAG
+    #         # We do this by randomly intervening on a variable
+    #         intvn_index = self.randomly_intervene_on_dag(dag)
+
+    #         data = current_data_generator.generate_data(
+    #             causal_graph=dag,
+    #             sample_size=self.sample_size,
+    #             intervention_index=intvn_index,
+    #             return_functions=self.return_functions,
+    #             normalise=self.normalise,
+    #         )
+
+    #         # Unpack data
+    #         if self.return_functions:
+    #             obs_data, intvn_data, functions = data
+    #         else:
+    #             obs_data, intvn_data = data
+
+    #         # Permute the data and graphs
+    #         permutation_indices = np.random.permutation(current_num_variables)
+    #         dag = self.permute_causal_graph(
+    #             dag,
+    #             permutation_indices=permutation_indices,
+    #         )[0]
+    #         # find the index of the intervened variable post permutation
+    #         intvn_index = np.where(permutation_indices == intvn_index)[0][0]
+
+    #         # Permute data
+    #         obs_data, intvn_data = self.permute_data(
+    #             obs_data,
+    #             intvn_data,
+    #             permutation_indices=permutation_indices,
+    #         )
+
+    #         # Create mask for valid variables (1 for valid, 0 for padding)
+    #         mask = np.zeros(max_size)
+    #         mask[:current_num_variables] = 1
+    #         # Pad data if necessary
+    #         # This does not do anything if the number of variables is already the maximum
+    #         obs_data = self.pad_data(obs_data, current_num_variables, max_size=max_size)
+    #         intvn_data = self.pad_data(
+    #             intvn_data, current_num_variables, max_size=max_size
+    #         )
+    #         dag = self.pad_data(dag, current_num_variables, max_size=max_size)
+
+    #         # Store data for this batch
+    #         obs_data_array[b] = obs_data
+    #         int_data_array[b] = intvn_data
+    #         causal_graphs_array[b] = dag
+    #         intvn_indices[b] = intvn_index
+    #         variable_counts[b] = current_num_variables
+    #         masks[b] = mask
+    #         if self.return_functions:
+    #             functions = functions[permutation_indices]
+    #             functions_array[b] = functions
+
+    #     # If num_variables is not a list, masks will be None
+    #     if not isinstance(self.num_variables, list):
+    #         masks = None
+
+    #     output = (
+    #         obs_data_array,
+    #         int_data_array,
+    #         causal_graphs_array,
+    #         intvn_indices,
+    #         variable_counts,
+    #         masks,
+    #     )
+
+    #     if self.return_functions:
+    #         output += (functions_array,)
+
+    #     yield output
+
+    def __iter__(self):
+        # Get worker info for proper sharding
+        worker_info = torch.utils.data.get_worker_info()
+
+        # If no worker info or single worker, use the parent's iterator
+        if worker_info is None:
+            iterations = self.iterations_per_epoch
+            worker_id = 0
+            num_workers = 1
+        else:
+            # Partition iterations among workers
+            iterations = self.iterations_per_epoch // worker_info.num_workers
+            # Handle remainder if needed
+            if worker_info.id < self.iterations_per_epoch % worker_info.num_workers:
+                iterations += 1
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+
+        # Set different random seed for each worker to ensure diversity
+        np.random.seed(42 + worker_id)
+
+        # Generate data for assigned iterations
+        for _ in range(iterations):
+            yield next(self.generate_next_dataset())
+
+    def __len__(self):
+        return self.iterations_per_epoch
