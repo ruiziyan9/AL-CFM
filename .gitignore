@@ -192,3 +192,4 @@ wandb/
 lightning_logs/
 
 *.log.*
+*.nfs*

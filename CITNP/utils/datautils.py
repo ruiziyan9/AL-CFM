@@ -70,7 +70,10 @@ def sample_outcome_index(
         # outcome_index[i] = np.random.choice(
         #     np.delete(np.arange(variable_counts[i]), intvn_index)
         # )
-        outcome_index[i] = np.min(np.delete(np.arange(variable_counts[i]), intvn_index))
+        # outcome_index[i] = (
+        #     np.min(np.delete(np.arange(variable_counts[i]), intvn_index)) + 1
+        # )
+        outcome_index[i] = 1 if intvn_index == 0 else 0
     return outcome_index
 
 
@@ -128,6 +131,10 @@ def transformer_inference_split_withpadding(
             int_data_array = normalise_variable(
                 int_data_array, axis=1, mean=mean_obs, std=std_obs
             )
+            # int_data_array = normalise_variable(
+            #     int_data_array,
+            #     axis=1,
+            # )
 
         context, target = sample_context_and_target(
             obs_data_array,

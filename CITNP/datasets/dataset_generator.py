@@ -2,7 +2,9 @@
 This file contains dataset generators with queue-based prefetching.
 """
 
+import os
 import queue
+import random
 import threading
 import time
 from functools import partial
@@ -407,125 +409,6 @@ class QueuedInterventionDatasetGenerator(BaseInterventionDatasetGenerator):
                         pass
                 break
 
-    # def generate_next_dataset(self):
-    #     """
-    #     Generate the next dataset batch.
-    #     """
-    #     if self.same_variablenum_per_batch:
-    #         current_num_variables = self._get_num_variables()
-    #         max_size = current_num_variables
-    #     else:
-    #         max_size = self.max_num_variables
-
-    #     # Arrays to store data for each batch
-    #     obs_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
-    #     int_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
-    #     causal_graphs_array = np.zeros((self.batch_size, max_size, max_size))
-    #     functions_array = np.zeros((self.batch_size, max_size, 3))
-    #     intvn_indices = np.zeros(self.batch_size, dtype=int)
-    #     variable_counts = np.zeros(self.batch_size, dtype=int)
-    #     masks = np.zeros((self.batch_size, max_size))
-
-    #     # Generate each dataset in the batch
-    #     for b in range(self.batch_size):
-    #         # Sample number of variables
-    #         if not self.same_variablenum_per_batch:
-    #             current_num_variables = self._get_num_variables()
-
-    #         # Sample graph type and expected degree
-    #         expected_node_degree = self.sample_uniform_expected_degree(
-    #             current_num_variables=current_num_variables
-    #         )
-    #         curr_graph_type = np.random.choice(self.graph_type)
-
-    #         # Generate the causal graph
-    #         dag = generate_synthetic_dag(
-    #             d=current_num_variables,
-    #             s0=expected_node_degree,
-    #             graph_type=curr_graph_type,
-    #         )
-
-    #         # Generate data
-    #         current_data_generator = self.data_generator(
-    #             num_variables=current_num_variables,
-    #         )
-
-    #         # Create intervention
-    #         intvn_index = self.randomly_intervene_on_dag(dag)
-
-    #         # Generate data for this graph
-    #         data = current_data_generator.generate_data(
-    #             causal_graph=dag,
-    #             sample_size=self.sample_size,
-    #             intervention_index=intvn_index,
-    #             return_functions=self.return_functions,
-    #             normalise=self.normalise,
-    #         )
-
-    #         # Unpack data
-    #         if self.return_functions:
-    #             obs_data, intvn_data, functions = data
-    #         else:
-    #             obs_data, intvn_data = data
-
-    #         # Permute the data and graphs
-    #         permutation_indices = np.random.permutation(current_num_variables)
-    #         dag = self.permute_causal_graph(
-    #             dag,
-    #             permutation_indices=permutation_indices,
-    #         )[0]
-
-    #         # Find the index of the intervened variable post permutation
-    #         intvn_index = np.where(permutation_indices == intvn_index)[0][0]
-
-    #         # Permute data
-    #         obs_data, intvn_data = self.permute_data(
-    #             obs_data,
-    #             intvn_data,
-    #             permutation_indices=permutation_indices,
-    #         )
-
-    #         # Create mask for valid variables
-    #         mask = np.zeros(max_size)
-    #         mask[:current_num_variables] = 1
-
-    #         # Pad data if necessary
-    #         obs_data = self.pad_data(obs_data, current_num_variables, max_size=max_size)
-    #         intvn_data = self.pad_data(
-    #             intvn_data, current_num_variables, max_size=max_size
-    #         )
-    #         dag = self.pad_data(dag, current_num_variables, max_size=max_size)
-
-    #         # Store data for this dataset
-    #         obs_data_array[b] = obs_data
-    #         int_data_array[b] = intvn_data
-    #         causal_graphs_array[b] = dag
-    #         intvn_indices[b] = intvn_index
-    #         variable_counts[b] = current_num_variables
-    #         masks[b] = mask
-
-    #         if self.return_functions:
-    #             functions = functions[permutation_indices]
-    #             functions_array[b] = functions
-
-    #     # If num_variables is not a list, masks will be None
-    #     if not isinstance(self.num_variables, list):
-    #         masks = None
-
-    #     output = (
-    #         obs_data_array,
-    #         int_data_array,
-    #         causal_graphs_array,
-    #         intvn_indices,
-    #         variable_counts,
-    #         masks,
-    #     )
-
-    #     if self.return_functions:
-    #         output += (functions_array,)
-
-    #     yield output
-
     def __iter__(self):
         """Return an iterator for the dataset."""
         # Get worker info from PyTorch DataLoader
@@ -661,152 +544,6 @@ class InterventionDatasetGenerator(BaseInterventionDatasetGenerator):
             same_variablenum_per_batch=same_variablenum_per_batch,
         )
 
-    # def generate_next_dataset(
-    #     self,
-    # ):
-    #     """
-    #     Generate the next dataset point.
-
-    #     This will be done by sampling a causal graph, and then using the data
-    #     generation functions to generate the data.
-
-    #     This will generate the observational and interventional data.
-
-    #     Args:
-    #     ----------
-
-    #     Yields:
-    #     ----------
-    #     obs_data_array : np.ndarray shape (batch_size, sample_size, num_variables)
-    #         The observational data.
-    #     int_data_array : np.ndarray shape (batch_size, sample_size, num_variables)
-    #         The interventional data.
-    #     causal_graphs_array : np.ndarray shape (batch_size, num_variables, num_variables)
-    #         The causal graphs.
-    #     intervened_causal_graphs_array : np.ndarray shape (batch_size, num_variables, num_variables)
-    #         The intervened causal graphs.
-    #     variable_counts : np.ndarray shape (batch_size,)
-    #         The number of variables in each dataset.
-    #     masks : np.ndarray shape (batch_size, max_num_variables)
-    #         Binary masks indicating which variables are valid (1) vs padding (0)
-    #     """
-    #     if self.same_variablenum_per_batch:
-    #         current_num_variables = self._get_num_variables()
-    #         max_size = current_num_variables
-    #     else:
-    #         max_size = self.max_num_variables
-
-    #     # Lists to store data for each batch
-    #     obs_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
-    #     int_data_array = np.zeros((self.batch_size, self.sample_size, max_size))
-    #     causal_graphs_array = np.zeros((self.batch_size, max_size, max_size))
-    #     functions_array = np.zeros((self.batch_size, max_size, 3))
-    #     intvn_indices = np.zeros(self.batch_size, dtype=int)
-    #     variable_counts = np.zeros(self.batch_size, dtype=int)
-    #     masks = np.zeros((self.batch_size, max_size))
-
-    #     # Each batch is a different dataset
-    #     bar = (
-    #         range(self.batch_size)
-    #         if not self.show_progress
-    #         else trange(self.batch_size)
-    #     )
-
-    #     for b in bar:
-    #         # Sample number of variables
-    #         if not self.same_variablenum_per_batch:
-    #             current_num_variables = self._get_num_variables()
-
-    #         # Sample graph type and expected degree
-    #         expected_node_degree = self.sample_uniform_expected_degree(
-    #             current_num_variables=current_num_variables
-    #         )
-    #         curr_graph_type = np.random.choice(self.graph_type)
-    #         # Generate the causal graph
-    #         dag = generate_synthetic_dag(
-    #             d=current_num_variables,
-    #             s0=expected_node_degree,
-    #             graph_type=curr_graph_type,
-    #         )
-
-    #         # Generate data
-    #         current_data_generator = self.data_generator(
-    #             num_variables=current_num_variables,
-    #         )
-    #         # Create interventional DAG
-    #         # We do this by randomly intervening on a variable
-    #         intvn_index = self.randomly_intervene_on_dag(dag)
-
-    #         data = current_data_generator.generate_data(
-    #             causal_graph=dag,
-    #             sample_size=self.sample_size,
-    #             intervention_index=intvn_index,
-    #             return_functions=self.return_functions,
-    #             normalise=self.normalise,
-    #         )
-
-    #         # Unpack data
-    #         if self.return_functions:
-    #             obs_data, intvn_data, functions = data
-    #         else:
-    #             obs_data, intvn_data = data
-
-    #         # Permute the data and graphs
-    #         permutation_indices = np.random.permutation(current_num_variables)
-    #         dag = self.permute_causal_graph(
-    #             dag,
-    #             permutation_indices=permutation_indices,
-    #         )[0]
-    #         # find the index of the intervened variable post permutation
-    #         intvn_index = np.where(permutation_indices == intvn_index)[0][0]
-
-    #         # Permute data
-    #         obs_data, intvn_data = self.permute_data(
-    #             obs_data,
-    #             intvn_data,
-    #             permutation_indices=permutation_indices,
-    #         )
-
-    #         # Create mask for valid variables (1 for valid, 0 for padding)
-    #         mask = np.zeros(max_size)
-    #         mask[:current_num_variables] = 1
-    #         # Pad data if necessary
-    #         # This does not do anything if the number of variables is already the maximum
-    #         obs_data = self.pad_data(obs_data, current_num_variables, max_size=max_size)
-    #         intvn_data = self.pad_data(
-    #             intvn_data, current_num_variables, max_size=max_size
-    #         )
-    #         dag = self.pad_data(dag, current_num_variables, max_size=max_size)
-
-    #         # Store data for this batch
-    #         obs_data_array[b] = obs_data
-    #         int_data_array[b] = intvn_data
-    #         causal_graphs_array[b] = dag
-    #         intvn_indices[b] = intvn_index
-    #         variable_counts[b] = current_num_variables
-    #         masks[b] = mask
-    #         if self.return_functions:
-    #             functions = functions[permutation_indices]
-    #             functions_array[b] = functions
-
-    #     # If num_variables is not a list, masks will be None
-    #     if not isinstance(self.num_variables, list):
-    #         masks = None
-
-    #     output = (
-    #         obs_data_array,
-    #         int_data_array,
-    #         causal_graphs_array,
-    #         intvn_indices,
-    #         variable_counts,
-    #         masks,
-    #     )
-
-    #     if self.return_functions:
-    #         output += (functions_array,)
-
-    #     yield output
-
     def __iter__(self):
         # Get worker info for proper sharding
         worker_info = torch.utils.data.get_worker_info()
@@ -826,7 +563,9 @@ class InterventionDatasetGenerator(BaseInterventionDatasetGenerator):
             num_workers = worker_info.num_workers
 
         # Set different random seed for each worker to ensure diversity
-        np.random.seed(42 + worker_id)
+        random_seed = int(time.time()) + os.getpid() + random.randint(0, 10000)
+        np.random.seed(random_seed)
+        torch.manual_seed(random_seed)
 
         # Generate data for assigned iterations
         for _ in range(iterations):

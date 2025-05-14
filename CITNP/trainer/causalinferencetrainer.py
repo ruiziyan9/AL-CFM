@@ -87,9 +87,11 @@ class CausalInferenceTrainer:
         elif isinstance(self.train_dataset, ChunkMultipleFileDataset):
             batch_size = 1
             shuffle = True
+            iterable_mode = False
         else:
             shuffle = True
             batch_size = self.dataconfig.batch_size
+            iterable_mode = False
 
         collator = partial(
             transformer_inference_split_withpadding,
@@ -146,7 +148,8 @@ class CausalInferenceTrainer:
         target = target.to(dtype=dtype)
         if masks is not None:
             masks = masks.to(dtype=dtype)
-
+        print(f"Outcome: {outcome_indices}")
+        print(f"Intvn: {intvn_indices}")
         return {
             "context": context,
             "target": target,
@@ -296,7 +299,7 @@ class CausalInferenceTrainer:
 
         # Convert to numpy arrays for safe aggregation
         losses_np = {k: np.array(v) for k, v in losses.items()}
-
+        print(losses_np)
         # Aggregate results
         for key in ["all", "downstream", "upstream", "independent"]:
             if key in losses_np and len(losses_np[key]) > 0:

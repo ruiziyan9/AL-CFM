@@ -236,4 +236,3 @@ if __name__ == "__main__":
             data_end=data_start + 1,
         )
         data_start += 1
-        data_start += 1

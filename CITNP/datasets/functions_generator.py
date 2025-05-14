@@ -216,7 +216,7 @@ class ResNeuralNetFunctions:
         num_parents: int,
     ):
         self.num_parents = num_parents + 1 if num_parents > 0 else 1
-        self.device = th.device("cpu")
+        self.device = th.device("cuda")
         num_blocks = np.random.randint(1, 8)
         hidden_dim = 2 ** np.random.randint(5, 11)
         self.model = th.nn.Sequential(
@@ -382,8 +382,8 @@ class SimpleGPLVMFunctions:
         num_parents: int,
     ):
         self.num_parents = num_parents if num_parents > 0 else 1
-        self.device = th.device("cpu")
-        self.dtype = th.float32
+        self.device = th.device("cuda")
+        self.dtype = th.float64
 
         num_kernels = 3
 
@@ -411,7 +411,7 @@ class SimpleGPLVMFunctions:
 
     def sample_gplvm(self, inputs: np.ndarray) -> np.ndarray:
         """
-        Sample from a GPLVM.
+        Sample from a GPLVM with improved handling for non-positive definite matrices.
         """
         with th.no_grad():
             if inputs.shape[-1] > 1:
@@ -421,19 +421,113 @@ class SimpleGPLVMFunctions:
                 mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
 
             inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
+
+            # Initial computation of covariance
             covariance = self.kernel(inputs, inputs)
+
+            # Symmetrize the covariance matrix
+            covariance = 0.5 * (covariance + covariance.T)
+
+            # Initial jitter value
+            jitter = 1e-6
+            max_attempts = 10
+
+            for attempt in range(max_attempts):
+                try:
+                    # Add jitter to diagonal
+                    jittered_cov = covariance + jitter * th.eye(
+                        inputs.shape[0], device=self.device, dtype=self.dtype
+                    )
+
+                    # Try to create MultivariateNormal distribution
+                    normal_dist = th.distributions.MultivariateNormal(
+                        mean, jittered_cov
+                    )
+
+                    # If we get here, the matrix is PD
+                    noise_value = (
+                        self.noise_dist.sample((inputs.shape[0],))
+                        .to(self.device)
+                        .to(self.dtype)
+                    )
+
+                    noise_sample = normal_dist.sample().to(self.dtype)
+                    output = noise_sample + noise_value.flatten() * th.randn_like(mean)
+                    final_output = output.detach().cpu().numpy().astype(np.float32)
+
+                    return final_output[:, None]
+
+                except (RuntimeError, th.linalg.LinAlgError, ValueError) as e:
+                    # If we get an error, increase jitter and try again
+                    old_jitter = jitter
+                    jitter *= 10  # Increase jitter by an order of magnitude
+
+                    print(
+                        f"Attempt {attempt+1}/{max_attempts}: Matrix not PD with jitter={old_jitter}. "
+                        f"Increasing to {jitter}. Error: {str(e)}"
+                    )
+
+                    # If this is the last attempt, try eigenvalue correction
+                    if attempt == max_attempts - 1:
+                        try:
+                            print("Final attempt: Using eigenvalue correction")
+                            eigvals, eigvecs = th.linalg.eigh(covariance)
+                            min_eig = th.min(eigvals)
+
+                            if min_eig < 1e-6:
+                                # Add the necessary correction to make all eigenvalues positive
+                                correction = (1e-6 - min_eig) + jitter
+                                jittered_cov = covariance + correction * th.eye(
+                                    inputs.shape[0],
+                                    device=self.device,
+                                    dtype=self.dtype,
+                                )
+
+                                normal_dist = th.distributions.MultivariateNormal(
+                                    mean, jittered_cov
+                                )
+                                noise_value = (
+                                    self.noise_dist.sample((inputs.shape[0],))
+                                    .to(self.device)
+                                    .to(self.dtype)
+                                )
+
+                                noise_sample = normal_dist.sample().to(self.dtype)
+                                output = (
+                                    noise_sample
+                                    + noise_value.flatten() * th.randn_like(mean)
+                                )
+                                final_output = (
+                                    output.detach().cpu().numpy().astype(np.float32)
+                                )
+
+                                return final_output[:, None]
+                        except Exception as eigen_error:
+                            print(f"Eigenvalue correction failed: {str(eigen_error)}")
+
+            # If all attempts fail, fall back to a diagonal approximation
+            print(
+                "All attempts to create a PD matrix failed. Falling back to diagonal approximation."
+            )
+            diag_cov = th.diag(
+                th.diag(covariance)
+            )  # Extract diagonal and create diagonal matrix
+            diag_cov = diag_cov + 1e-6 * th.eye(
+                inputs.shape[0], device=self.device, dtype=self.dtype
+            )
+
+            normal_dist = th.distributions.MultivariateNormal(mean, diag_cov)
+
             noise_value = (
                 self.noise_dist.sample((inputs.shape[0],))
                 .to(self.device)
                 .to(self.dtype)
             )
-            covariance = covariance + 1e-3 * th.eye(
-                inputs.shape[0], device=self.device, dtype=self.dtype
-            )
-            normal_dist = th.distributions.MultivariateNormal(mean, covariance)
+
             noise_sample = normal_dist.sample().to(self.dtype)
             output = noise_sample + noise_value.flatten() * th.randn_like(mean)
             final_output = output.detach().cpu().numpy().astype(np.float32)
+
             return final_output[:, None]
 
     def __call__(self, inputs: np.ndarray) -> np.ndarray:
