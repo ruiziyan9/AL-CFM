@@ -70,10 +70,8 @@ def sample_outcome_index(
         # outcome_index[i] = np.random.choice(
         #     np.delete(np.arange(variable_counts[i]), intvn_index)
         # )
-        # outcome_index[i] = (
-        #     np.min(np.delete(np.arange(variable_counts[i]), intvn_index)) + 1
-        # )
-        outcome_index[i] = 1 if intvn_index == 0 else 0
+        outcome_index[i] = np.min(np.delete(np.arange(variable_counts[i]), intvn_index))
+        # outcome_index[i] = 1 if intvn_index == 0 else 0
     return outcome_index
 
 

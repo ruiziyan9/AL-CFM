@@ -216,7 +216,7 @@ class ResNeuralNetFunctions:
         num_parents: int,
     ):
         self.num_parents = num_parents + 1 if num_parents > 0 else 1
-        self.device = th.device("cuda")
+        self.device = th.device("cpu")
         num_blocks = np.random.randint(1, 8)
         hidden_dim = 2 ** np.random.randint(5, 11)
         self.model = th.nn.Sequential(
@@ -382,8 +382,8 @@ class SimpleGPLVMFunctions:
         num_parents: int,
     ):
         self.num_parents = num_parents if num_parents > 0 else 1
-        self.device = th.device("cuda")
-        self.dtype = th.float64
+        self.device = th.device("cpu")
+        self.dtype = th.float32
 
         num_kernels = 3
 
@@ -551,11 +551,9 @@ class DataGenerator(ABC):
     Base class for all causal data generators.
     """
 
-    def __init__(
-        self,
-        num_variables: int,
-    ):
+    def __init__(self, num_variables: int, intervention_range_multiplier: float):
         self.number_of_variables = num_variables
+        self.intervention_range_multiplier = intervention_range_multiplier
 
     def _get_inputs(self, parents_of_i: np.ndarray, data: np.ndarray) -> np.ndarray:
         """
@@ -623,7 +621,9 @@ class DataGenerator(ABC):
             # Intervention on i we set the parents to 0
             if i == intervention_index:
                 variable_intvn = np.random.normal(
-                    loc=0, scale=1.0, size=(sample_size, 1)
+                    loc=0,
+                    scale=self.intervention_range_multiplier,
+                    size=(sample_size, 1),
                 )
                 variable_obs = function_for_i(obs_inputs)
                 if normalise:

@@ -45,16 +45,16 @@ def main(args: argparse.Namespace):
 
     few_nodes_graph_degrees = {
         5: np.arange(5, 10, dtype=int).tolist(),
-        6: np.arange(6, 15, dtype=int).tolist(),
-        7: np.arange(7, 21, dtype=int).tolist(),
-        8: np.arange(8, 28, dtype=int).tolist(),
-        9: np.arange(9, 36, dtype=int).tolist(),
-        10: np.arange(10, 45, dtype=int).tolist(),
-        11: np.arange(11, 55, dtype=int).tolist(),
-        12: np.arange(12, 66, dtype=int).tolist(),
+        6: np.arange(3, 15, dtype=int).tolist(),
+        7: np.arange(4, 21, dtype=int).tolist(),
+        8: np.arange(4, 28, dtype=int).tolist(),
+        9: np.arange(5, 36, dtype=int).tolist(),
+        10: np.arange(5, 45, dtype=int).tolist(),
+        11: np.arange(6, 55, dtype=int).tolist(),
+        12: np.arange(6, 66, dtype=int).tolist(),
     }
     large_graph_degrees = {
-        k: np.arange(k, 6 * k, dtype=int).tolist() for k in range(13, 51)
+        k: np.arange(k // 2, 6 * k, dtype=int).tolist() for k in range(13, 51)
     }
     graph_degrees = {**few_nodes_graph_degrees, **large_graph_degrees}
 
@@ -67,10 +67,11 @@ def main(args: argparse.Namespace):
         "iterations_per_epoch": args.iterations_per_epoch,
         "batch_size": args.batch_size,
         "same_variablenum_per_batch": True,
+        "intervention_range_multiplier": 4,
     }
 
     train_dataset = QueuedInterventionDatasetGenerator(
-        **DATA_ARGS, prefetch_factor=5, queue_workers=4
+        **DATA_ARGS, prefetch_factor=4, queue_workers=2
     )
     DATA_ARGS.pop("iterations_per_epoch")
     val_dataset = QueuedInterventionDatasetGenerator(

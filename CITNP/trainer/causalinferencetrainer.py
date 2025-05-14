@@ -148,8 +148,6 @@ class CausalInferenceTrainer:
         target = target.to(dtype=dtype)
         if masks is not None:
             masks = masks.to(dtype=dtype)
-        print(f"Outcome: {outcome_indices}")
-        print(f"Intvn: {intvn_indices}")
         return {
             "context": context,
             "target": target,

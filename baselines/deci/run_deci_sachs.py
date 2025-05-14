@@ -19,6 +19,8 @@ from pytorch_lightning.callbacks import TQDMProgressBar
 from tensordict import TensorDict
 from tqdm import tqdm
 
+from CITNP.utils.processing import normalise_variable
+
 test_run = bool(
     os.environ.get("TEST_RUN", False)
 )  # used by testing to run the notebook as a script
@@ -135,6 +137,11 @@ def main(
         obs_data = all_obs_data[i]
         int_data = all_int_data[i]
         intvn_indices = all_intvn_indices[i]
+
+        obs_data, mean_obs, std_obs = normalise_variable(
+            obs_data, axis=0, return_stats=True
+        )
+        int_data = normalise_variable(int_data, axis=0, mean=mean_obs, std=std_obs)
 
         data_pd = convert_data_to_pd(obs_data)
         data_module = BasicDECIDataModule(

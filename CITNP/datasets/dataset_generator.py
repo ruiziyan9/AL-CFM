@@ -48,6 +48,7 @@ class BaseInterventionDatasetGenerator(IterableDataset):
         normalise: Optional[bool] = True,
         show_progress: Optional[bool] = False,
         same_variablenum_per_batch: Optional[bool] = False,
+        intervention_range_multiplier: int = 4,
     ):
         # Initialize parameters
         self.function_generator = function_generator
@@ -64,6 +65,8 @@ class BaseInterventionDatasetGenerator(IterableDataset):
         self.normalise = normalise
         self.show_progress = show_progress
         self.same_variablenum_per_batch = same_variablenum_per_batch
+        # Multiplier on the obs data scale to sample interventions from
+        self.intervention_range_multiplier = intervention_range_multiplier
 
         # Set up function generator
         valid_generators = {
@@ -82,7 +85,10 @@ class BaseInterventionDatasetGenerator(IterableDataset):
         }
 
         if self.function_generator in valid_generators:
-            self.data_generator = partial(valid_generators[self.function_generator])
+            self.data_generator = partial(
+                valid_generators[self.function_generator],
+                intervention_range_multiplier=self.intervention_range_multiplier,
+            )
         else:
             valid_types = ", ".join(valid_generators.keys())
             raise ValueError(
@@ -331,6 +337,7 @@ class QueuedInterventionDatasetGenerator(BaseInterventionDatasetGenerator):
         same_variablenum_per_batch: Optional[bool] = False,
         prefetch_factor: Optional[int] = 3,
         queue_workers: Optional[int] = 2,
+        intervention_range_multiplier: float = 4,
     ):
         super().__init__(
             function_generator=function_generator,
@@ -344,6 +351,7 @@ class QueuedInterventionDatasetGenerator(BaseInterventionDatasetGenerator):
             normalise=normalise,
             show_progress=show_progress,
             same_variablenum_per_batch=same_variablenum_per_batch,
+            intervention_range_multiplier=intervention_range_multiplier,
         )
 
         # Queue parameters
@@ -529,6 +537,7 @@ class InterventionDatasetGenerator(BaseInterventionDatasetGenerator):
         normalise: Optional[bool] = True,
         show_progress: Optional[bool] = False,
         same_variablenum_per_batch: Optional[bool] = False,
+        intervention_range_multiplier: float = 4,
     ):
         super().__init__(
             function_generator=function_generator,
@@ -542,6 +551,7 @@ class InterventionDatasetGenerator(BaseInterventionDatasetGenerator):
             normalise=normalise,
             show_progress=show_progress,
             same_variablenum_per_batch=same_variablenum_per_batch,
+            intervention_range_multiplier=intervention_range_multiplier,
         )
 
     def __iter__(self):
