@@ -42,7 +42,13 @@ def save_dataframe(
 
 
 def create_header(num_vars: int):
-    header = [f"X{i}" for i in range(num_vars)]
+    header = []
+    for i in range(num_vars):
+        if isinstance(i, int):
+            header.append(f"X{i}")
+        else:
+            header.append(i.item())
+    # header = [f"X{i.item()}" for i in range(num_vars)]
     return header
 
 
@@ -81,7 +87,7 @@ def main(
 ):
     # Load data
     data = load_data(data_path)
-    num_vars = data["variable_counts"][0]
+    num_vars = data["variable_counts"].item() -1
 
     header = create_header(num_vars)
 
@@ -92,7 +98,7 @@ def main(
     for dataset in range(num_datasets):
 
         # Causal graph
-        unformatted_causal_graph = data["causal_graphs"][dataset]
+        unformatted_causal_graph = data["causal_graphs"][dataset][:num_vars, :num_vars]
         causal_graph = format_obs_data(
             unformatted_causal_graph,
             header,
@@ -113,8 +119,8 @@ def main(
 
 if __name__ == "__main__":
 
-    data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/40var_ER4_neuralgplvm_1000/test"
-    data_path = Path(data_folder) / "data_idx40.hdf5"
+    data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/sachs/test"
+    data_path = Path(data_folder) / "data_idx1.hdf5"
 
     save_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"

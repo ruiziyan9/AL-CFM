@@ -105,6 +105,7 @@ def main(
         "normalise": True,
         "return_functions": False,
         "show_progress": True,
+        "intervention_range_multiplier": 1,
     }
     print(num_variables)
     generator = InterventionDatasetGenerator(**GENERATOR_ARGS)  # type: ignore
@@ -128,24 +129,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_end", type=int, default=1, help="Index to end saving data."
     )
-    parser.add_argument("--var_start", type=int, default=8)
-    parser.add_argument("--var_end", type=int, default=15)
+    parser.add_argument("--var_start", type=int, default=20)
+    parser.add_argument("--var_end", type=int, default=21)
     parser.add_argument(
         "--split",
         type=str,
         choices=["train", "val", "test"],
-        default="train",
+        default="test",
         help="Dataset split to create.",
     )
     parser.add_argument(
         "--name_prefix",
         type=str,
-        default="sachs_alldata",
+        default="TEST",
         help="Optional prefix to prepend to save folder name.",
     )
     args = parser.parse_args()
 
-    save_dir = Path("synth_training_data")
+    save_dir = Path(
+        "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data"
+    )
     save_dir.mkdir(parents=True, exist_ok=True)
 
     few_nodes_graph_degrees = {
@@ -163,8 +166,8 @@ if __name__ == "__main__":
     }
     graph_degrees = {**few_nodes_graph_degrees, **large_graph_degrees}
 
-    graph_type = ["ER", "SF"]
-    function_generator = "resnetgplvm"
+    graph_type = ["ER"]
+    function_generator = "resnet"
 
     all_num_var = np.arange(args.var_start, args.var_end, dtype=int).tolist()
 
@@ -180,7 +183,7 @@ if __name__ == "__main__":
             split=args.split,
             name_prefix=args.name_prefix,
             num_variables=num_var,
-            graph_degrees=graph_degrees,
+            graph_degrees=[20 * 4],
             graph_type=graph_type,
             function_generator=function_generator,
         )

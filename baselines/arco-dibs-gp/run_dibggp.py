@@ -179,7 +179,7 @@ if __name__ == "__main__":
     data_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
     )
-    data_name = "40var_ER4_neuralgplvm_1000"
+    data_name = "20var_ER4_neuralgplvm_1000"
     data_path = data_folder / data_name
 
     num_datasets = 100

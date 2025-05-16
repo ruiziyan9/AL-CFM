@@ -1,9 +1,11 @@
 import argparse
 import os
+from functools import partial
 from pathlib import Path
 from typing import List
 
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
@@ -11,11 +13,13 @@ import torch
 from causica.datasets.causica_dataset_format import Variable
 from causica.datasets.tensordict_utils import expand_td_with_batch_shape
 from causica.distributions import ContinuousNoiseDist
-from causica.lightning.data_modules.basic_data_module import BasicDECIDataModule
+from causica.lightning.data_modules.basic_data_module import \
+    BasicDECIDataModule
 from causica.lightning.modules.deci_module import DECIModule
 from causica.sem.distribution_parameters_sem import DistributionParametersSEM
 from causica.training.auglag import AugLagLRConfig
 from pytorch_lightning.callbacks import TQDMProgressBar
+from scipy.special import logsumexp
 from tensordict import TensorDict
 from tqdm import tqdm
 
@@ -63,11 +67,34 @@ def per_variable_log_prob(value: TensorDict, do_sem: DistributionParametersSEM):
     """
     expanded_value = expand_td_with_batch_shape(value, do_sem.batch_shape)
     noise_object = do_sem.noise_dist(do_sem.func(expanded_value, do_sem.graph))
-    log_probs = [
-        noise_dist.log_prob(value[name])
+    log_probs = {
+        name: noise_dist.log_prob(value[name])
         for name, noise_dist in noise_object._independent_noise_dists.items()
-    ]
-    return torch.stack(log_probs, dim=0)
+    }
+    return log_probs
+
+
+def append_to_dict(dict_to_append, dict):
+    for key, value in dict.items():
+        if key in dict_to_append:
+            dict_to_append[key].append(value)
+        else:
+            dict_to_append[key] = [value]
+
+
+def apply_to_dict(func, dict):
+    return {key: func(tensors) for key, tensors in dict.items()}
+
+
+def calculate_neg_log_prob(log_prob):
+    graph_sample_size = log_prob.shape[0]
+    all_sample_log_prob = log_prob.sum(1)
+    log_sum_exp = logsumexp(
+        all_sample_log_prob,
+        axis=0
+    ) - np.log(graph_sample_size)
+
+    return -1 * log_sum_exp
 
 
 def calculate_intvn_dist(
@@ -82,31 +109,50 @@ def calculate_intvn_dist(
     outcome_idx = 1 if intvn_indices == 0 else 0
     outcome_node = int_data[:, outcome_idx]
 
-    all_scm_log_prob = np.zeros((len(sem_list), outcome_node.shape[0]))
-    for sem_idx, sem in tqdm(enumerate(sem_list)):
-        outcome_log_prob = np.zeros_like(outcome_node)
+    if hasattr(data_module, "normalizer"):
+        normalizer = data_module.normalizer
+    else:
+        normalizer = None
+
+    all_scm_log_prob = {}
+    all_samples = np.zeros((10, outcome_node.shape[0]))
+    for sem_idx, sem in tqdm(enumerate(sem_list), total=len(sem_list)):
+        all_var_log_prob = {}
         for idx, curr_int in enumerate(int_values):
 
             int_dict = TensorDict(
-                {f"X{intvn_indices}": curr_int[None]}, batch_size=tuple()
+                {f"X{intvn_indices.item()}": curr_int}, batch_size=tuple()
             )
             do_sem = sem.do(
                 interventions=int_dict,
             )
 
+            if sem_idx < 10:
+                samples = do_sem.sample(torch.Size([1]))
+                if normalizer is not None:
+                    outcome_samples = normalizer.inv(samples)[f"X{outcome_idx}"]
+                else:
+                    outcome_samples = samples[f"X{outcome_idx}"]
+
+                all_samples[sem_idx, idx] = outcome_samples
             # Gives out log prob of var in order of 0, 1, 2
             # but skips the intventioned variable
             # So we can safely take the first one
             var_log_prob = (
-                per_variable_log_prob(int_data_dict[idx : idx + 1], do_sem)[0]
-                .detach()
-                .cpu()
-                .numpy()
+                per_variable_log_prob(int_data_dict[idx : idx + 1], do_sem)
             )
+            all_var_log_prob
 
-            outcome_log_prob[idx] = var_log_prob
-        all_scm_log_prob[sem_idx] = outcome_log_prob
-    return -1 * all_scm_log_prob.mean(axis=0).sum()
+            append_to_dict(all_var_log_prob, var_log_prob)
+
+        final_dict = apply_to_dict(partial(np.concatenate, axis=0), all_var_log_prob)
+
+        append_to_dict(all_scm_log_prob, final_dict)
+
+    all_scm_log_prob = apply_to_dict(partial(np.stack, axis=0), all_scm_log_prob)
+
+    neg_log_prob_dict = apply_to_dict(calculate_neg_log_prob, all_scm_log_prob)
+    return neg_log_prob_dict, all_samples
 
 
 def main(
@@ -146,7 +192,7 @@ def main(
         data_pd = convert_data_to_pd(obs_data)
         data_module = BasicDECIDataModule(
             dataframe=data_pd,
-            normalize=True,
+            normalize=False,
             batch_size=128,
             variables=[
                 Variable(group_name=f"X{i}", name=f"X{i}")
@@ -157,7 +203,7 @@ def main(
         int_data_pd = convert_data_to_pd(int_data)
         int_data_module = BasicDECIDataModule(
             dataframe=int_data_pd,
-            normalize=True,
+            normalize=False,
             batch_size=128,
             variables=[
                 Variable(group_name=f"X{i}", name=f"X{i}")
@@ -196,20 +242,34 @@ def main(
 
         sem_module = lightning_module.sem_module
         sem_dist = sem_module()
-        sem_samples = sem_dist.sample(sample_shape=torch.Size([128]))
+        sem_samples = sem_dist.sample(sample_shape=torch.Size([100]))
 
-        average_neg_log_prob = calculate_intvn_dist(
-            data_module=data_module,
-            sem_list=sem_samples,
-            intvn_indices=intvn_indices,
-            int_data=int_data,
-            int_data_dict=int_data_module.dataset_train,
-        )
+        with torch.no_grad():
+            average_neg_log_prob, all_samples = calculate_intvn_dist(
+                data_module=data_module,
+                sem_list=sem_samples,
+                intvn_indices=intvn_indices,
+                int_data=int_data,
+                int_data_dict=int_data_module.dataset_train,
+            )
+
+        # Plot the interventional data and samples
+        outcome_idx = 1 if intvn_indices == 0 else 0
+        plt.scatter(int_data[:, intvn_indices], int_data[:, outcome_idx], label="outcome")
+        for sample_idx in range(all_samples.shape[0]):
+            if sample_idx == 0:
+                label = "sample"
+            else:
+                label = None
+            plt.scatter(int_data[:, intvn_indices], all_samples[sample_idx, :], label=label, alpha=0.05, color="red")
+            plt.legend()
+        plt.savefig(f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/deci/sachs_{data_start}.png")
+        plt.close()
 
         # Save the results
         save_name = data_path_name + f"_deci_nlpd_data{data_start}.csv"
         save_path = result_folder / save_name
-        df = pd.DataFrame([average_neg_log_prob], columns=["NLL"])
+        df = pd.DataFrame([average_neg_log_prob])
         df.to_csv(save_path, index=False)
 
         print(f"Average log prob for dataset {i}: {average_neg_log_prob}")
@@ -225,21 +285,34 @@ if __name__ == "__main__":
         "data_idx3",
         "data_idx4",
     ]
-    data_start = 1
 
-    for data_name in all_data_names:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data_start",
+        type=int,
+        default=0,
+        help="data_start",
+    )
+    parser.add_argument(
+        "--data_end",
+        type=int,
+        default=5,
+        help="data_end",
+    )
+    args = parser.parse_args()
 
-        data_path = Path(
-            f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/{data_path_name}/test/{data_name}.hdf5"
-        )
+    data_name = all_data_names[args.data_start]
 
-        sample_size = 500
+    data_path = Path(
+        f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/{data_path_name}/test/{data_name}.hdf5"
+    )
 
-        main(
-            data_path=data_path,
-            data_path_name=data_path_name,
-            sample_size=sample_size,
-            data_start=data_start,
-            data_end=data_start + 1,
-        )
-        data_start += 1
+    sample_size = 500
+
+    main(
+        data_path=data_path,
+        data_path_name=data_path_name,
+        sample_size=sample_size,
+        data_start=args.data_start,
+        data_end=args.data_end,
+    )

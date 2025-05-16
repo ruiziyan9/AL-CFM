@@ -10,26 +10,17 @@ from typing import Union
 import torch
 from torch.optim import Adam
 
-from CITNP.models.causalinferencemodel import (
-    CausalInferenceModel,
-    LocalLatentCausalInferenceModel,
-    MoGCausalInferenceModel,
-)
-from CITNP.trainer.callbacks import (
-    CheckpointCallback,
-    LRSchedulerCallback,
-    ProgressBarCallback,
-    WandbLoggingCallback,
-)
+from CITNP.models.causalinferencemodel import (CausalInferenceModel,
+                                               LocalLatentCausalInferenceModel,
+                                               MoGCausalInferenceModel)
+from CITNP.trainer.callbacks import (CheckpointCallback, LRSchedulerCallback,
+                                     ProgressBarCallback, WandbLoggingCallback)
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.datautils import MultipleFileDataset
 from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
-from CITNP.utils.utils import (
-    _generate_experiment_name,
-    convert_trainerdict_to_config,
-    set_seed,
-)
+from CITNP.utils.utils import (_generate_experiment_name,
+                               convert_trainerdict_to_config, set_seed)
 
 
 def main(args: argparse.Namespace):

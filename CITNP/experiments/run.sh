@@ -11,13 +11,14 @@ python3 iterable_train.py \
     --num_mixture_components=10 \
     --batch_size=8 \
     --learning_rate=0.0005 \
-    --run_name="resnet_intmult4_8to14var" \
+    --run_name="resnet_intmult1_8to14var" \
     --sample_size=1200 \
     --epochs=4 \
     --mean_loss_across_samples \
     --lr_warmup_ratio=0.01 \
-    --num_workers=8 \
+    --num_workers=6 \
     --iterations_per_epoch=125000 \
     --log_step=1000 \
     --sample_attn_mode="MHCA" \
+    --intervention_range_multiplier=1 \
     --results_path="/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/experiments" \

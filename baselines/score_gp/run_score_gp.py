@@ -26,7 +26,8 @@ from run_arcogp import get_intvn_index, load_data, load_data_into_environment
 from src.environments.environment import Environment
 from src.environments.experiment import Experiment
 from src.mechanism_models.mechanisms import get_mechanism_key
-from src.mechanism_models.shared_data_gp_model import SharedDataGaussianProcessModel
+from src.mechanism_models.shared_data_gp_model import \
+    SharedDataGaussianProcessModel
 from src.utils.graphs import get_parents
 
 
@@ -138,7 +139,7 @@ if __name__ == "__main__":
     data_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
     )
-    data_name = "40var_ER4_neuralgplvm_1000"
+    data_name = "20var_ER4_neuralgplvm_1000"
     data_path = data_folder / data_name
 
     num_datasets = 100

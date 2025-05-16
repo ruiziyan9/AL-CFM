@@ -382,32 +382,30 @@ class SimpleGPLVMFunctions:
         num_parents: int,
     ):
         self.num_parents = num_parents if num_parents > 0 else 1
-        self.device = th.device("cpu")
-        self.dtype = th.float32
+        self.device = th.device("cuda")
+        self.dtype = th.float64
 
-        num_kernels = 3
+        # num_kernels = 3
 
-        lengthscale_values = np.random.lognormal(
-            -0.75, 1, size=(num_kernels, self.num_parents + 1)
-        )
-        lengthscale_values = np.clip(lengthscale_values, 0.2, 5)
+        lengthscale_values = np.random.lognormal(-0.5, 1, size=(self.num_parents + 1))
+        lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
-        gamma_values = np.random.uniform(0.2, 1, size=(num_kernels,))
+        # gamma_values = np.random.uniform(0.2, 1, size=(num_kernels,))
         # Define the kernel
-        self.kernel = SumExpGammaKernels(
-            num_kernels=num_kernels,
-            gamma_vals=th.from_numpy(gamma_values).to(self.device),
-            lengthscale_vals=th.from_numpy(lengthscale_values).to(self.device),
-        )
-        # self.kernel = RBFKernel(
-        #     lengthscale=th.from_numpy(lengthscale_values)
-        #     .to(self.device)
-        #     .to(self.dtype),
+        # self.kernel = SumExpGammaKernels(
+        #     num_kernels=num_kernels,
+        #     gamma_vals=th.from_numpy(gamma_values).to(self.device),
+        #     lengthscale_vals=th.from_numpy(lengthscale_values).to(self.device),
         # )
-        if np.random.rand() > 0.5:
-            self.latent_dist = partial(np.random.normal, loc=0, scale=1.0)
-        else:
-            self.latent_dist = partial(np.random.uniform, low=-1, high=1)
+        self.kernel = RBFKernel(
+            lengthscale=th.from_numpy(lengthscale_values)
+            .to(self.device)
+            .to(self.dtype),
+        )
+        # if np.random.rand() > 0.5:
+        self.latent_dist = partial(np.random.normal, loc=0, scale=1.0)
+        # else:
+        #     self.latent_dist = partial(np.random.uniform, low=-1, high=1)
 
     def sample_gplvm(self, inputs: np.ndarray) -> np.ndarray:
         """
@@ -426,10 +424,10 @@ class SimpleGPLVMFunctions:
             covariance = self.kernel(inputs, inputs)
 
             # Symmetrize the covariance matrix
-            covariance = 0.5 * (covariance + covariance.T)
+            # covariance = 0.5 * (covariance + covariance.T)
 
             # Initial jitter value
-            jitter = 1e-6
+            jitter = 1e-4
             max_attempts = 10
 
             for attempt in range(max_attempts):
@@ -620,23 +618,26 @@ class DataGenerator(ABC):
             obs_inputs = self._get_inputs(parents_of_i, obs_data)
             # Intervention on i we set the parents to 0
             if i == intervention_index:
+                variable_obs = function_for_i(obs_inputs)
+                # variable_intvn = np.random.normal(
+                #     loc=np.mean(variable_obs, axis=0),
+                #     scale=self.intervention_range_multiplier * np.std(variable_obs, axis=0),
+                #     size=(sample_size, 1),
+                # )
                 variable_intvn = np.random.normal(
                     loc=0,
                     scale=self.intervention_range_multiplier,
                     size=(sample_size, 1),
                 )
-                variable_obs = function_for_i(obs_inputs)
                 if normalise:
-                    obs_inputs = normalise_variable(obs_inputs, axis=0)
-                    variable_obs = normalise_variable(variable_obs, axis=0)
+                    variable_obs, mean_obs, std_obs = normalise_variable(variable_obs, axis=0, return_stats=True)
+                    # variable_intvn = normalise_variable(variable_intvn, axis=0, mean=mean_obs, std=std_obs)
             else:
                 intvn_parents_of_i = parents_of_i
                 intvn_inputs = self._get_inputs(intvn_parents_of_i, intvn_data)
 
                 full_inputs = np.concatenate([obs_inputs, intvn_inputs], axis=0)
-                # Pass the inputs to the function
-                if normalise:
-                    full_inputs = normalise_variable(full_inputs, axis=0)
+
                 variable = function_for_i(full_inputs)
 
                 variable_obs = variable[:sample_size]

@@ -67,7 +67,7 @@ def main(args: argparse.Namespace):
         "iterations_per_epoch": args.iterations_per_epoch,
         "batch_size": args.batch_size,
         "same_variablenum_per_batch": True,
-        "intervention_range_multiplier": 4,
+        "intervention_range_multiplier": args.intervention_range_multiplier,
     }
 
     train_dataset = QueuedInterventionDatasetGenerator(

@@ -132,6 +132,7 @@ def parse_default_args():
     parser.add_argument(
         "--num_variables", type=int, default=2, help="Number of variables."
     )
+    parser.add_argument("--intervention_range_multiplier", type=int, default=4)
     parser.add_argument(
         "--function_generator",
         type=str,

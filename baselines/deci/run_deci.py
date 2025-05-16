@@ -11,11 +11,13 @@ import torch
 from causica.datasets.causica_dataset_format import Variable
 from causica.datasets.tensordict_utils import expand_td_with_batch_shape
 from causica.distributions import ContinuousNoiseDist
-from causica.lightning.data_modules.basic_data_module import BasicDECIDataModule
+from causica.lightning.data_modules.basic_data_module import \
+    BasicDECIDataModule
 from causica.lightning.modules.deci_module import DECIModule
 from causica.sem.distribution_parameters_sem import DistributionParametersSEM
 from causica.training.auglag import AugLagLRConfig
 from pytorch_lightning.callbacks import TQDMProgressBar
+from scipy.special import logsumexp
 from tensordict import TensorDict
 from tqdm import tqdm
 
@@ -86,7 +88,6 @@ def calculate_intvn_dist(
     for sem_idx, sem in tqdm(enumerate(sem_list), total=len(sem_list)):
         outcome_log_prob = np.zeros_like(outcome_node)
         for idx, curr_int in enumerate(int_values):
-
             int_dict = TensorDict(
                 {f"X{intvn_indices}": curr_int[None]}, batch_size=tuple()
             )
@@ -99,14 +100,23 @@ def calculate_intvn_dist(
             # So we can safely take the first one
             var_log_prob = (
                 per_variable_log_prob(int_data_dict[idx : idx + 1], do_sem)[0]
+                # per_variable_log_prob(int_dict, do_sem)[0]
                 .detach()
                 .cpu()
                 .numpy()
             )
 
             outcome_log_prob[idx] = var_log_prob
+
         all_scm_log_prob[sem_idx] = outcome_log_prob
-    return -1 * all_scm_log_prob.mean(axis=0).sum()
+
+    graph_sample_size = all_scm_log_prob.shape[0]
+    all_sample = all_scm_log_prob.sum(1)
+    log_sum_exp = logsumexp(
+        all_sample,
+        axis=0
+    ) - np.log(graph_sample_size)
+    return -1 * log_sum_exp
 
 
 def main(
@@ -127,9 +137,18 @@ def main(
 
     data = load_data(data_path)
 
-    all_obs_data = data["obs_data"][:, :sample_size, :]
-    all_int_data = data["int_data"][:, :sample_size, :]
+    all_obs_data = data["obs_data"]
+    all_int_data = data["int_data"]
     all_intvn_indices = data["intvn_indices"]
+
+    # synthetic data should already be normalised
+    all_obs_data, mean_obs, std_obs = normalise_variable(
+        all_obs_data, axis=0, return_stats=True
+    )
+    all_int_data = normalise_variable(all_int_data, axis=0, mean=mean_obs, std=std_obs)
+
+    all_obs_data = all_obs_data[:, :sample_size]
+    all_int_data = all_int_data[:, :sample_size]
 
     for i in range(data_start, data_end):
         pl.seed_everything(seed=1)  # set the random seed
@@ -138,15 +157,10 @@ def main(
         int_data = all_int_data[i]
         intvn_indices = all_intvn_indices[i]
 
-        obs_data, mean_obs, std_obs = normalise_variable(
-            obs_data, axis=0, return_stats=True
-        )
-        int_data = normalise_variable(int_data, axis=0, mean=mean_obs, std=std_obs)
-
         data_pd = convert_data_to_pd(obs_data)
         data_module = BasicDECIDataModule(
             dataframe=data_pd,
-            normalize=True,
+            normalize=False,
             batch_size=128,
             variables=[
                 Variable(group_name=f"X{i}", name=f"X{i}")
@@ -157,7 +171,7 @@ def main(
         int_data_pd = convert_data_to_pd(int_data)
         int_data_module = BasicDECIDataModule(
             dataframe=int_data_pd,
-            normalize=True,
+            normalize=False,
             batch_size=128,
             variables=[
                 Variable(group_name=f"X{i}", name=f"X{i}")
@@ -187,7 +201,7 @@ def main(
         trainer = pl.Trainer(
             accelerator="auto",
             max_epochs=2000,
-            # max_epochs=10,
+            # max_epochs=1,
             fast_dev_run=test_run,
             callbacks=[TQDMProgressBar(refresh_rate=19)],
             enable_checkpointing=False,
@@ -196,7 +210,7 @@ def main(
 
         sem_module = lightning_module.sem_module
         sem_dist = sem_module()
-        sem_samples = sem_dist.sample(sample_shape=torch.Size([128]))
+        sem_samples = sem_dist.sample(sample_shape=torch.Size([100]))
 
         average_neg_log_prob = calculate_intvn_dist(
             data_module=data_module,
@@ -216,8 +230,8 @@ def main(
 
 
 if __name__ == "__main__":
-    data_path_name = "40var_ER4_neuralgplvm_1000"
-    data_name = "data_idx40"
+    data_path_name = "20var_ER4_neuralgplvm_1000"
+    data_name = "data_idx20_0"
 
     data_path = Path(
         f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/{data_path_name}/test/{data_name}.hdf5"

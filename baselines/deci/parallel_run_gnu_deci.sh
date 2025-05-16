@@ -1,67 +1,65 @@
 #!/bin/bash
-
 # Define the list of GPU nodes
 nodes_array=()
 for i in $(seq -f "%02g" 1 36); do
-  # if [ "$i" -ne 30 ] && [ "$i" -ne 31 ] && [ "$i" -ne 29 ]; then
-  nodes_array+=("ad6013@gpu${i}.doc.ic.ac.uk") # Add username for sshlogin
-  # fi
+  if [ $i -ne 24 ]; then
+    nodes_array+=("ad6013@gpu${i}.doc.ic.ac.uk") # Add username for sshlogin
+  fi
 done
 
-# Convert array to comma-separated string for parallel's --sshlogin
-nodes_csv=$(IFS=,; echo "${nodes_array[*]}")
+# Define the specific runs you want
+run_start_values=()
+for i in $(seq 36 99); do
+  run_start_values+=($i)
+done
+run_start_values+=(23)
 
-# Define the total number of runs and how many to do per node
-total_runs=100
+# Define the total number of runs
+total_runs=${#run_start_values[@]}
 num_nodes=${#nodes_array[@]}
 runs_per_node_approx=$(( (total_runs + num_nodes - 1) / num_nodes )) # Ceiling division
 
 # --- GNU Parallel Setup ---
-# Job log file to track progress
 JOBLOG_FILE="deciruns.log"
-# Tag for easy identification and killing of these specific jobs
-PARALLEL_TAG="deci_batch_$$" # $$ adds the current script's PID for uniqueness
+PARALLEL_TAG="deci_batch_$$"
 
 # Clean up old job log if it exists
-rm -f "${JOBLOG_FILE}"* # Also remove node-specific logs if they exist
+rm -f "${JOBLOG_FILE}"*
 
 echo "Starting jobs with GNU Parallel. Tag: ${PARALLEL_TAG}"
 echo "Job log will be written to: ${JOBLOG_FILE}.node*"
 echo "Distributing approximately ${runs_per_node_approx} runs per node across ${num_nodes} nodes."
 echo "---"
 
-node_index=0
-current_run_start_outer=0
-
-while [ $current_run_start_outer -lt $total_runs ] && [ $node_index -lt $num_nodes ]; do
+# Iterate through all runs and distribute them across nodes
+for current_run_index in $(seq 0 $((total_runs-1))); do
+  # Determine which node to use (round-robin)
+  node_index=$((current_run_index % num_nodes))
   node_host=${nodes_array[$node_index]}
-  current_run_end_outer=$((current_run_start_outer + runs_per_node_approx -1))
-  if [ $current_run_end_outer -ge $total_runs ]; then
-    current_run_end_outer=$((total_runs - 1))
-  fi
-  data_end_val=$((current_run_end_outer + 1))
+
+  # Get the current data_start value from the array
+  current_run_start_outer=${run_start_values[$current_run_index]}
+
+  # We want data_end to be data_start + 1
+  data_end_val=$((current_run_start_outer + 1))
 
   echo "Queueing on ${node_host}: data_start=${current_run_start_outer} data_end=${data_end_val}"
 
-  # The command to be executed remotely.
-  # Note: Quoting is important here.
+  # The command to be executed remotely
   remote_command="cd /vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/deci/ && \
 /vol/bitbucket/ad6013/anaconda3/envs/causica/bin/python3 run_deci.py --data_start=${current_run_start_outer} --data_end=${data_end_val}"
 
-  # Forcing a single job to a single server from the list for each block.
-  # This is a bit less "GNU Parallel idiomatic" for job distribution but matches your original logic.
-  # CORRECTED LINE BELOW:
+  # Execute the command
   echo "${remote_command}" | parallel --sshlogin ${node_host} --joblog "${JOBLOG_FILE}.node${node_index}" --tag --tagstring "${PARALLEL_TAG}_node${node_index}" "{}" &
 
-  current_run_start_outer=$((current_run_end_outer + 1))
-  node_index=$((node_index + 1))
+  # Add a small delay to avoid overwhelming SSH connections
+  sleep 0.1
 done
-
 
 echo "---"
 echo "All job blocks dispatched to GNU Parallel."
 echo "Monitor progress with: tail -f ${JOBLOG_FILE}.node*"
-echo "Or check running jobs with: ps aux | grep '${PARALLEL_TAG}'" # General grep
+echo "Or check running jobs with: ps aux | grep '${PARALLEL_TAG}'"
 echo "For more detailed parallel status, you might need to check individual job logs or remote nodes."
 echo "To kill all jobs associated with this batch, you can try:"
 echo "  pkill -f '${PARALLEL_TAG}'  # This will kill the local parallel processes and their SSH sessions"
