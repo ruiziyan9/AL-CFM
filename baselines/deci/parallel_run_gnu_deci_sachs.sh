@@ -2,12 +2,12 @@
 # Define the list of GPU nodes
 nodes_array=()
 for i in $(seq -f "%02g" 1 5); do
-  nodes_array+=("ad6013@beech${i}.doc.ic.ac.uk") # Add username for sshlogin
+  nodes_array+=("ad6013@gpu${i}.doc.ic.ac.uk") # Add username for sshlogin
 done
 
 # Define the specific runs you want
 run_start_values=()
-for i in $(seq 2 4); do
+for i in $(seq 0 4); do
   run_start_values+=($i)
 done
 

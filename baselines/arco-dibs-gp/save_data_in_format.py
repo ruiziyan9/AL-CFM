@@ -120,7 +120,7 @@ def main(
 if __name__ == "__main__":
 
     data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/sachs/test"
-    data_path = Path(data_folder) / "data_idx1.hdf5"
+    data_path = Path(data_folder) / "data_idx0.hdf5"
 
     save_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
