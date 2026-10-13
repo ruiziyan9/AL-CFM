@@ -1,0 +1,12 @@
+# D=3 conjugate linear-Gaussian prior: the exact Bayes oracle
+# (CITNP/evaluation/oracle_lingauss.py) is optimal for models trained on this.
+function_generator: linearnonidentifiable
+num_variables: [3]
+graph_type: [ER]
+graph_degrees: {3: [1, 2, 3]}
+normalise: false        # raw scale, so the prior stays conjugate
+k_max: 3
+n_ctx_range: [64, 256]
+n_qry: 48
+qry_mode: grouped
+qry_groups: [1, 2, 3]

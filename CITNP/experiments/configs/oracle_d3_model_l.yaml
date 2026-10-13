@@ -1,0 +1,8 @@
+# D=3 oracle-prior model, size l
+d_model: 256
+nhead: 8
+num_layers_encoder: 8
+sample_attn_mode: MHCA
+dim_feedforward: 512
+emb_depth: 2
+num_mixture_components: 8

@@ -18,6 +18,7 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 """
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from CITNP.models.mixed_context_model import (
     load_upstream_checkpoint,
 )
 from CITNP.trainer.callbacks import (
+    Callback,
     CheckpointCallback,
     LRSchedulerCallback,
     ProgressBarCallback,
@@ -49,6 +51,33 @@ from CITNP.utils.utils import (
     convert_trainerdict_to_config,
     set_seed,
 )
+
+class CosineLRCallback(Callback):
+    """Linear warmup over `warmup_ratio` of training, then cosine decay from
+    base_lr to min_lr_ratio * base_lr. Sets the LR before every step."""
+
+    def __init__(self, base_lr: float, warmup_ratio: float, min_lr_ratio: float = 0.02):
+        self.base_lr = base_lr
+        self.warmup_ratio = warmup_ratio
+        self.min_lr = min_lr_ratio * base_lr
+
+    def on_train_begin(self, trainer):
+        self.total = max(1, trainer.total_train_steps)
+        self.warmup = int(self.warmup_ratio * self.total)
+        print(f"Cosine LR: {self.warmup} warmup steps, {self.total} total steps.")
+
+    def on_batch_begin(self, trainer, batch_idx):
+        s = trainer.global_step
+        if s < self.warmup:
+            lr = self.base_lr * (s + 1) / self.warmup
+        else:
+            frac = (s - self.warmup) / max(1, self.total - self.warmup)
+            lr = self.min_lr + 0.5 * (self.base_lr - self.min_lr) * (
+                1 + math.cos(math.pi * min(1.0, frac))
+            )
+        for g in trainer.optimizer.param_groups:
+            g["lr"] = lr
+
 
 MODEL_KEYS = (
     "d_model",
@@ -71,6 +100,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     extra.add_argument("--init_from_upstream", default=None)
     extra.add_argument("--val_iterations", type=int, default=20)
     extra.add_argument("--test_iterations", type=int, default=20)
+    extra.add_argument(
+        "--lr_schedule", choices=["constant", "cosine"], default="constant"
+    )
     argv = sys.argv[1:] if argv is None else argv
     mixed, rest = extra.parse_known_args(argv)
     # parse_default_args reads sys.argv itself.
@@ -190,7 +222,11 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         ),
         ProgressBarCallback(),
         CheckpointCallback(log_config=loggingconfig),
-        LRSchedulerCallback(optim_config=optimizerconfig),
+        (
+            CosineLRCallback(args.learning_rate, args.lr_warmup_ratio)
+            if args.lr_schedule == "cosine"
+            else LRSchedulerCallback(optim_config=optimizerconfig)
+        ),
         # Fresh training tasks every epoch (also with non-persistent workers).
         SetEpochCallback([train_ds]),
     ]
@@ -225,6 +261,8 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     torch.backends.cuda.enable_mem_efficient_sdp(True)
     torch.backends.cuda.enable_flash_sdp(True)
     main(parse_args())
