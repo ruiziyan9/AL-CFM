@@ -1,0 +1,10 @@
+# Smoke-test data config for mixed-context training (R1, grouped questions).
+function_generator: linearfixedstd
+num_variables: [3]
+graph_type: [ER]
+graph_degrees: {3: [1, 2, 3]}
+k_max: 3
+n_ctx_range: [64, 256]
+n_qry: 48
+qry_mode: grouped
+qry_groups: [1, 2, 3]
