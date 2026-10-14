@@ -16,7 +16,7 @@ set -euo pipefail
 RUN_DIR=$1
 MODEL_CFG=$2
 REPO_DIR=/data/stat-hd-causal/spet5873/AL_CFM
-CONDA_ENV=citnp
+CONDA_ENV=/data/stat-hd-causal/spet5873/envs/citnp
 
 cd "$REPO_DIR"
 module purge; module load Anaconda3; source activate "$CONDA_ENV"
@@ -27,7 +27,7 @@ for CKPT in $(ls "$RUN_DIR"/step_*.pt | sort -V) "$RUN_DIR"/best_model.pt "$RUN_
     [ -f "$CKPT" ] || continue
     TAG=$(basename "$CKPT" .pt)
     echo "=== $TAG"
-    python -m CITNP.evaluation.eval_d3_oracle \
+    "$CONDA_ENV"/bin/python -m CITNP.evaluation.eval_d3_oracle \
         --ckpt "$CKPT" --model_config "$MODEL_CFG" \
         --data_config CITNP/experiments/configs/oracle_d3.yaml \
         --n_seeds 30 --device cuda \
@@ -35,7 +35,7 @@ for CKPT in $(ls "$RUN_DIR"/step_*.pt | sort -V) "$RUN_DIR"/best_model.pt "$RUN_
 done
 
 # One line per checkpoint: mean model-minus-oracle gap overall / direct / indirect / obs-only
-python - "$RUN_DIR/eval" <<'PY'
+"$CONDA_ENV"/bin/python - "$RUN_DIR/eval" <<'PY'
 import sys, glob, os, re, csv
 rows = []
 for f in glob.glob(os.path.join(sys.argv[1], "*.csv")):

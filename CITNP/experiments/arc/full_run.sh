@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO_DIR=/data/stat-hd-causal/spet5873/AL_CFM
-CONDA_ENV=citnp
+CONDA_ENV=/data/stat-hd-causal/spet5873/envs/citnp
 RESULTS=/data/stat-hd-causal/spet5873/alcfm_results/full
 
 SIZE=l          # from the pilot
@@ -28,7 +28,7 @@ mkdir -p "$RESULTS"
 echo "job $SLURM_JOB_ID size=$SIZE epochs=$EPOCHS on $(hostname) | git $(git rev-parse --short HEAD)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
-python -m CITNP.experiments.mixed_train \
+"$CONDA_ENV"/bin/python -m CITNP.experiments.mixed_train \
     --data_config  CITNP/experiments/configs/oracle_d3.yaml \
     --model_config CITNP/experiments/configs/oracle_d3_model_${SIZE}.yaml \
     --device cuda --dtype float32 \

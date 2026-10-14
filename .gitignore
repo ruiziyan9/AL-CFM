@@ -192,4 +192,10 @@ wandb/
 lightning_logs/
 
 *.log.*
-*.nfs*
+*.nfs*results/
+*.pt
+*.ckpt
+*.log
+slurm-*.out
+wandb/
+*.npz
