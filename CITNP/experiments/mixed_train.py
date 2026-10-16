@@ -44,6 +44,7 @@ from CITNP.trainer.callbacks import (
     WandbLoggingCallback,
 )
 from CITNP.trainer.mixed_context_trainer import MixedContextTrainer
+from CITNP.trainer.monitor_callbacks import OracleGapCallback, TrainStatsCallback
 from CITNP.utils.configs import CausalInfModelConfig
 from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
 from CITNP.utils.utils import (
@@ -102,6 +103,15 @@ def parse_args(argv=None) -> argparse.Namespace:
     extra.add_argument("--test_iterations", type=int, default=20)
     extra.add_argument(
         "--lr_schedule", choices=["constant", "cosine"], default="constant"
+    )
+    extra.add_argument(
+        "--oracle_bank", default=None,
+        help="pickle from CITNP.evaluation.oracle_bank; enables OracleGapCallback",
+    )
+    extra.add_argument("--oracle_every", type=int, default=2500)
+    extra.add_argument(
+        "--resume_from", default=None,
+        help="checkpoint of this model to start from (weights only; fresh optimiser)",
     )
     argv = sys.argv[1:] if argv is None else argv
     mixed, rest = extra.parse_known_args(argv)
@@ -171,6 +181,10 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     model = MixedContextMoGModel(model_config)
     if args.init_from_upstream:
         load_upstream_checkpoint(model, args.init_from_upstream)
+    if args.resume_from:
+        state = torch.load(args.resume_from, map_location="cpu")
+        model.load_state_dict(state.get("model_state_dict", state))  # strict
+        print(f"Loaded weights from {args.resume_from}")
 
     results_path = (
         Path.cwd() if args.results_path is None else Path(args.results_path)
@@ -229,7 +243,12 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         ),
         # Fresh training tasks every epoch (also with non-persistent workers).
         SetEpochCallback([train_ds]),
+        TrainStatsCallback(
+            every=args.log_step, clip_val=trainingconfig.gradient_clip_val
+        ),
     ]
+    if args.oracle_bank:
+        callbacks.append(OracleGapCallback(args.oracle_bank, every=args.oracle_every))
 
     trainer = MixedContextTrainer(
         train_dataset=train_ds,

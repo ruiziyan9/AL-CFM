@@ -271,6 +271,22 @@ class MixedContextTrainer(CausalInferenceTrainer):
         )
         return {"loss": loss, "model_output": model_output}
 
+    def train_step(self, batch: Dict[str, Any]) -> Dict[str, float]:
+        """Upstream train_step, plus the gradient norm before clipping."""
+        self.model.train()
+        loss = self._forward_pass(batch)["loss"]
+        self.optimizer.zero_grad()
+        loss.backward()
+        grad_norm = float("nan")
+        if self.trainingconfig.gradient_clip_val is not None:
+            grad_norm = float(
+                th.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.trainingconfig.gradient_clip_val
+                )
+            )
+        self.optimizer.step()
+        return {"loss": loss.item(), "grad_norm": grad_norm}
+
     def validate(self) -> Dict[str, float]:
         self._eval_batches = True
         try:
