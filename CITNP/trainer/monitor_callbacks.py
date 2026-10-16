@@ -109,9 +109,10 @@ def mog_predictive(model, item, device, normalise=True, zero_flags=False):
     y = torch.as_tensor(item["y"], dtype=torch.float32)
     tgt = torch.zeros(1, len(t), D, 1)
     tgt[0, :, T, 0] = (t - mean[T]) / std[T]
+    dt = next(model.parameters()).dtype  # match the model (float32 or bfloat16)
     out = model(
-        context_data=((cx - mean) / std)[..., None].to(device),
-        target_data=tgt.to(device),
+        context_data=((cx - mean) / std)[..., None].to(device, dt),
+        target_data=tgt.to(device,dt),
         intervention_index=torch.tensor([T], device=device),
         outcome_index=torch.tensor([Y], device=device),
         context_int_mask=(torch.zeros_like(ci) if zero_flags else ci).to(device),
