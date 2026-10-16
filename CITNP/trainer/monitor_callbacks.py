@@ -56,6 +56,14 @@ class TrainStatsCallback(Callback):
         self.losses, self.norms = [], []
         self.wait = 0.0
         self.t_window = time.perf_counter()
+        self.val_time = 0.0
+        self.val_counted = 0.0
+      
+    def on_validation_begin(self, trainer):
+        self.t_val = time.perf_counter()
+
+    def on_validation_end(self, trainer, validation_logs):
+        self.val_time += time.perf_counter() - self.t_val
 
     def on_train_begin(self, trainer):
         self.path = Path(trainer.loggingconfig.save_dir) / "train_stats.csv"
@@ -63,9 +71,11 @@ class TrainStatsCallback(Callback):
         self.t_last_end = time.perf_counter()
 
     def on_batch_begin(self, trainer, batch_idx):
-        # Time between the end of the last step and the start of this one is
-        # spent waiting for the DataLoader (plus callbacks / validation).
+        # Time since the last step ended, minus validation run in between,
+        # is time spent waiting for the DataLoader (plus other callbacks).
         self.wait += time.perf_counter() - self.t_last_end
+        self.wait -= self.val_time - self.val_counted
+        self.val_counted = self.val_time
 
     def on_batch_end(self, trainer, batch_idx, batch_logs):
         self.losses.append(batch_logs["loss"])
@@ -83,6 +93,7 @@ class TrainStatsCallback(Callback):
                 "train/lr": float(trainer.optimizer.param_groups[0]["lr"]),
                 "train/steps_per_sec": len(self.losses) / elapsed,
                 "train/data_wait_frac": self.wait / elapsed,
+                "train/val_frac": self.val_time / elapsed,
             }
             _log_row(row, self.path, trainer.global_step)
             self._reset()
