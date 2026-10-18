@@ -1,3 +1,5 @@
+import math
+from pathlib import Path
 """
 Trainer for the mixed-context model (design R1).
 
@@ -21,6 +23,8 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch as th
 from tqdm import tqdm
+import math
+from pathlib import Path
 
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.utils import get_causal_direction
@@ -39,31 +43,25 @@ def _eval_outcome_draw(seed_key: Any, group: int, num_choices: int) -> int:
 
 
 def _normalisation_stats(
-    ctx_x: th.Tensor, ctx_int: th.Tensor
+    ctx_x: th.Tensor, ctx_int: th.Tensor, min_rows: int = 10
 ) -> tuple[th.Tensor, th.Tensor]:
-    """Per-task, per-variable (mean, std) [B, D] from non-intervened context cells.
+    """Per-task, per-variable (mean, std) [B, D] from observational context rows
+    only (rows with no intervened variable).
 
-    Falls back to all context cells of a variable when it has fewer than 2
-    non-intervened cells, and to (0, 1) when it has fewer than 2 cells at all.
-    std is the population std, floored at 1e-6.
+    Requires at least `min_rows` observational rows per task (guaranteed by the
+    generator's n_obs_min); raises otherwise instead of silently mis-scaling.
     """
-    x = ctx_x.double()
-
-    def masked_stats(mask):
-        m = mask.double()
-        n = m.sum(1)
-        mean = (x * m).sum(1) / n.clamp(min=1)
-        var = (((x - mean[:, None]) ** 2) * m).sum(1) / n.clamp(min=1)
-        return mean, var.sqrt(), n
-
-    mean, std, n = masked_stats(~ctx_int)
-    mean_all, std_all, n_all = masked_stats(th.ones_like(ctx_int))
-    use_all = n < 2
-    mean = th.where(use_all, mean_all, mean)
-    std = th.where(use_all, std_all, std)
-    none = use_all & (n_all < 2)
-    mean = th.where(none, th.zeros_like(mean), mean)
-    std = th.where(none, th.ones_like(std), std)
+    x = ctx_x.double()                                     # [B, Nc, D]
+    obs_row = ~ctx_int.any(dim=-1, keepdim=True)           # [B, Nc, 1]
+    m = obs_row.double().expand_as(x)                      # same rows for every variable
+    n = m.sum(1)                                           # [B, D], equal across D
+    if (n < min_rows).any():
+        raise ValueError(
+            f"{int((n[:, 0] < min_rows).sum())} task(s) have fewer than {min_rows} "
+            f"observational context rows (min {int(n.min())}); set n_obs_min in the data config"
+        )
+    mean = (x * m).sum(1) / n
+    std = ((((x - mean[:, None]) ** 2) * m).sum(1) / n).sqrt()
     return mean.float(), std.clamp(min=1e-6).float()
 
 
@@ -272,20 +270,29 @@ class MixedContextTrainer(CausalInferenceTrainer):
         return {"loss": loss, "model_output": model_output}
 
     def train_step(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        """Upstream train_step, plus the gradient norm before clipping."""
+        """Train step that skips non-finite steps and saves the first few spike batches."""
         self.model.train()
+        self.optimizer.zero_grad(set_to_none=True)
         loss = self._forward_pass(batch)["loss"]
-        self.optimizer.zero_grad()
+        if not th.isfinite(loss):
+            return {"loss": float("nan"), "grad_norm": float("nan"), "skipped": 1.0}
         loss.backward()
-        grad_norm = float("nan")
-        if self.trainingconfig.gradient_clip_val is not None:
-            grad_norm = float(
-                th.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.trainingconfig.gradient_clip_val
-                )
-            )
+        clip = self.trainingconfig.gradient_clip_val
+        grad_norm = float(th.nn.utils.clip_grad_norm_(
+            self.model.parameters(), clip if clip is not None else float("inf")))
+        if not math.isfinite(grad_norm):
+            self.optimizer.zero_grad(set_to_none=True)
+            return {"loss": loss.item(), "grad_norm": grad_norm, "skipped": 1.0}
+        if grad_norm > 1000 and getattr(self, "n_spikes_saved", 0) < 5:
+            self.n_spikes_saved = getattr(self, "n_spikes_saved", 0) + 1
+            path = Path(self.loggingconfig.save_dir) / f"spike_step_{self.global_step}.pt"
+            th.save({"batch": {k: v.detach().cpu() if th.is_tensor(v) else v
+                               for k, v in batch.items()},
+                     "loss": loss.item(), "grad_norm": grad_norm,
+                     "step": self.global_step}, path)
+            print(f"[spike] step {self.global_step} grad_norm {grad_norm:.0f}", flush=True)
         self.optimizer.step()
-        return {"loss": loss.item(), "grad_norm": grad_norm}
+        return {"loss": loss.item(), "grad_norm": grad_norm, "skipped": 0.0}
 
     def validate(self) -> Dict[str, float]:
         self._eval_batches = True

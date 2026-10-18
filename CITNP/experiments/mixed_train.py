@@ -280,8 +280,10 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
+    torch.multiprocessing.set_sharing_strategy("file_system")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
     torch.backends.cuda.enable_flash_sdp(True)
+    torch.distributions.Distribution.set_default_validate_args(False)
     main(parse_args())
