@@ -58,7 +58,8 @@ class TrainStatsCallback(Callback):
         self.t_window = time.perf_counter()
         self.val_time = 0.0
         self.val_counted = 0.0
-      
+        self.skipped = 0.0
+
     def on_validation_begin(self, trainer):
         self.t_val = time.perf_counter()
 
@@ -84,7 +85,7 @@ class TrainStatsCallback(Callback):
             elapsed = time.perf_counter() - self.t_window
             norms = np.array(self.norms)
             row = {
-                "train/loss_mean": float(np.mean(self.losses)),
+                "train/loss_mean": float(np.nanmean(self.losses)),
                 "train/grad_norm_mean": float(np.nanmean(norms)),
                 "train/grad_norm_max": float(np.nanmax(norms)),
                 "train/clip_frac": (
@@ -94,10 +95,12 @@ class TrainStatsCallback(Callback):
                 "train/steps_per_sec": len(self.losses) / elapsed,
                 "train/data_wait_frac": self.wait / elapsed,
                 "train/val_frac": self.val_time / elapsed,
+                "train/skipped": self.skipped,
             }
             _log_row(row, self.path, trainer.global_step)
             self._reset()
         self.t_last_end = time.perf_counter()
+        self.skipped += batch_logs.get("skipped", 0.0)
 
 
 # --------------------------------------------------------------------------- #
