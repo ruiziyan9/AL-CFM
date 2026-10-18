@@ -253,6 +253,10 @@ class MixedRegimeConfig:
     normalise: bool = True
     n_ref: int = 256
     p_obs: float = 0.85
+    # Minimum number of observational rows per task. When > 0, every task has
+    # an observational regime (p_obs is ignored) with at least this many rows,
+    # so per-task normalisation can always use observational statistics.
+    n_obs_min: int = 10
     k_max: int = 4
     p_geom: float = 0.5
     n_ctx_range: tuple[int, int] = (64, 1024)
@@ -316,15 +320,20 @@ class MixedRegimeConfig:
             raise ValueError("qry_type_probs must be 3 non-negative weights")
         if not self.max_abs_value > 0:
             raise ValueError("max_abs_value must be > 0")
-        # A task has at most R = min(k_max, D) + 1 regimes and n_ctx is floored
-        # at R. Requiring n_ctx_range[0] >= max R makes that floor a no-op, so a
-        # fixed per-batch n_ctx really gives equal context sizes.
+        if self.n_obs_min < 0:
+            raise ValueError("n_obs_min must be >= 0")
+        # A task has at most R = min(k_max, D) + 1 regimes and reserves n_obs_min
+        # observational rows; requiring n_ctx_range[0] >= max R + n_obs_min keeps
+        # the n_ctx floor a no-op, so a fixed per-batch n_ctx gives equal sizes.
         max_regimes = min(self.k_max, max(self.num_variables)) + 1
-        if self.n_ctx_range[0] < max_regimes:
+        if self.n_ctx_range[0] < max_regimes + self.n_obs_min:
             raise ValueError(
                 f"n_ctx_range[0]={self.n_ctx_range[0]} must be >= "
-                f"min(k_max, max(num_variables)) + 1 = {max_regimes}"
+                f"min(k_max, max(num_variables)) + 1 + n_obs_min = "
+                f"{max_regimes + self.n_obs_min}"
             )
+
+
         if self.qry_mode not in ("per_row", "grouped"):
             raise ValueError(
                 f"qry_mode must be 'per_row' or 'grouped', got {self.qry_mode!r}"
@@ -632,8 +641,7 @@ def sample_design(
     k_probs = k_probs / k_probs.sum()
     # Resample until the context is non-empty (obs regime and/or K >= 1).
     while True:
-        has_obs = bool(np.random.rand() < cfg.p_obs)
-        # K is the #of distinct single-node interventional regimes
+        has_obs = cfg.n_obs_min > 0 or bool(np.random.rand() < cfg.p_obs)
         K = int(np.random.choice(k_cap + 1, p=k_probs))
         if has_obs or K > 0:
             break
@@ -644,19 +652,22 @@ def sample_design(
         (int(j),) for j in targets
     ]
 
-    # Regime sizes: every regime gets 1 row, the rest is split by a
+    # Regime sizes: every regime gets 1 row, the rest is split by
     # Dirichlet-multinomial. Small alpha gives very unbalanced regimes.
     R = len(regime_targets)
+    reserve = cfg.n_obs_min if has_obs else 0
     if n_ctx is None:
         lo, hi = cfg.n_ctx_range
         n_ctx = int(np.random.randint(lo, hi + 1))
-    n_ctx = max(int(n_ctx), R)
+    n_ctx = max(int(n_ctx), R + reserve)
     a_lo, a_hi = cfg.dirichlet_alpha_range
     alpha = float(np.exp(np.random.uniform(np.log(a_lo), np.log(a_hi))))
     p = np.random.dirichlet(alpha * np.ones(R))
-    # make sure each regime gets at least one row,
-    # then some regimes get more rows according to the Dir-Multinomial
-    regime_sizes = (1 + np.random.multinomial(n_ctx - R, p)).tolist()
+    # Every regime gets one row and the observational regime (first) also gets
+    # its reserved rows; the rest is split by a Dirichlet-multinomial.
+    regime_sizes = (1 + np.random.multinomial(n_ctx - R - reserve, p)).tolist()
+    if reserve:
+        regime_sizes[0] += reserve
 
     # One do-value distribution per task, shared by context and query rows.
     if np.random.rand() < cfg.p_wide_do:
