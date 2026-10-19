@@ -58,95 +58,19 @@ import argparse
 import pandas as pd
 import torch
 
-from CITNP.evaluation.tasks import DESIGNS, MAIN_QUERY, QUERIES, qname
-
-COLORS = {"random": "C0", "do(treatment)": "C1", "do(confounder)": "C2", "do(outcome)": "C3"}
+from CITNP.evaluation.tasks import MAIN_QUERY
 
 
-# --------------------------------------------------------------------------- #
-# Plotting
-# --------------------------------------------------------------------------- #
-def _curve(df, design, cols, query=None):
-    """Mean and s.e. over seeds of cols vs k, with k = 0 prepended; averages
-    over queries within a seed first when query is None."""
-    d = df if query is None else df[df["query"] == query]
-    h = pd.concat([d[d.k == 0], d[d.design == design]])
-    per_seed = h.groupby(["seed", "k"])[cols].mean()
-    g = per_seed.groupby("k")
-    return g.mean(), g.sem()
-
-
-def plot_results(df, prefix):
+def plot_results(df: pd.DataFrame, prefix: str) -> None:
+    """The three main k-shot figures (see CITNP.evaluation.plots)."""
     import matplotlib
 
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from CITNP.evaluation import plots
 
-    xlab = "number of experiments (interventional samples)"
-
-    # 1. main figure: 4 curves, model solid, oracle dashed
-    panels = [
-        ("kl_truth_model", "kl_truth_oracle", MAIN_QUERY, f"KL(truth || ·): {MAIN_QUERY}"),
-        ("kl_truth_model", "kl_truth_oracle", None, "KL(truth || ·): mean of 6 queries"),
-        ("kl_oracle_model", None, None, "KL(Bayes oracle || model): mean of 6 queries"),
-    ]
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for ax, (mcol, ocol, q, title) in zip(axes, panels):
-        for d in DESIGNS:
-            cols = [mcol] + ([ocol] if ocol else [])
-            mu, se = _curve(df, d, cols, q)
-            ax.plot(mu.index, mu[mcol], "-o", ms=3, color=COLORS[d], label=f"model, {d}")
-            ax.fill_between(mu.index, mu[mcol] - se[mcol], mu[mcol] + se[mcol],
-                            color=COLORS[d], alpha=0.15)
-            if ocol:
-                ax.plot(mu.index, mu[ocol], "--", color=COLORS[d], label=f"oracle, {d}")
-        ax.axhline(0, color="k", lw=0.5)
-        ax.set_xticks(sorted(df.k.unique()))
-        ax.set_xlabel(xlab)
-        ax.set_title(title)
-    axes[0].set_ylabel("KL, nats per query point")
-    axes[0].legend(fontsize=7, ncol=2)
-    fig.tight_layout()
-    fig.savefig(prefix + "_main.png", dpi=150)
-    plt.close(fig)
-
-    # 2. per query: KL to truth, model solid, oracle dashed
-    queries = [qname(T, Y) for T, Y in QUERIES]
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9), sharex=True)
-    for ax, q in zip(axes.flat, queries):
-        for d in DESIGNS:
-            mu, _ = _curve(df, d, ["kl_truth_model", "kl_truth_oracle"], q)
-            ax.plot(mu.index, mu.kl_truth_model, "-o", ms=3, color=COLORS[d], label=f"model, {d}")
-            ax.plot(mu.index, mu.kl_truth_oracle, "--", color=COLORS[d], label=f"oracle, {d}")
-        ax.axhline(0, color="k", lw=0.5)
-        ax.set_title(f"KL(truth || ·): {q}")
-    for ax in axes[1]:
-        ax.set_xlabel(xlab)
-    axes[0, 0].legend(fontsize=7, ncol=2)
-    fig.tight_layout()
-    fig.savefig(prefix + "_by_query.png", dpi=150)
-    plt.close(fig)
-
-    # 3. implied causal effect error (model solid, oracle dashed, naive dotted)
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9), sharex=True)
-    for ax, q in zip(axes.flat, queries):
-        for d in DESIGNS:
-            mu, _ = _curve(df, d, ["slope_err_model_truth", "slope_err_oracle_truth",
-                                   "slope_err_naive_truth"], q)
-            ax.plot(mu.index, mu.slope_err_model_truth, "-o", ms=3, color=COLORS[d],
-                    label=f"model, {d}")
-            ax.plot(mu.index, mu.slope_err_oracle_truth, "--", color=COLORS[d],
-                    label=f"oracle, {d}")
-        ax.axhline(mu.slope_err_naive_truth.iloc[0], color="r", ls=":", lw=1,
-                   label="naive obs regression")
-        ax.axhline(0, color="k", lw=0.8)
-        ax.set_title(f"effect error (estimate - truth): {q}")
-    for ax in axes[1]:
-        ax.set_xlabel(xlab)
-    axes[0, 0].legend(fontsize=7, ncol=2)
-    fig.tight_layout()
-    fig.savefig(prefix + "_effect.png", dpi=150)
-    plt.close(fig)
+    plots.plot_kshot_main(df, prefix)
+    plots.plot_kshot_by_query(df, prefix)
+    plots.plot_kshot_effect(df, prefix)
     print(f"wrote {prefix}_main.png, {prefix}_by_query.png, {prefix}_effect.png")
 
 

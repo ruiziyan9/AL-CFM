@@ -1,7 +1,8 @@
 """What to evaluate on: known-truth SCMs, context designs, k-shot experiment
 pools, the training generator's graph prior and the fixed oracle bank.
 
-No model code here. Functions that draw random numbers take the generator
+No model code here (and no torch at import: the data generator is imported
+lazily). Functions that draw random numbers take the generator
 explicitly and draw in a fixed order, so results are reproducible.
 """
 
@@ -11,12 +12,6 @@ import time
 
 import numpy as np
 
-from CITNP.datasets.mixed_regime_generator import (
-    SOURCE_ADHOC,
-    generate_task,
-    make_key,
-    sample_graph,
-)
 from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, dag_key
 
 # --------------------------------------------------------------------------- #
@@ -165,6 +160,8 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 def empirical_graph_prior(cfg, n: int = 20000, seed: int = 0, num_nodes: int = 3) -> dict:
     """dag_key -> log frequency over n graphs from the training generator.
     Reseeds the global numpy and `random` RNGs (sample_graph uses them)."""
+    from CITNP.datasets.mixed_regime_generator import sample_graph
+
     np.random.seed(seed)
     random.seed(seed)
     counts: dict = {}
@@ -194,6 +191,12 @@ def build_bank(
 ) -> list[dict]:
     """Return a list of question dicts; `per_bucket` questions (T) per bucket,
     each expanded over all D - 1 outcomes Y != T."""
+    from CITNP.datasets.mixed_regime_generator import (
+        SOURCE_ADHOC,
+        generate_task,
+        make_key,
+    )
+
     if cfg.function_generator != "linearnonidentifiable" or cfg.normalise:
         raise ValueError("oracle bank needs linearnonidentifiable with normalise: false")
     prior = empirical_graph_prior(cfg, num_nodes=D)
