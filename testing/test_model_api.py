@@ -47,7 +47,9 @@ def test_batch_equals_single(model, context, normalise, zero_flags):
         single = predict_mixture(model, x, m, T, Y, GRID, **kw)
         for b, s in zip(batch, single):
             assert s.shape == (1, len(GRID), b.shape[-1])
-            np.testing.assert_allclose(b[q].numpy(), s[0].numpy(), rtol=1e-5, atol=1e-6)
+            np.testing.assert_allclose(
+                b[q].numpy(), s[0].numpy(), rtol=1e-5, atol=1e-6
+            )
 
 
 def test_outputs(model, context):
@@ -66,7 +68,9 @@ def test_outputs(model, context):
     # Density integrates to ~1 over y on a wide grid (raw scale incl. Jacobian).
     yy = torch.linspace(-30, 30, 20001, dtype=torch.float64)
     dens = mixture_logpdf(mu[:, :1], sd[:, :1], logw[:, :1], yy[:, None]).exp()
-    np.testing.assert_allclose(torch.trapezoid(dens[:, 0], yy).item(), 1.0, atol=1e-4)
+    np.testing.assert_allclose(
+        torch.trapezoid(dens[:, 0], yy).item(), 1.0, atol=1e-4
+    )
 
 
 def test_shape_mismatch_raises(model, context):

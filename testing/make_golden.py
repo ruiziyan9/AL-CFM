@@ -55,7 +55,9 @@ def run_main(main, args: list[str]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default=None, help="trained checkpoint (size-m config)")
+    ap.add_argument(
+        "--ckpt", default=None, help="trained checkpoint (size-m config)"
+    )
     a = ap.parse_args()
 
     # These names exist only on the pre-refactor baseline (commit abbb68c),
@@ -79,7 +81,13 @@ def main() -> None:
     bank = GOLDEN / "bank.pkl"
     run_main(
         oracle_bank.main,
-        ["--data_config", DATA_CFG, "--out", str(bank.relative_to(REPO)), *BANK_ARGS],
+        [
+            "--data_config",
+            DATA_CFG,
+            "--out",
+            str(bank.relative_to(REPO)),
+            *BANK_ARGS,
+        ],
     )
     with open(bank, "rb") as f:
         items = pickle.load(f)["items"]
@@ -87,12 +95,25 @@ def main() -> None:
     for name, out_dir, ckpt, model_cfg in model_sets(a.ckpt):
         print(f"\n##### {name}: {ckpt}")
         out_dir.mkdir(parents=True, exist_ok=True)
-        common = ["--ckpt", ckpt, "--model_config", model_cfg, "--data_config", DATA_CFG]
+        common = [
+            "--ckpt",
+            ckpt,
+            "--model_config",
+            model_cfg,
+            "--data_config",
+            DATA_CFG,
+        ]
         rel = out_dir.relative_to(REPO)
-        run_main(eval_d3_kshot.main, [*common, *KSHOT_ARGS, "--out", f"{rel}/kshot.csv"])
+        run_main(
+            eval_d3_kshot.main,
+            [*common, *KSHOT_ARGS, "--out", f"{rel}/kshot.csv"],
+        )
         for fig in ("main", "by_query", "effect"):
             (out_dir / f"kshot_{fig}.png").unlink(missing_ok=True)
-        run_main(eval_d3_oracle.main, [*common, *SUITE_ARGS, "--out", f"{rel}/suite.csv"])
+        run_main(
+            eval_d3_oracle.main,
+            [*common, *SUITE_ARGS, "--out", f"{rel}/suite.csv"],
+        )
 
         model = load_model(ckpt, model_cfg, "cpu")
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,7 +125,9 @@ def main() -> None:
             json.dump(gap, f, indent=1)
         np.savez(
             out_dir / "wrappers.npz",
-            **wrapper_outputs(model, items, model_mixtures, model_logpdf, mog_predictive),
+            **wrapper_outputs(
+                model, items, model_mixtures, model_logpdf, mog_predictive
+            ),
         )
         print(f"wrote golden files for {name} to {out_dir}")
 

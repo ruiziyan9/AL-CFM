@@ -53,11 +53,14 @@ from CITNP.utils.utils import (
     set_seed,
 )
 
+
 class CosineLRCallback(Callback):
     """Linear warmup over `warmup_ratio` of training, then cosine decay from
     base_lr to min_lr_ratio * base_lr. Sets the LR before every step."""
 
-    def __init__(self, base_lr: float, warmup_ratio: float, min_lr_ratio: float = 0.02):
+    def __init__(
+        self, base_lr: float, warmup_ratio: float, min_lr_ratio: float = 0.02
+    ):
         self.base_lr = base_lr
         self.warmup_ratio = warmup_ratio
         self.min_lr = min_lr_ratio * base_lr
@@ -105,12 +108,14 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--lr_schedule", choices=["constant", "cosine"], default="constant"
     )
     extra.add_argument(
-        "--oracle_bank", default=None,
+        "--oracle_bank",
+        default=None,
         help="pickle from `python -m CITNP.evaluation bank`; enables OracleGapCallback",
     )
     extra.add_argument("--oracle_every", type=int, default=2500)
     extra.add_argument(
-        "--resume_from", default=None,
+        "--resume_from",
+        default=None,
         help="checkpoint of this model to start from (weights only; fresh optimiser)",
     )
     argv = sys.argv[1:] if argv is None else argv
@@ -248,7 +253,9 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         ),
     ]
     if args.oracle_bank:
-        callbacks.append(OracleGapCallback(args.oracle_bank, every=args.oracle_every))
+        callbacks.append(
+            OracleGapCallback(args.oracle_bank, every=args.oracle_every)
+        )
 
     trainer = MixedContextTrainer(
         train_dataset=train_ds,

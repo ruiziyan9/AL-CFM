@@ -95,7 +95,10 @@ def node_posterior(
         a_n = a + n / 2
         b_n = b + 0.5 * float(y @ y)
         log_ml = (
-            gammaln(a_n) - gammaln(a) + a * np.log(b) - a_n * np.log(b_n)
+            gammaln(a_n)
+            - gammaln(a)
+            + a * np.log(b)
+            - a_n * np.log(b_n)
             - 0.5 * n * np.log(2 * np.pi)
         )
         return NodePosterior(True, a_n, b_n, None, None, float(log_ml))
@@ -110,8 +113,12 @@ def node_posterior(
     b_n = b + 0.5 * float(y @ y - m_n @ prec @ m_n)
     _, logdet = np.linalg.slogdet(np.eye(p) + ETA * X.T @ X)
     log_ml = (
-        gammaln(a_n) - gammaln(a) + a * np.log(b) - a_n * np.log(b_n)
-        - 0.5 * n * np.log(2 * np.pi) - 0.5 * logdet
+        gammaln(a_n)
+        - gammaln(a)
+        + a * np.log(b)
+        - a_n * np.log(b_n)
+        - 0.5 * n * np.log(2 * np.pi)
+        - 0.5 * logdet
     )
     return NodePosterior(False, a_n, b_n, m_n, V_n, float(log_ml))
 
@@ -133,7 +140,9 @@ class LinGaussOracle:
         if log_graph_prior is None:
             lp = np.full(len(self.dags), -np.log(len(self.dags)))
         else:
-            lp = np.array([log_graph_prior.get(dag_key(g), -np.inf) for g in self.dags])
+            lp = np.array(
+                [log_graph_prior.get(dag_key(g), -np.inf) for g in self.dags]
+            )
         self.log_prior = lp
 
     def fit(self, x: np.ndarray, int_mask: np.ndarray):
@@ -147,7 +156,9 @@ class LinGaussOracle:
                 pa = tuple(np.where(g[:, j])[0].tolist())
                 key = (j, pa)
                 if key not in cache:
-                    cache[key] = node_posterior(x, int_mask, j, np.array(pa, dtype=int))
+                    cache[key] = node_posterior(
+                        x, int_mask, j, np.array(pa, dtype=int)
+                    )
                 posts.append(cache[key])
                 log_ml[g_i] += cache[key].log_ml
             self.node_post.append(posts)
@@ -161,7 +172,11 @@ class LinGaussOracle:
 
     def prob_ancestor(self, i: int, j: int) -> float:
         """P(i is a causal ancestor of j | data)."""
-        return float(sum(p for p, g in zip(self.graph_post, self.dags) if has_path(g, i, j)))
+        return float(
+            sum(
+                p for p, g in zip(self.graph_post, self.dags) if has_path(g, i, j)
+            )
+        )
 
     def graph_entropy(self) -> float:
         p = self.graph_post
@@ -174,7 +189,9 @@ class LinGaussOracle:
         B = np.zeros((n_mc, self.d, self.d))
         s2 = np.zeros((n_mc, self.d))
         for j, post in enumerate(self.node_post[g_i]):
-            s2_j = 1.0 / rng.gamma(post.a_n, 1.0 / post.b_n, size=n_mc)  # IG(a_n, b_n)
+            s2_j = 1.0 / rng.gamma(
+                post.a_n, 1.0 / post.b_n, size=n_mc
+            )  # IG(a_n, b_n)
             s2[:, j] = s2_j
             if not post.root:
                 pa = np.where(g[:, j])[0]
@@ -185,7 +202,12 @@ class LinGaussOracle:
         return B, s2
 
     def predictive_components(
-        self, T: int, Y: int, n_mc: int = 2000, min_graph_prob: float = 1e-6, seed: int = 0
+        self,
+        T: int,
+        Y: int,
+        n_mc: int = 2000,
+        min_graph_prob: float = 1e-6,
+        seed: int = 0,
     ):
         """Mixture representation of p(X_Y | do(X_T = t), data):
         returns (log_w [M], slope [M], var [M]) with component mean = slope * t.
@@ -207,14 +229,22 @@ class LinGaussOracle:
             slopes.append(A[:, Y, T])
             vars_.append(np.einsum("mk,mk->m", A[:, Y, :] ** 2, s2))
             log_ws.append(np.full(n_mc, lp - np.log(n_mc)))
-        return np.concatenate(log_ws), np.concatenate(slopes), np.concatenate(vars_)
+        return (
+            np.concatenate(log_ws),
+            np.concatenate(slopes),
+            np.concatenate(vars_),
+        )
 
-    def logpdf(self, T: int, Y: int, t: np.ndarray, y: np.ndarray, **kw) -> np.ndarray:
+    def logpdf(
+        self, T: int, Y: int, t: np.ndarray, y: np.ndarray, **kw
+    ) -> np.ndarray:
         """log p(y_i | do(T = t_i), data) for paired arrays t, y."""
         log_w, slope, var = self.predictive_components(T, Y, **kw)
         var = np.maximum(var, 1e-12)
         mu = slope[None] * t[:, None]
-        lp = -0.5 * (np.log(2 * np.pi * var)[None] + (y[:, None] - mu) ** 2 / var[None])
+        lp = -0.5 * (
+            np.log(2 * np.pi * var)[None] + (y[:, None] - mu) ** 2 / var[None]
+        )
         return logsumexp(lp + log_w[None], axis=1)
 
 
@@ -232,7 +262,9 @@ class LinearSCM:
     def adj(self):
         return (self.B != 0).astype(int)
 
-    def sample(self, n: int, int_node: int | None, do_values: np.ndarray | None, rng):
+    def sample(
+        self, n: int, int_node: int | None, do_values: np.ndarray | None, rng
+    ):
         d = len(self.s2)
         e = rng.standard_normal((n, d)) * np.sqrt(self.s2)
         x = np.zeros((n, d))

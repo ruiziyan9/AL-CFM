@@ -168,7 +168,8 @@ def test_kshot(model_set, tmp_path):
     )  # fmt: skip
     assert_frames_match(pd.read_csv(out), pd.read_csv(gdir / "kshot.csv"))
     assert_frames_match(
-        pd.read_csv(tmp_path / "kshot_by_t.csv"), pd.read_csv(gdir / "kshot_by_t.csv")
+        pd.read_csv(tmp_path / "kshot_by_t.csv"),
+        pd.read_csv(gdir / "kshot_by_t.csv"),
     )
 
 
@@ -214,4 +215,6 @@ def test_wrappers(model_set, bank_items):
     assert sorted(new) == sorted(old.files)
     for k in old.files:
         atol = ATOL if k.startswith("mix_") else F32_ATOL
-        np.testing.assert_allclose(new[k], old[k], rtol=RTOL, atol=atol, err_msg=k)
+        np.testing.assert_allclose(
+            new[k], old[k], rtol=RTOL, atol=atol, err_msg=k
+        )

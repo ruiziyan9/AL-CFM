@@ -104,7 +104,9 @@ def run_kshot(
     fixed = confounder_scm()
     if not random_weights:
         S = obs_cov(fixed)
-        print(f"true SCM (standardised) B =\n{np.round(fixed.B, 3)}\ns2 = {np.round(fixed.s2, 3)}")
+        print(
+            f"true SCM (standardised) B =\n{np.round(fixed.B, 3)}\ns2 = {np.round(fixed.s2, 3)}"
+        )
         for T, Y in QUERIES:
             b, v = fixed.do_dist(T, Y)
             print(f"  {qname(T, Y):26s} N({b:+.3f} t, {v:.3f})   "
@@ -143,13 +145,17 @@ def run_kshot(
             orc = LinGaussOracle(len(scm.s2), prior).fit(x, m)
             # all six queries share the context: one batch of six elements
             mod = predict_mixture(model, x, m, Ts, Ys, grid, device=dev)
-            mod_nf = predict_mixture(model, x, m, Ts, Ys, grid, device=dev, zero_flags=True)
+            mod_nf = predict_mixture(
+                model, x, m, Ts, Ys, grid, device=dev, zero_flags=True
+            )
             qrng = np.random.default_rng([s, c_i, k, 99])
 
             for qi, (T, Y) in enumerate(QUERIES):
                 # truth p*
                 b, v = truth[(T, Y)]
-                y_true = torch.tensor(sample_truth(b, v, grid, n_y, qrng), device=dev)
+                y_true = torch.tensor(
+                    sample_truth(b, v, grid, n_y, qrng), device=dev
+                )
                 lp_true = truth_logpdf(b, v, g, y_true)
 
                 # exact Bayes p_B
@@ -240,12 +246,24 @@ def run_scm_suite(
     rows = []
     for name, scm, (T, Y), why in scm_suite():
         if len(scm.s2) != num_nodes:
-            raise ValueError(f"SCM {name} has {len(scm.s2)} nodes, expected {num_nodes}")
+            raise ValueError(
+                f"SCM {name} has {len(scm.s2)} nodes, expected {num_nodes}"
+            )
         slope, var = scm.do_dist(T, Y)
-        print(f"\n=== {name}: Y=X{Y} | do(X{T}=t) ~ N({slope:.2f} t, {var:.3f})  [{why}]")
+        print(
+            f"\n=== {name}: Y=X{Y} | do(X{T}=t) ~ N({slope:.2f} t, {var:.3f})  [{why}]"
+        )
         for label, regimes in context_designs(num_nodes=num_nodes):
             r: dict[str, list] = {
-                k: [] for k in ("truth", "oracle", "model", "model_noflag", "p_anc", "H")
+                k: []
+                for k in (
+                    "truth",
+                    "oracle",
+                    "model",
+                    "model_noflag",
+                    "p_anc",
+                    "H",
+                )
             }
             for s in range(n_seeds):
                 rng = np.random.default_rng(1000 * s + 7)
@@ -255,12 +273,16 @@ def run_scm_suite(
                 y = xq[:, Y]
                 orc = LinGaussOracle(num_nodes, prior).fit(x, m)
                 r["truth"].append(-scm.do_logpdf(T, Y, t, y).mean())
-                r["oracle"].append(-orc.logpdf(T, Y, t, y, n_mc=n_mc, seed=s).mean())
+                r["oracle"].append(
+                    -orc.logpdf(T, Y, t, y, n_mc=n_mc, seed=s).mean()
+                )
                 for key, zf in (("model", False), ("model_noflag", True)):
                     mu, sd, logw = predict_mixture(
                         model, x, m, T, Y, t, device=device, zero_flags=zf
                     )
-                    r[key].append(-mixture_logpdf(mu, sd, logw, y)[0].mean().item())
+                    r[key].append(
+                        -mixture_logpdf(mu, sd, logw, y)[0].mean().item()
+                    )
                 r["p_anc"].append(orc.prob_ancestor(T, Y))
                 r["H"].append(orc.graph_entropy())
             row: dict = {"scm": name, "design": label}
@@ -318,7 +340,9 @@ def run_bank_gap(
         pits.append(pit)
         effs.append(eff)
         if flag_ablation and it["n_int_T"] > 0:
-            lp0, _, _ = _item_scores(model, it, device, normalise, zero_flags=True)
+            lp0, _, _ = _item_scores(
+                model, it, device, normalise, zero_flags=True
+            )
             flag_gain.append(float(np.mean(lp - lp0)))
 
     pit = np.concatenate(pits)
@@ -327,5 +351,7 @@ def run_bank_gap(
     row["calib/cover90"] = float(np.mean(np.abs(pit - 0.5) < 0.45))
     row["mog/effective_components"] = float(np.mean(np.concatenate(effs)))
     if flag_ablation:
-        row["flag/logp_gain"] = float(np.mean(flag_gain)) if flag_gain else float("nan")
+        row["flag/logp_gain"] = (
+            float(np.mean(flag_gain)) if flag_gain else float("nan")
+        )
     return row

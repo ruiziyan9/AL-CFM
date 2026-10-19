@@ -88,7 +88,9 @@ class TrainStatsCallback(Callback):
                 "train/grad_norm_mean": float(np.nanmean(norms)),
                 "train/grad_norm_max": float(np.nanmax(norms)),
                 "train/clip_frac": (
-                    float(np.mean(norms > self.clip_val)) if self.clip_val else 0.0
+                    float(np.mean(norms > self.clip_val))
+                    if self.clip_val
+                    else 0.0
                 ),
                 "train/lr": float(trainer.optimizer.param_groups[0]["lr"]),
                 "train/steps_per_sec": len(self.losses) / elapsed,
@@ -106,7 +108,9 @@ class TrainStatsCallback(Callback):
 # Gap to the Bayes oracle
 # --------------------------------------------------------------------------- #
 class OracleGapCallback(Callback):
-    def __init__(self, bank_path: str, every: int = 2500, flag_ablation: bool = True):
+    def __init__(
+        self, bank_path: str, every: int = 2500, flag_ablation: bool = True
+    ):
         self.bank_path = bank_path
         self.every = every
         self.flag_ablation = flag_ablation

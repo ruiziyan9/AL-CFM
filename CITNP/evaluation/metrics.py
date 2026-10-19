@@ -26,19 +26,27 @@ def naive_slope(S: np.ndarray, T: int, Y: int) -> float:
 # --------------------------------------------------------------------------- #
 # Densities and samples on a grid of do-values t [n_t], n_y samples per t
 # --------------------------------------------------------------------------- #
-def mix_logpdf(y: torch.Tensor, mu: torch.Tensor, sd: torch.Tensor, logw: torch.Tensor):
+def mix_logpdf(
+    y: torch.Tensor, mu: torch.Tensor, sd: torch.Tensor, logw: torch.Tensor
+):
     """log density of y [n_t, n_y] under per-t Gaussian mixtures
     mu, sd, logw [n_t, K]  ->  [n_t, n_y]."""
-    lp = torch.distributions.Normal(mu[:, None, :], sd[:, None, :]).log_prob(y[:, :, None])
+    lp = torch.distributions.Normal(mu[:, None, :], sd[:, None, :]).log_prob(
+        y[:, :, None]
+    )
     return torch.logsumexp(lp + logw[:, None, :], dim=-1)
 
 
-def sample_truth(b: float, v: float, grid: np.ndarray, n_y: int, rng) -> np.ndarray:
+def sample_truth(
+    b: float, v: float, grid: np.ndarray, n_y: int, rng
+) -> np.ndarray:
     """Samples [n_t, n_y] of the true do-distribution N(b t, v)."""
     return b * grid[:, None] + np.sqrt(v) * rng.standard_normal((len(grid), n_y))
 
 
-def truth_logpdf(b: float, v: float, g: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+def truth_logpdf(
+    b: float, v: float, g: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
     """log N(y; b t, v) for y [n_t, n_y], g the grid as a float64 tensor."""
     return torch.distributions.Normal(b * g[:, None], np.sqrt(v)).log_prob(y)
 
@@ -51,7 +59,12 @@ def oracle_weights(log_w: np.ndarray, var: np.ndarray):
 
 
 def sample_oracle(
-    w: np.ndarray, slope: np.ndarray, var: np.ndarray, grid: np.ndarray, n_y: int, rng
+    w: np.ndarray,
+    slope: np.ndarray,
+    var: np.ndarray,
+    grid: np.ndarray,
+    n_y: int,
+    rng,
 ) -> np.ndarray:
     """Samples [n_t, n_y] of the oracle mixture sum_m w_m N(slope_m t, var_m)."""
     idx = rng.choice(len(w), size=(len(grid), n_y), p=w)
@@ -78,7 +91,9 @@ def kl_mc(lp_p: torch.Tensor, lp_q: torch.Tensor) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Moments, implied effects, variance ratios
 # --------------------------------------------------------------------------- #
-def oracle_moments(w: np.ndarray, slope: np.ndarray, var: np.ndarray, grid: np.ndarray):
+def oracle_moments(
+    w: np.ndarray, slope: np.ndarray, var: np.ndarray, grid: np.ndarray
+):
     """(implied slope mean, slope sd, predictive mean [n_t], predictive var [n_t])."""
     s_bar = float(w @ slope)
     s_sd = float(np.sqrt(max(w @ slope**2 - s_bar**2, 0.0)))

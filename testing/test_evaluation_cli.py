@@ -10,7 +10,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from golden_spec import GOLDEN
 
-KSHOT_FIGURES = ["main", "by_query", "effect", "flag", "varratio", "qtype", "by_t"]
+KSHOT_FIGURES = [
+    "main",
+    "by_query",
+    "effect",
+    "flag",
+    "varratio",
+    "qtype",
+    "by_t",
+]
 SHIMS = [
     "eval_d3_kshot",
     "eval_d3_oracle",
@@ -21,7 +29,9 @@ SHIMS = [
 ]
 
 
-@pytest.mark.skipif(not (GOLDEN / "kshot.csv").exists(), reason="golden files not recorded")
+@pytest.mark.skipif(
+    not (GOLDEN / "kshot.csv").exists(), reason="golden files not recorded"
+)
 def test_plot_kshot_from_csv(tmp_path):
     from CITNP.evaluation.__main__ import main
 
@@ -66,6 +76,8 @@ def test_oracle_lingauss_reexports():
     from CITNP.evaluation import oracle, tasks
 
     with pytest.warns(DeprecationWarning):
-        old = importlib.reload(importlib.import_module("CITNP.evaluation.oracle_lingauss"))
+        old = importlib.reload(
+            importlib.import_module("CITNP.evaluation.oracle_lingauss")
+        )
     assert old.LinGaussOracle is oracle.LinGaussOracle
     assert old.make_context is tasks.make_context

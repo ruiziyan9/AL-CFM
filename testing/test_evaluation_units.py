@@ -62,10 +62,14 @@ def test_context_designs_keep_observational_rows(num_nodes):
 
 
 def test_make_context(scm):
-    x, m = tasks.make_context(scm, [(None, 40), (2, 8), (0, 0)], 1.5, np.random.default_rng(0))
+    x, m = tasks.make_context(
+        scm, [(None, 40), (2, 8), (0, 0)], 1.5, np.random.default_rng(0)
+    )
     assert x.shape == m.shape == (48, 3)
     assert m.sum() == 8 and m[:, 2].sum() == 8
-    x2, m2 = tasks.make_context(scm, [(None, 40), (2, 8)], 1.5, np.random.default_rng(0))
+    x2, m2 = tasks.make_context(
+        scm, [(None, 40), (2, 8)], 1.5, np.random.default_rng(0)
+    )
     np.testing.assert_array_equal(x, x2)  # deterministic given the generator
 
 
@@ -114,7 +118,9 @@ def test_moments_and_implied_slope():
     mean, var = metrics.mixture_moments(mu, sd, logw)
     np.testing.assert_allclose(mean, 1.5 * grid + 0.2)
     np.testing.assert_allclose(var, 0.25, atol=1e-12)
-    np.testing.assert_allclose(metrics.implied_slope(grid, mean), (1.5, 0.2), atol=1e-12)
+    np.testing.assert_allclose(
+        metrics.implied_slope(grid, mean), (1.5, 0.2), atol=1e-12
+    )
     assert metrics.variance_ratio(var, var) == pytest.approx(1.0)
 
 
@@ -138,7 +144,9 @@ def test_naive_slope_is_confounded(scm):
 # --------------------------------------------------------------------------- #
 def test_oracle_posterior(scm):
     assert len(all_dags(3)) == 25
-    x, m = tasks.make_context(scm, [(None, 64), (0, 16)], 1.5, np.random.default_rng(0))
+    x, m = tasks.make_context(
+        scm, [(None, 64), (0, 16)], 1.5, np.random.default_rng(0)
+    )
     orc = LinGaussOracle(3).fit(x, m)
     assert orc.graph_post.sum() == pytest.approx(1.0)
     assert 0.0 <= orc.prob_ancestor(0, 2) <= 1.0
@@ -178,7 +186,9 @@ def test_run_scm_suite_direct(model):
     from CITNP.evaluation.model_api import mixture_logpdf, predict_mixture
 
     data_cfg = load_config(str(REPO / "CITNP/experiments/configs/oracle_d3.yaml"))
-    df = run_scm_suite(model, data_cfg, device="cpu", n_seeds=1, n_query=8, n_mc=10)
+    df = run_scm_suite(
+        model, data_cfg, device="cpu", n_seeds=1, n_query=8, n_mc=10
+    )
     suite, designs = tasks.scm_suite(), tasks.context_designs()
     assert len(df) == len(suite) * len(designs)
     assert list(df.scm.unique()) == [name for name, *_ in suite]
@@ -202,7 +212,9 @@ def test_run_scm_suite_direct(model):
 def test_run_bank_gap_columns(model, scm, flag_ablation):
     from CITNP.evaluation.experiments import run_bank_gap
 
-    row = run_bank_gap(model, _bank(scm), device="cpu", flag_ablation=flag_ablation)
+    row = run_bank_gap(
+        model, _bank(scm), device="cpu", flag_ablation=flag_ablation
+    )
     expected = [
         "oracle_gap/all", "oracle_gap/nT=0", "oracle_gap/nT=1-10",
         "calib/cover50", "calib/cover90", "mog/effective_components",

@@ -34,7 +34,9 @@ def _model_args(p: argparse.ArgumentParser, required: bool) -> None:
 # --------------------------------------------------------------------------- #
 def _kshot_parser(p: argparse.ArgumentParser) -> None:
     _model_args(p, required=False)
-    p.add_argument("--plot_only", default=None, help="CSV from a previous run: only plot")
+    p.add_argument(
+        "--plot_only", default=None, help="CSV from a previous run: only plot"
+    )
     p.add_argument("--n_seeds", type=int, default=100)
     p.add_argument("--n_obs", type=int, default=128)
     p.add_argument("--k_max", type=int, default=10)
@@ -45,13 +47,21 @@ def _kshot_parser(p: argparse.ArgumentParser) -> None:
                    help="fresh confounder-SCM weights per seed (same graph)")  # fmt: skip
     p.add_argument("--do_scale", type=float, default=1.5,
                    help="sd of do-values in the context's interventional rows")  # fmt: skip
-    p.add_argument("--t_max", type=float, default=3.0, help="query grid is [-t_max, t_max]")
+    p.add_argument(
+        "--t_max", type=float, default=3.0, help="query grid is [-t_max, t_max]"
+    )
     p.add_argument("--n_t", type=int, default=13, help="query grid points")
-    p.add_argument("--n_y", type=int, default=64, help="MC samples per grid point for KLs")
-    p.add_argument("--n_mc", type=int, default=200, help="oracle parameter draws per DAG")
+    p.add_argument(
+        "--n_y", type=int, default=64, help="MC samples per grid point for KLs"
+    )
+    p.add_argument(
+        "--n_mc", type=int, default=200, help="oracle parameter draws per DAG"
+    )
     p.add_argument("--min_graph_prob", type=float, default=1e-4)
     p.add_argument("--out", default="kshot.csv")
-    p.add_argument("--device", default=None, help="default: cuda if available, else cpu")
+    p.add_argument(
+        "--device", default=None, help="default: cuda if available, else cpu"
+    )
 
 
 def _suite_parser(p: argparse.ArgumentParser) -> None:
@@ -61,7 +71,9 @@ def _suite_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--do_scale", type=float, default=1.5)
     p.add_argument("--n_mc", type=int, default=1000)
     p.add_argument("--out", default="results_d3_oracle.csv")
-    p.add_argument("--device", default=None, help="default: cuda if available, else cpu")
+    p.add_argument(
+        "--device", default=None, help="default: cuda if available, else cpu"
+    )
 
 
 def _bank_parser(p: argparse.ArgumentParser) -> None:
@@ -73,7 +85,9 @@ def _bank_parser(p: argparse.ArgumentParser) -> None:
 
 
 def _plot_kshot_parser(p: argparse.ArgumentParser) -> None:
-    p.add_argument("csv", help="<prefix>.csv written by kshot (reads <prefix>_by_t.csv too)")
+    p.add_argument(
+        "csv", help="<prefix>.csv written by kshot (reads <prefix>_by_t.csv too)"
+    )
 
 
 def _plot_monitoring_parser(p: argparse.ArgumentParser) -> None:
@@ -123,11 +137,21 @@ def _run_kshot(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     df_t.to_csv(prefix + "_by_t.csv", index=False)
     print(f"wrote {a.out} and {prefix}_by_t.csv")
 
-    cols = ["kl_truth_model", "kl_truth_oracle", "kl_oracle_model", "kl_oracle_model_noflag"]
+    cols = [
+        "kl_truth_model",
+        "kl_truth_oracle",
+        "kl_oracle_model",
+        "kl_oracle_model_noflag",
+    ]
     sel = df[df.k.isin(k_list)]
     with pd.option_context("display.width", 220, "display.max_rows", 500):
         print(f"\n=== {MAIN_QUERY}, by experiment design and k")
-        print(sel[sel["query"] == MAIN_QUERY].groupby(["design", "k"])[cols].mean().round(3))
+        print(
+            sel[sel["query"] == MAIN_QUERY]
+            .groupby(["design", "k"])[cols]
+            .mean()
+            .round(3)
+        )
         print("\n=== all 6 queries, by experiment design and k")
         print(sel.groupby(["design", "k"])[cols].mean().round(3))
         print("\n=== by query type and k")
@@ -161,14 +185,20 @@ def _run_bank(a: argparse.Namespace) -> None:
     from CITNP.evaluation.tasks import build_bank
 
     cfg = load_config(a.data_config)
-    items = build_bank(cfg, per_bucket=a.per_bucket, base_seed=a.seed, n_mc=a.n_mc)
+    items = build_bank(
+        cfg, per_bucket=a.per_bucket, base_seed=a.seed, n_mc=a.n_mc
+    )
     with open(a.out, "wb") as f:
-        pickle.dump({"items": items, "data_config": a.data_config, "seed": a.seed}, f)
+        pickle.dump(
+            {"items": items, "data_config": a.data_config, "seed": a.seed}, f
+        )
 
     labels = Counter(lab for it in items for lab in it["labels"])
     print(f"\nwrote {len(items)} questions to {a.out}")
     for lab, n in sorted(labels.items()):
-        nll = np.mean([-it["oracle_logp"].mean() for it in items if lab in it["labels"]])
+        nll = np.mean(
+            [-it["oracle_logp"].mean() for it in items if lab in it["labels"]]
+        )
         print(f"  {lab:14s} n={n:4d}  oracle NLL {nll:.4f}")
 
 
@@ -182,11 +212,20 @@ def _run_plot_monitoring(a: argparse.Namespace) -> None:
 
 
 COMMANDS = {
-    "kshot": (_kshot_parser, "k-shot evaluation on the confounder SCM (+ figures)"),
-    "scm-suite": (_suite_parser, "fixed SCMs x context designs vs truth and oracle"),
+    "kshot": (
+        _kshot_parser,
+        "k-shot evaluation on the confounder SCM (+ figures)",
+    ),
+    "scm-suite": (
+        _suite_parser,
+        "fixed SCMs x context designs vs truth and oracle",
+    ),
     "bank": (_bank_parser, "build the fixed oracle bank used during training"),
     "plot-kshot": (_plot_kshot_parser, "all k-shot figures from saved CSVs"),
-    "plot-monitoring": (_plot_monitoring_parser, "figures from oracle_gap / train_stats CSVs"),
+    "plot-monitoring": (
+        _plot_monitoring_parser,
+        "figures from oracle_gap / train_stats CSVs",
+    ),
 }
 
 

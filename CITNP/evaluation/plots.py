@@ -24,7 +24,12 @@ import pandas as pd
 
 from CITNP.evaluation.tasks import DESIGNS, MAIN_QUERY, QUERIES, qname
 
-COLORS = {"random": "C0", "do(treatment)": "C1", "do(confounder)": "C2", "do(outcome)": "C3"}
+COLORS = {
+    "random": "C0",
+    "do(treatment)": "C1",
+    "do(confounder)": "C2",
+    "do(outcome)": "C3",
+}
 XLAB = "number of experiments (interventional samples)"
 
 
@@ -43,7 +48,9 @@ def seed_curve(d: pd.DataFrame, col, agg="mean"):
     return g.mean(), g.sem()
 
 
-def _curve(df: pd.DataFrame, design: str, cols: list[str], query: str | None = None):
+def _curve(
+    df: pd.DataFrame, design: str, cols: list[str], query: str | None = None
+):
     """Mean and s.e. over seeds of cols vs k, with k = 0 prepended; averages
     over queries within a seed first when query is None."""
     d = df if query is None else df[df["query"] == query]
@@ -51,7 +58,9 @@ def _curve(df: pd.DataFrame, design: str, cols: list[str], query: str | None = N
 
 
 def band(ax, mu, se, color, ls="-", label=None, marker="o") -> None:
-    ax.plot(mu.index, mu.values, ls, marker=marker, ms=3, color=color, label=label)
+    ax.plot(
+        mu.index, mu.values, ls, marker=marker, ms=3, color=color, label=label
+    )
     ax.fill_between(mu.index, mu - se, mu + se, color=color, alpha=0.15)
 
 
@@ -75,20 +84,48 @@ def _save(fig, path: str, dpi: int = 150) -> None:
 def plot_kshot_main(df: pd.DataFrame, prefix: str) -> None:
     """KL to truth (main query, mean of queries) and to the oracle vs k."""
     panels = [
-        ("kl_truth_model", "kl_truth_oracle", MAIN_QUERY, f"KL(truth || ·): {MAIN_QUERY}"),
-        ("kl_truth_model", "kl_truth_oracle", None, "KL(truth || ·): mean of 6 queries"),
-        ("kl_oracle_model", None, None, "KL(Bayes oracle || model): mean of 6 queries"),
+        (
+            "kl_truth_model",
+            "kl_truth_oracle",
+            MAIN_QUERY,
+            f"KL(truth || ·): {MAIN_QUERY}",
+        ),
+        (
+            "kl_truth_model",
+            "kl_truth_oracle",
+            None,
+            "KL(truth || ·): mean of 6 queries",
+        ),
+        (
+            "kl_oracle_model",
+            None,
+            None,
+            "KL(Bayes oracle || model): mean of 6 queries",
+        ),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     for ax, (mcol, ocol, q, title) in zip(axes, panels):
         for d in DESIGNS:
             cols = [mcol] + ([ocol] if ocol else [])
             mu, se = _curve(df, d, cols, q)
-            ax.plot(mu.index, mu[mcol], "-o", ms=3, color=COLORS[d], label=f"model, {d}")
+            ax.plot(
+                mu.index,
+                mu[mcol],
+                "-o",
+                ms=3,
+                color=COLORS[d],
+                label=f"model, {d}",
+            )
             ax.fill_between(mu.index, mu[mcol] - se[mcol], mu[mcol] + se[mcol],
                             color=COLORS[d], alpha=0.15)  # fmt: skip
             if ocol:
-                ax.plot(mu.index, mu[ocol], "--", color=COLORS[d], label=f"oracle, {d}")
+                ax.plot(
+                    mu.index,
+                    mu[ocol],
+                    "--",
+                    color=COLORS[d],
+                    label=f"oracle, {d}",
+                )
         ax.axhline(0, color="k", lw=0.5)
         ax.set_xticks(sorted(df.k.unique()))
         ax.set_xlabel(XLAB)
@@ -105,8 +142,21 @@ def plot_kshot_by_query(df: pd.DataFrame, prefix: str) -> None:
     for ax, q in zip(axes.flat, queries):
         for d in DESIGNS:
             mu, _ = _curve(df, d, ["kl_truth_model", "kl_truth_oracle"], q)
-            ax.plot(mu.index, mu.kl_truth_model, "-o", ms=3, color=COLORS[d], label=f"model, {d}")
-            ax.plot(mu.index, mu.kl_truth_oracle, "--", color=COLORS[d], label=f"oracle, {d}")
+            ax.plot(
+                mu.index,
+                mu.kl_truth_model,
+                "-o",
+                ms=3,
+                color=COLORS[d],
+                label=f"model, {d}",
+            )
+            ax.plot(
+                mu.index,
+                mu.kl_truth_oracle,
+                "--",
+                color=COLORS[d],
+                label=f"oracle, {d}",
+            )
         ax.axhline(0, color="k", lw=0.5)
         ax.set_title(f"KL(truth || ·): {q}")
     for ax in axes[1]:
@@ -119,7 +169,11 @@ def plot_kshot_effect(df: pd.DataFrame, prefix: str) -> None:
     """Implied causal effect error per query (model solid, oracle dashed,
     naive observational regression dotted)."""
     queries = [qname(T, Y) for T, Y in QUERIES]
-    cols = ["slope_err_model_truth", "slope_err_oracle_truth", "slope_err_naive_truth"]
+    cols = [
+        "slope_err_model_truth",
+        "slope_err_oracle_truth",
+        "slope_err_naive_truth",
+    ]
     fig, axes = plt.subplots(2, 3, figsize=(18, 9), sharex=True)
     for ax, q in zip(axes.flat, queries):
         for d in DESIGNS:
@@ -166,7 +220,9 @@ def plot_varratio(df: pd.DataFrame, prefix: str, ks) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
     for d in DESIGNS:
         # median over queries within a seed: ratios are skewed
-        mu, se = seed_curve(with_k0(df, d), "var_ratio_model_oracle", agg="median")
+        mu, se = seed_curve(
+            with_k0(df, d), "var_ratio_model_oracle", agg="median"
+        )
         band(ax, mu, se, COLORS[d], label=d)
     ax.axhline(1, color="k", lw=0.8)
     ax.set_yscale("log")
@@ -176,12 +232,20 @@ def plot_varratio(df: pd.DataFrame, prefix: str, ks) -> None:
     _save(fig, prefix + "_varratio.png")
 
 
-def plot_qtype(df: pd.DataFrame, prefix: str, ks, *, min_contexts: int = 20) -> None:
+def plot_qtype(
+    df: pd.DataFrame, prefix: str, ks, *, min_contexts: int = 20
+) -> None:
     """KL to truth split by query type. Points backed by fewer than
     `min_contexts` contexts (seeds) are skipped; each point is annotated with
     its number of contexts."""
-    types = [t for t in ["seen", "unseen_identified", "unidentified"] if t in set(df.query_type)]
-    fig, axes = plt.subplots(1, len(types), figsize=(6 * len(types), 4.5), sharey=True)
+    types = [
+        t
+        for t in ["seen", "unseen_identified", "unidentified"]
+        if t in set(df.query_type)
+    ]
+    fig, axes = plt.subplots(
+        1, len(types), figsize=(6 * len(types), 4.5), sharey=True
+    )
     axes = [axes] if len(types) == 1 else axes
     for ax, qt in zip(axes, types):
         for d in DESIGNS:
@@ -201,12 +265,16 @@ def plot_qtype(df: pd.DataFrame, prefix: str, ks, *, min_contexts: int = 20) -> 
                             ha="center", fontsize=6, color=COLORS[d])  # fmt: skip
             mu, _ = seed_curve(h, "kl_truth_oracle")
             mu = mu.loc[keep]
-            ax.plot(mu.index, mu.values, "--", color=COLORS[d], label=f"oracle, {d}")
+            ax.plot(
+                mu.index, mu.values, "--", color=COLORS[d], label=f"oracle, {d}"
+            )
         ax.axhline(0, color="k", lw=0.5)
         finish(ax, ks, f"KL(truth || ·): query type = {qt}")
     axes[0].set_ylabel("KL, nats per query point")
     axes[0].legend(fontsize=7, ncol=2)
-    fig.suptitle(f"numbers = contexts per point; points with < {min_contexts} contexts omitted")
+    fig.suptitle(
+        f"numbers = contexts per point; points with < {min_contexts} contexts omitted"
+    )
     _save(fig, prefix + "_qtype.png")
 
 
@@ -219,11 +287,22 @@ def plot_by_t(bt: pd.DataFrame, prefix: str, ks) -> None:
         h = with_k0(bt, d)
         for i, k in enumerate(show):
             hk = h[h.k == k]
-            per_seed = hk.groupby(["seed", "abs_t"])[["kl_truth_model", "kl_truth_oracle"]].mean()
+            per_seed = hk.groupby(["seed", "abs_t"])[
+                ["kl_truth_model", "kl_truth_oracle"]
+            ].mean()
             g = per_seed.groupby("abs_t").mean()
             c = plt.cm.viridis(i / max(len(show) - 1, 1))
-            ax.plot(g.index, g.kl_truth_model, "-o", ms=3, color=c, label=f"model, k={k}")
-            ax.plot(g.index, g.kl_truth_oracle, "--", color=c, label=f"oracle, k={k}")
+            ax.plot(
+                g.index,
+                g.kl_truth_model,
+                "-o",
+                ms=3,
+                color=c,
+                label=f"model, k={k}",
+            )
+            ax.plot(
+                g.index, g.kl_truth_oracle, "--", color=c, label=f"oracle, k={k}"
+            )
         ax.set_xlabel("|do-value t| (context do-values have sd 1.5)")
         ax.set_title(f"KL(truth || ·) vs |t|: {d}")
     axes[0].set_ylabel("KL, nats per query point")

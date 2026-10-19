@@ -19,7 +19,9 @@ from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, dag_key
 # --------------------------------------------------------------------------- #
 TREAT, CONF, OUTC = 0, 1, 2
 ROLE = {TREAT: "treatment", CONF: "confounder", OUTC: "outcome"}
-QUERIES = [(T, Y) for T in range(3) for Y in range(3) if T != Y]  # (treatment, outcome)
+QUERIES = [
+    (T, Y) for T in range(3) for Y in range(3) if T != Y
+]  # (treatment, outcome)
 MAIN_QUERY = f"{ROLE[OUTC]}|do({ROLE[TREAT]})"
 DESIGNS = ["random", "do(treatment)", "do(confounder)", "do(outcome)"]
 FIXED_NODE = {"do(treatment)": TREAT, "do(confounder)": CONF, "do(outcome)": OUTC}
@@ -41,7 +43,9 @@ def identified_queries(nodes: frozenset) -> frozenset:
         return _ALL  # the causal order X1, X0, X2 is pinned down
     if nodes == {CONF}:
         # X1 first; X0 - X2 orientation open
-        return frozenset({(CONF, TREAT), (CONF, OUTC), (TREAT, CONF), (OUTC, CONF)})
+        return frozenset(
+            {(CONF, TREAT), (CONF, OUTC), (TREAT, CONF), (OUTC, CONF)}
+        )
     if nodes == {OUTC}:
         # X2 last; X0 - X1 orientation open
         return frozenset({(OUTC, TREAT), (OUTC, CONF)})
@@ -79,6 +83,7 @@ def confounder_scm(
 
 def random_confounder_scm(rng: np.random.Generator) -> LinearSCM:
     """Confounder SCM with random signs, weights and noise variances."""
+
     def sign() -> float:
         return rng.choice([-1.0, 1.0])
 
@@ -126,7 +131,9 @@ def context_designs(
 ) -> list[tuple[str, list[tuple[int | None, int]]]]:
     """(label, regimes). Total rows stay inside training n_ctx_range; every
     design keeps n_obs observational rows (normalisation needs them)."""
-    out: list[tuple[str, list[tuple[int | None, int]]]] = [("obs_only", [(None, n_obs)])]
+    out: list[tuple[str, list[tuple[int | None, int]]]] = [
+        ("obs_only", [(None, n_obs)])
+    ]
     for node, m in itertools.product(range(num_nodes), m_grid[1:]):
         out.append((f"obs+do(X{node})x{m}", [(None, n_obs), (node, m)]))
     return out
@@ -173,7 +180,9 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 # --------------------------------------------------------------------------- #
 # Graph prior of the training generator (incl. its random variable permutation)
 # --------------------------------------------------------------------------- #
-def empirical_graph_prior(cfg, n: int = 20000, seed: int = 0, num_nodes: int = 3) -> dict:
+def empirical_graph_prior(
+    cfg, n: int = 20000, seed: int = 0, num_nodes: int = 3
+) -> dict:
     """dag_key -> log frequency over n graphs from the training generator.
     Reseeds the global numpy and `random` RNGs (sample_graph uses them)."""
     from CITNP.datasets.mixed_regime_generator import sample_graph
@@ -214,7 +223,9 @@ def build_bank(
     )
 
     if cfg.function_generator != "linearnonidentifiable" or cfg.normalise:
-        raise ValueError("oracle bank needs linearnonidentifiable with normalise: false")
+        raise ValueError(
+            "oracle bank needs linearnonidentifiable with normalise: false"
+        )
     prior = empirical_graph_prior(cfg, num_nodes=D)
     counts = {b: 0 for b in BUCKETS}
     items = []
@@ -223,7 +234,9 @@ def build_bank(
         if all(c >= per_bucket for c in counts.values()):
             break
         # SOURCE_ADHOC keys never collide with training / val / test streams.
-        task = generate_task(cfg, make_key(SOURCE_ADHOC, 0, base_seed, i), num_variables=D)
+        task = generate_task(
+            cfg, make_key(SOURCE_ADHOC, 0, base_seed, i), num_variables=D
+        )
         ctx_x = task.ctx_x.astype(np.float64)
         ctx_int = task.ctx_int.astype(bool)
         qx = task.qry_x.astype(np.float64)
@@ -272,5 +285,7 @@ def build_bank(
         if i % 200 == 0:
             print(f"task {i}: {counts}  ({time.time() - t0:.0f}s)")
     else:
-        print(f"WARNING: hit max_tasks={max_tasks} before filling quotas: {counts}")
+        print(
+            f"WARNING: hit max_tasks={max_tasks} before filling quotas: {counts}"
+        )
     return items
