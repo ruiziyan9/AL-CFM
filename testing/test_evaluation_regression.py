@@ -28,11 +28,16 @@ from golden_spec import (  # noqa: E402
     TINY_CFG,
     TRAINED_CFG,
     TRAINED_ENV,
+    QUERIES,
     callback_bank_gap,
     wrapper_outputs,
 )
 
 RTOL, ATOL = 1e-5, 1e-7
+# Pointwise wrapper outputs that the old code computed in float32 (log
+# densities, PIT, effective components) are now computed in float64 from the
+# same float32 model outputs: allow float32 rounding, ~1e-6 absolute.
+F32_ATOL = 1e-5
 
 pytestmark = pytest.mark.skipif(
     not (GOLDEN / "tiny_model.pt").exists(),
@@ -71,18 +76,30 @@ def run_bank(args: list[str]) -> None:
 
 
 def load(ckpt: str, model_cfg: str):
-    from CITNP.evaluation.eval_d3_oracle import load_model
+    from CITNP.evaluation.model_api import load_model
 
     return load_model(ckpt, model_cfg, "cpu")
 
 
 def wrapper_fns():
-    """(mixtures_fn, logpdf_fn, mog_fn) with the signatures in golden_spec."""
-    from CITNP.evaluation.eval_d3_kshot import model_mixtures
-    from CITNP.evaluation.eval_d3_oracle import model_logpdf
-    from CITNP.trainer.monitor_callbacks import mog_predictive
+    """(mixtures_fn, logpdf_fn, mog_fn) with the signatures in golden_spec,
+    rebuilt on model_api.predict_mixture."""
+    from CITNP.evaluation.model_api import mixture_logpdf, predict_mixture
+    from CITNP.trainer.monitor_callbacks import _item_scores
 
-    return model_mixtures, model_logpdf, mog_predictive
+    Ts = np.array([T for T, _ in QUERIES])
+    Ys = np.array([Y for _, Y in QUERIES])
+
+    def mixtures(model, x, m, grid, device, zero_flags):
+        return predict_mixture(
+            model, x, m, Ts, Ys, grid, device=device, zero_flags=zero_flags
+        )
+
+    def logpdf(model, x, m, T, Y, t, y, device, zero_flags):
+        mix = predict_mixture(model, x, m, T, Y, t, device=device, zero_flags=zero_flags)
+        return mixture_logpdf(*mix, y)[0].cpu().numpy()
+
+    return mixtures, logpdf, _item_scores
 
 
 # --------------------------------------------------------------------------- #
@@ -202,4 +219,5 @@ def test_wrappers(model_set, bank_items):
     old = np.load(gdir / "wrappers.npz")
     assert sorted(new) == sorted(old.files)
     for k in old.files:
-        np.testing.assert_allclose(new[k], old[k], rtol=RTOL, atol=ATOL, err_msg=k)
+        atol = ATOL if k.startswith("mix_") else F32_ATOL
+        np.testing.assert_allclose(new[k], old[k], rtol=RTOL, atol=atol, err_msg=k)

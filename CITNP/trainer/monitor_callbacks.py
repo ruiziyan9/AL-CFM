@@ -20,10 +20,14 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
 
+from CITNP.evaluation.model_api import (
+    effective_components,
+    mixture_cdf,
+    mixture_logpdf,
+    predict_mixture,
+)
 from CITNP.trainer.callbacks import Callback
-from CITNP.trainer.mixed_context_trainer import _normalisation_stats
 
 try:
     import wandb
@@ -106,41 +110,16 @@ class TrainStatsCallback(Callback):
 # --------------------------------------------------------------------------- #
 # Gap to the Bayes oracle
 # --------------------------------------------------------------------------- #
-@torch.no_grad()
-def mog_predictive(model, item, device, normalise=True, zero_flags=False):
-    """Per query point: log p_model(y | do(T = t), context) on the RAW scale,
-    the PIT value F_model(y), and exp(entropy) of the mixture weights."""
-    D = item["ctx_x"].shape[1]
-    T, Y = int(item["T"]), int(item["Y"])
-    cx = torch.as_tensor(item["ctx_x"], dtype=torch.float32)[None]
-    ci = torch.as_tensor(item["ctx_int"], dtype=torch.bool)[None]
-    if normalise:  # same per-task standardisation as prepare_mixed_batch
-        mean, std = _normalisation_stats(cx, ci)
-        mean, std = mean[0], std[0]
-    else:
-        mean, std = torch.zeros(D), torch.ones(D)
-    t = torch.as_tensor(item["t"], dtype=torch.float32)
-    y = torch.as_tensor(item["y"], dtype=torch.float32)
-    tgt = torch.zeros(1, len(t), D, 1)
-    tgt[0, :, T, 0] = (t - mean[T]) / std[T]
-    dt = next(model.parameters()).dtype  # match the model (float32 or bfloat16)
-    out = model(
-        context_data=((cx - mean) / std)[..., None].to(device, dt),
-        target_data=tgt.to(device,dt),
-        intervention_index=torch.tensor([T], device=device),
-        outcome_index=torch.tensor([Y], device=device),
-        context_int_mask=(torch.zeros_like(ci) if zero_flags else ci).to(device),
-    )
-    mu = out.pred_mean[0, :, 0].float()  # [Nq, M]
-    sd = out.pred_std[0, :, 0].float()
-    w = out.weights[0, :, 0].float()
-    yn = ((y - mean[Y]) / std[Y]).to(device)[:, None]
-    comp = torch.distributions.Normal(mu, sd + 1e-12)
-    logp = torch.logsumexp(comp.log_prob(yn) + torch.log(w + 1e-12), dim=-1)
-    logp = logp - torch.log(std[Y]).to(device)  # Jacobian back to the raw scale
-    wn = w / w.sum(-1, keepdim=True)
-    pit = (wn * comp.cdf(yn)).sum(-1)
-    eff = torch.exp(-(wn * torch.log(wn + 1e-12)).sum(-1))
+def _item_scores(model, item, device, normalise=True, zero_flags=False):
+    """Per query point of a bank item: log p_model(y | do(T = t), context) on
+    the RAW scale, the PIT value F_model(y), and exp(entropy) of the weights."""
+    mix = predict_mixture(
+        model, item["ctx_x"], item["ctx_int"], int(item["T"]), int(item["Y"]),
+        item["t"], device=device, zero_flags=zero_flags, normalise=normalise,
+    )  # fmt: skip
+    logp = mixture_logpdf(*mix, item["y"])[0]
+    pit = mixture_cdf(*mix, item["y"])[0]
+    eff = effective_components(mix[2])[0]
     return logp.cpu().numpy(), pit.cpu().numpy(), eff.cpu().numpy()
 
 
@@ -172,14 +151,14 @@ class OracleGapCallback(Callback):
         normalise = getattr(trainer, "normalise", True)
         gaps, pits, effs, flag_gain = {}, [], [], []
         for it in self.items:
-            lp, pit, eff = mog_predictive(model, it, trainer.device, normalise)
+            lp, pit, eff = _item_scores(model, it, trainer.device, normalise)
             gap = float(np.mean(it["oracle_logp"] - lp))  # nats per query point
             for lab in it["labels"]:
                 gaps.setdefault(lab, []).append(gap)
             pits.append(pit)
             effs.append(eff)
             if self.flag_ablation and it["n_int_T"] > 0:
-                lp0, _, _ = mog_predictive(
+                lp0, _, _ = _item_scores(
                     model, it, trainer.device, normalise, zero_flags=True
                 )
                 flag_gain.append(float(np.mean(lp - lp0)))

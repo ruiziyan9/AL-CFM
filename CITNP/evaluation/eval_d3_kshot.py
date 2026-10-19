@@ -148,43 +148,6 @@ def mix_logpdf(y, mu, sd, logw):
     return torch.logsumexp(lp + logw[:, None, :], dim=-1)
 
 
-@torch.no_grad()
-def model_mixtures(model, ctx_x, ctx_int, grid, device, zero_flags=False):
-    """Model predictive for all QUERIES at every do-value in grid, raw scale.
-    The six queries share the context and run as one batch of six elements.
-    Returns mu, sd, logw, each [Q, n_t, K] float64 on device."""
-    from CITNP.trainer.mixed_context_trainer import _normalisation_stats
-
-    Q = len(QUERIES)
-    cx = torch.tensor(ctx_x, dtype=torch.float32)[None]
-    ci = torch.tensor(ctx_int, dtype=torch.bool)[None]
-    mean, std = _normalisation_stats(cx, ci)
-    mean, std = mean[0].float(), std[0].float()
-    cxn = ((cx - mean) / std)[..., None].repeat(Q, 1, 1, 1)
-    flags = (torch.zeros_like(ci) if zero_flags else ci).repeat(Q, 1, 1)
-    Ts = torch.tensor([T for T, _ in QUERIES])
-    Ys = torch.tensor([Y for _, Y in QUERIES])
-    t = torch.tensor(grid, dtype=torch.float32)
-    tgt = torch.zeros(Q, len(grid), D, 1)
-    for qi, (T, _) in enumerate(QUERIES):
-        tgt[qi, :, T, 0] = (t - mean[T]) / std[T]
-    out = model(
-        context_data=cxn.to(device),
-        target_data=tgt.to(device),
-        intervention_index=Ts.to(device),
-        outcome_index=Ys.to(device),
-        context_int_mask=flags.to(device),
-    )
-    mu = out.pred_mean[:, :, 0].double()  # [Q, n_t, K], standardised scale
-    sd = out.pred_std[:, :, 0].double()
-    w = out.weights[:, :, 0].double()
-    m_y = mean[Ys].double().to(device)[:, None, None]
-    s_y = std[Ys].double().to(device)[:, None, None]
-    logw = torch.log(w + 1e-12)
-    logw = logw - torch.logsumexp(logw, dim=-1, keepdim=True)
-    return mu * s_y + m_y, sd * s_y + 1e-12, logw
-
-
 # --------------------------------------------------------------------------- #
 # Experiment pools (nested in k)
 # --------------------------------------------------------------------------- #
@@ -332,7 +295,8 @@ def main():
         ap.error("--ckpt, --model_config and --data_config are required")
 
     from CITNP.datasets.create_mixed_regime_chunks import load_config
-    from CITNP.evaluation.eval_d3_oracle import empirical_graph_prior, load_model
+    from CITNP.evaluation.eval_d3_oracle import empirical_graph_prior
+    from CITNP.evaluation.model_api import load_model, predict_mixture
     from CITNP.evaluation.oracle import LinGaussOracle
 
     dev = a.device
@@ -356,6 +320,8 @@ def main():
 
     grid = np.linspace(-a.t_max, a.t_max, a.n_t)
     g = torch.tensor(grid, dtype=torch.float64, device=dev)
+    Ts = np.array([T for T, _ in QUERIES])
+    Ys = np.array([Y for _, Y in QUERIES])
     contexts = [("obs", 0)] + [(d, k) for d in DESIGNS for k in k_list if k > 0]
 
     rows, rows_t = [], []
@@ -381,8 +347,9 @@ def main():
             x, m = x[perm], m[perm]
 
             orc = LinGaussOracle(D, prior).fit(x, m)
-            mod = model_mixtures(model, x, m, grid, dev)
-            mod_nf = model_mixtures(model, x, m, grid, dev, zero_flags=True)
+            # all six queries share the context: one batch of six elements
+            mod = predict_mixture(model, x, m, Ts, Ys, grid, device=dev)
+            mod_nf = predict_mixture(model, x, m, Ts, Ys, grid, device=dev, zero_flags=True)
             qrng = np.random.default_rng([s, c_i, k, 99])
 
             for qi, (T, Y) in enumerate(QUERIES):

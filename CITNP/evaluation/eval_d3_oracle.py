@@ -24,68 +24,14 @@ import itertools
 
 import numpy as np
 import torch
-import yaml
 
 from CITNP.datasets.create_mixed_regime_chunks import load_config
 from CITNP.datasets.mixed_regime_generator import sample_graph
+from CITNP.evaluation.model_api import load_model, mixture_logpdf, predict_mixture
 from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, dag_key
 from CITNP.evaluation.oracle_lingauss import make_context
-from CITNP.models.mixed_context_model import MixedContextMoGModel
-from CITNP.trainer.mixed_context_trainer import _normalisation_stats
-from CITNP.utils.configs import CausalInfModelConfig
 
 D = 3
-
-
-# --------------------------------------------------------------------------- #
-# Model wrapper
-# --------------------------------------------------------------------------- #
-def load_model(ckpt, model_yaml, device):
-    with open(model_yaml) as f:
-        m = yaml.safe_load(f)
-    cfg = CausalInfModelConfig(
-        d_model=m["d_model"],
-        emb_depth=m["emb_depth"],
-        dim_feedforward=m["dim_feedforward"],
-        nhead=m["nhead"],
-        dropout=0.0,
-        num_layers_encoder=m["num_layers_encoder"],
-        num_nodes=D,
-        sample_attn_mode=m["sample_attn_mode"],
-        linear_attention=m.get("linear_attention", False),
-        mean_loss_across_samples=False,
-        device=device,
-        dtype="float32",
-        num_mixture_components=m["num_mixture_components"],
-    )
-    model = MixedContextMoGModel(cfg)
-    state = torch.load(ckpt, map_location="cpu")
-    model.load_state_dict(state.get("model_state_dict", state))
-    return model.to(device).eval()
-
-
-@torch.no_grad()
-def model_logpdf(model, ctx_x, ctx_int, T, Y, t, y, device, zero_flags=False):
-    """log p_model(y_i | do(T = t_i), context) on the raw scale."""
-    cx = torch.tensor(ctx_x, dtype=torch.float32)[None]
-    ci = torch.tensor(ctx_int, dtype=torch.bool)[None]
-    mean, std = _normalisation_stats(cx, ci)  # [1, D]
-    mean, std = mean[0], std[0]
-    cxn = ((cx - mean) / std)[..., None]
-    tgt = torch.zeros(1, len(t), D, 1)
-    tgt[0, :, T, 0] = (torch.tensor(t, dtype=torch.float32) - mean[T]) / std[T]
-    out = model(
-        context_data=cxn.to(device),
-        target_data=tgt.to(device),
-        intervention_index=torch.tensor([T], device=device),
-        outcome_index=torch.tensor([Y], device=device),
-        context_int_mask=(torch.zeros_like(ci) if zero_flags else ci).to(device),
-    )
-    yn = ((torch.tensor(y, dtype=torch.float32) - mean[Y]) / std[Y]).to(device)
-    mu, sd, w = out.pred_mean[0, :, 0], out.pred_std[0, :, 0], out.weights[0, :, 0]
-    lp = torch.distributions.Normal(mu, sd + 1e-12).log_prob(yn[:, None])
-    lp = torch.logsumexp(lp + torch.log(w + 1e-12), dim=-1)
-    return (lp - torch.log(std[Y])).cpu().numpy()  # Jacobian back to raw scale
 
 
 # --------------------------------------------------------------------------- #
@@ -162,10 +108,9 @@ def main():
                 orc = LinGaussOracle(D, prior).fit(x, m)
                 r["truth"].append(-scm.do_logpdf(T, Y, t, y).mean())
                 r["oracle"].append(-orc.logpdf(T, Y, t, y, n_mc=a.n_mc, seed=s).mean())
-                r["model"].append(-model_logpdf(model, x, m, T, Y, t, y, a.device).mean())
-                r["model_noflag"].append(
-                    -model_logpdf(model, x, m, T, Y, t, y, a.device, zero_flags=True).mean()
-                )
+                for key, zf in (("model", False), ("model_noflag", True)):
+                    mix = predict_mixture(model, x, m, T, Y, t, device=a.device, zero_flags=zf)
+                    r[key].append(-mixture_logpdf(*mix, y)[0].mean().item())
                 r["p_anc"].append(orc.prob_ancestor(T, Y))
                 r["H"].append(orc.graph_entropy())
             row = {"scm": name, "design": label}
