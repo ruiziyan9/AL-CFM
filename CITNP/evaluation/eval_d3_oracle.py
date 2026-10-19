@@ -28,12 +28,8 @@ import yaml
 
 from CITNP.datasets.create_mixed_regime_chunks import load_config
 from CITNP.datasets.mixed_regime_generator import sample_graph
-from CITNP.evaluation.oracle_lingauss import (
-    LinearSCM,
-    LinGaussOracle,
-    dag_key,
-    make_context,
-)
+from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, dag_key
+from CITNP.evaluation.oracle_lingauss import make_context
 from CITNP.models.mixed_context_model import MixedContextMoGModel
 from CITNP.trainer.mixed_context_trainer import _normalisation_stats
 from CITNP.utils.configs import CausalInfModelConfig

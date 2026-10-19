@@ -108,7 +108,7 @@ def query_type(nodes: frozenset, T: int, Y: int) -> str:
 def standardise(scm):
     """Rescale every variable to unit marginal (observational) variance.
     x'_j = x_j / sd_j  =>  B'[i, j] = B[i, j] sd_i / sd_j,  s2'_j = s2_j / sd_j^2."""
-    from CITNP.evaluation.oracle_lingauss import LinearSCM
+    from CITNP.evaluation.oracle import LinearSCM
 
     A = np.linalg.inv(np.eye(D) - scm.B.T)
     sd = np.sqrt(np.diag(A @ np.diag(scm.s2) @ A.T))
@@ -116,7 +116,7 @@ def standardise(scm):
 
 
 def confounder_scm(b_ct=0.9, b_cy=0.8, b_ty=-0.3, s2=(0.2, 0.3, 0.25)):
-    from CITNP.evaluation.oracle_lingauss import LinearSCM
+    from CITNP.evaluation.oracle import LinearSCM
 
     B = np.zeros((D, D))
     B[CONF, TREAT], B[CONF, OUTC], B[TREAT, OUTC] = b_ct, b_cy, b_ty
@@ -333,7 +333,7 @@ def main():
 
     from CITNP.datasets.create_mixed_regime_chunks import load_config
     from CITNP.evaluation.eval_d3_oracle import empirical_graph_prior, load_model
-    from CITNP.evaluation.oracle_lingauss import LinGaussOracle
+    from CITNP.evaluation.oracle import LinGaussOracle
 
     dev = a.device
     data_cfg = load_config(a.data_config)

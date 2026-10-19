@@ -32,7 +32,7 @@ from CITNP.datasets.mixed_regime_generator import (
     make_key,
 )
 from CITNP.evaluation.eval_d3_oracle import empirical_graph_prior
-from CITNP.evaluation.oracle_lingauss import LinGaussOracle
+from CITNP.evaluation.oracle import LinGaussOracle
 
 BUCKETS = ("nT=0", "nT=1-10", "nT=11+")
 
