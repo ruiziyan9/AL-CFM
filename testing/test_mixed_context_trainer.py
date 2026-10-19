@@ -121,24 +121,49 @@ def test_normalisation_ignores_intervened_cells():
     batch["ctx_x"][b, i, d] = 1e3
     mean1, std1 = prep(batch)["norm"]
     assert torch.allclose(mean0, mean1) and torch.allclose(std0, std1)
-    # The stats are those of the non-intervened cells.
-    x = batch["ctx_x"][b, :, d][~batch["ctx_int"][b, :, d]].double()
+    # The stats are those of the observational rows (no intervened variable).
+    obs_rows = ~batch["ctx_int"][b].any(-1)
+    x = batch["ctx_x"][b, obs_rows, d].double()
     assert torch.isclose(mean1[b, d].double(), x.mean(), atol=1e-5)
     assert torch.isclose(std1[b, d].double(), x.std(unbiased=False), atol=1e-5)
 
 
-def test_normalisation_fallbacks():
-    ctx = torch.randn(2, 5, 2)
-    cint = torch.zeros(2, 5, 2, dtype=torch.bool)
-    cint[0, :, 0] = True  # all intervened -> use all cells
-    cint[1, 1:, 1] = True  # one free cell -> use all cells
+def test_normalisation_uses_observational_rows_only():
+    ctx = torch.randn(2, 14, 2)
+    cint = torch.zeros(2, 14, 2, dtype=torch.bool)
+    cint[:, 10:, 0] = True  # rows 10-13 are do(X0) rows: excluded for X0 AND X1
     mean, std = _normalisation_stats(ctx, cint)
-    assert torch.isclose(mean[0, 0], ctx[0, :, 0].mean(), atol=1e-6)
-    assert torch.isclose(mean[1, 1], ctx[1, :, 1].mean(), atol=1e-6)
-    mean, std = _normalisation_stats(ctx[:, :1], cint[:, :1])  # one row
-    assert torch.equal(mean, torch.zeros(2, 2)) and torch.equal(
-        std, torch.ones(2, 2)
-    )
+    obs = ctx[:, :10].double()
+    assert torch.allclose(mean.double(), obs.mean(1), atol=1e-6)
+    assert torch.allclose(std.double(), obs.std(1, unbiased=False), atol=1e-6)
+
+
+def test_normalisation_raises_without_enough_observational_rows():
+    ctx = torch.randn(2, 14, 2)
+    cint = torch.zeros(2, 14, 2, dtype=torch.bool)
+    cint[:, 10:, 0] = True
+    cint[1, 9, 1] = True  # task 1 keeps only 9 observational rows
+    with pytest.raises(
+        ValueError, match=r"1 task\(s\) have fewer than 10 observational .*\(min 9\)"
+    ):
+        _normalisation_stats(ctx, cint)
+    # The old fallback cases (every row intervened; a single row) now raise.
+    with pytest.raises(ValueError, match=r"2 task\(s\) .*\(min 0\)"):
+        _normalisation_stats(ctx, torch.ones_like(cint))
+    with pytest.raises(ValueError, match="fewer than 10"):
+        _normalisation_stats(ctx[:, :1], torch.zeros_like(cint[:, :1]))
+    # min_rows is the threshold.
+    _normalisation_stats(ctx, cint, min_rows=9)
+
+
+def test_prepare_raises_on_batch_without_observational_rows():
+    # The generator can still produce such contexts with n_obs_min=0.
+    cfg = grouped_cfg(p_obs=0.0, n_obs_min=0)
+    batch = grouped_batch(G=1, cfg=cfg)
+    assert batch["ctx_int"].any(-1).all()  # no observational row anywhere
+    with pytest.raises(ValueError, match="observational context rows"):
+        prep(batch)
+    prep(batch, normalise=False)  # fine without normalisation
 
 
 def test_guards():
