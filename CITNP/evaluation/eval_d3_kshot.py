@@ -244,6 +244,7 @@ def plot_results(df, prefix):
             if ocol:
                 ax.plot(mu.index, mu[ocol], "--", color=COLORS[d], label=f"oracle, {d}")
         ax.axhline(0, color="k", lw=0.5)
+        ax.set_xticks(sorted(df.k.unique()))
         ax.set_xlabel(xlab)
         ax.set_title(title)
     axes[0].set_ylabel("KL, nats per query point")
@@ -304,6 +305,9 @@ def main():
     ap.add_argument("--n_seeds", type=int, default=100)
     ap.add_argument("--n_obs", type=int, default=128)
     ap.add_argument("--k_max", type=int, default=10)
+    ap.add_argument("--k_list", default=None,
+                    help="comma-separated numbers of experiments, e.g. 0,1,3,5,10; "
+                         "overrides --k_max (default: 0..k_max)")
     ap.add_argument("--random_weights", action="store_true",
                     help="fresh confounder-SCM weights per seed (same graph)")
     ap.add_argument("--do_scale", type=float, default=1.5,
@@ -316,6 +320,10 @@ def main():
     ap.add_argument("--out", default="kshot.csv")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
+
+    k_list = (sorted({int(k) for k in a.k_list.split(",")}) if a.k_list
+              else list(range(a.k_max + 1)))
+    a.k_max = max(k_list)
 
     if a.plot_only:
         plot_results(pd.read_csv(a.plot_only), a.plot_only.removesuffix(".csv"))
@@ -348,7 +356,7 @@ def main():
 
     grid = np.linspace(-a.t_max, a.t_max, a.n_t)
     g = torch.tensor(grid, dtype=torch.float64, device=dev)
-    contexts = [("obs", 0)] + [(d, k) for d in DESIGNS for k in range(1, a.k_max + 1)]
+    contexts = [("obs", 0)] + [(d, k) for d in DESIGNS for k in k_list if k > 0]
 
     rows, rows_t = [], []
     for s in range(a.n_seeds):
@@ -465,7 +473,7 @@ def main():
     print(f"wrote {a.out} and {prefix}_by_t.csv")
 
     cols = ["kl_truth_model", "kl_truth_oracle", "kl_oracle_model", "kl_oracle_model_noflag"]
-    sel = df[df.k.isin([0, 1, 2, 5, 10])]
+    sel = df[df.k.isin(k_list)]
     with pd.option_context("display.width", 220, "display.max_rows", 500):
         print(f"\n=== {MAIN_QUERY}, by experiment design and k")
         print(sel[sel["query"] == MAIN_QUERY].groupby(["design", "k"])[cols].mean().round(3))
