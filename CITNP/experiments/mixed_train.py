@@ -32,8 +32,9 @@ from CITNP.datasets.mixed_regime_generator import (
     MixedRegimeConfig,
     MixedRegimeTaskDataset,
 )
+from CITNP.models import mixed_context_model
 from CITNP.models.mixed_context_model import (
-    MixedContextMoGModel,
+    load_r1_checkpoint,
     load_upstream_checkpoint,
 )
 from CITNP.trainer.callbacks import (
@@ -93,6 +94,7 @@ MODEL_KEYS = (
     "linear_attention",
     "mean_loss_across_samples",
     "num_mixture_components",
+    "model_class",
 )
 
 
@@ -102,6 +104,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     extra.add_argument("--data_config", required=True)
     extra.add_argument("--model_config", default=None)
     extra.add_argument("--init_from_upstream", default=None)
+    extra.add_argument(
+        "--init_from_r1",
+        default=None,
+        help="R1 checkpoint to warm-start a Layerwise* model from",
+    )
+    extra.add_argument(
+        "--model_class",
+        default="MixedContextMoGModel",
+        help="class in CITNP.models.mixed_context_model (or YAML model_class)",
+    )
     extra.add_argument("--val_iterations", type=int, default=20)
     extra.add_argument("--test_iterations", type=int, default=20)
     extra.add_argument(
@@ -183,9 +195,14 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         dtype=args.dtype,
         num_mixture_components=args.num_mixture_components,
     )
-    model = MixedContextMoGModel(model_config)
+    model_cls = getattr(mixed_context_model, args.model_class)
+    model = model_cls(model_config)
+    print(f"Model class: {args.model_class}")
     if args.init_from_upstream:
         load_upstream_checkpoint(model, args.init_from_upstream)
+    if args.init_from_r1:
+        load_r1_checkpoint(model, args.init_from_r1)
+        print(f"Warm-started from R1 checkpoint {args.init_from_r1}")
     if args.resume_from:
         state = torch.load(args.resume_from, map_location="cpu")
         model.load_state_dict(state.get("model_state_dict", state))  # strict
