@@ -21,12 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from CITNP.evaluation.model_api import (
-    effective_components,
-    mixture_cdf,
-    mixture_logpdf,
-    predict_mixture,
-)
+from CITNP.evaluation.experiments import run_bank_gap
 from CITNP.trainer.callbacks import Callback
 
 try:
@@ -110,19 +105,6 @@ class TrainStatsCallback(Callback):
 # --------------------------------------------------------------------------- #
 # Gap to the Bayes oracle
 # --------------------------------------------------------------------------- #
-def _item_scores(model, item, device, normalise=True, zero_flags=False):
-    """Per query point of a bank item: log p_model(y | do(T = t), context) on
-    the RAW scale, the PIT value F_model(y), and exp(entropy) of the weights."""
-    mix = predict_mixture(
-        model, item["ctx_x"], item["ctx_int"], int(item["T"]), int(item["Y"]),
-        item["t"], device=device, zero_flags=zero_flags, normalise=normalise,
-    )  # fmt: skip
-    logp = mixture_logpdf(*mix, item["y"])[0]
-    pit = mixture_cdf(*mix, item["y"])[0]
-    eff = effective_components(mix[2])[0]
-    return logp.cpu().numpy(), pit.cpu().numpy(), eff.cpu().numpy()
-
-
 class OracleGapCallback(Callback):
     def __init__(self, bank_path: str, every: int = 2500, flag_ablation: bool = True):
         self.bank_path = bank_path
@@ -148,30 +130,17 @@ class OracleGapCallback(Callback):
         model = trainer.model
         was_training = model.training
         model.eval()
-        normalise = getattr(trainer, "normalise", True)
-        gaps, pits, effs, flag_gain = {}, [], [], []
-        for it in self.items:
-            lp, pit, eff = _item_scores(model, it, trainer.device, normalise)
-            gap = float(np.mean(it["oracle_logp"] - lp))  # nats per query point
-            for lab in it["labels"]:
-                gaps.setdefault(lab, []).append(gap)
-            pits.append(pit)
-            effs.append(eff)
-            if self.flag_ablation and it["n_int_T"] > 0:
-                lp0, _, _ = _item_scores(
-                    model, it, trainer.device, normalise, zero_flags=True
-                )
-                flag_gain.append(float(np.mean(lp - lp0)))
-        if was_training:
-            model.train()
-
-        pit = np.concatenate(pits)
-        row = {f"oracle_gap/{k}": float(np.mean(v)) for k, v in sorted(gaps.items())}
-        row["calib/cover50"] = float(np.mean(np.abs(pit - 0.5) < 0.25))
-        row["calib/cover90"] = float(np.mean(np.abs(pit - 0.5) < 0.45))
-        row["mog/effective_components"] = float(np.mean(np.concatenate(effs)))
-        if self.flag_ablation:
-            row["flag/logp_gain"] = float(np.mean(flag_gain)) if flag_gain else float("nan")
+        try:
+            row = run_bank_gap(
+                model,
+                self.items,
+                device=trainer.device,
+                normalise=getattr(trainer, "normalise", True),
+                flag_ablation=self.flag_ablation,
+            )
+        finally:
+            if was_training:
+                model.train()
         _log_row(row, self.path, trainer.global_step)
         print(
             f"[oracle] step {trainer.global_step}: gap all {row['oracle_gap/all']:.4f}"

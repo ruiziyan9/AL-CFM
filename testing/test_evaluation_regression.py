@@ -85,7 +85,7 @@ def wrapper_fns():
     """(mixtures_fn, logpdf_fn, mog_fn) with the signatures in golden_spec,
     rebuilt on model_api.predict_mixture."""
     from CITNP.evaluation.model_api import mixture_logpdf, predict_mixture
-    from CITNP.trainer.monitor_callbacks import _item_scores
+    from CITNP.evaluation.experiments import _item_scores
 
     Ts = np.array([T for T, _ in QUERIES])
     Ys = np.array([Y for _, Y in QUERIES])

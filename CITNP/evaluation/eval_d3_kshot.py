@@ -55,37 +55,11 @@ The oracle is Bayes-optimal only for the prior the model was trained on
 
 import argparse
 
-import numpy as np
 import pandas as pd
 import torch
 
-from CITNP.evaluation.metrics import (
-    implied_slope,
-    kl_mc,
-    mix_logpdf,
-    mixture_moments,
-    naive_slope,
-    obs_cov,
-    oracle_mixture_on_grid,
-    oracle_moments,
-    oracle_weights,
-    sample_oracle,
-    sample_truth,
-    truth_logpdf,
-    variance_ratio,
-)
-from CITNP.evaluation.tasks import (
-    DESIGNS,
-    MAIN_QUERY,
-    QUERIES,
-    confounder_scm,
-    make_pools,
-    qname,
-    query_type,
-    random_confounder_scm,
-)
+from CITNP.evaluation.tasks import DESIGNS, MAIN_QUERY, QUERIES, qname
 
-D = 3
 COLORS = {"random": "C0", "do(treatment)": "C1", "do(confounder)": "C2", "do(outcome)": "C3"}
 
 
@@ -215,131 +189,20 @@ def main():
         ap.error("--ckpt, --model_config and --data_config are required")
 
     from CITNP.datasets.create_mixed_regime_chunks import load_config
-    from CITNP.evaluation.model_api import load_model, predict_mixture
-    from CITNP.evaluation.oracle import LinGaussOracle
-    from CITNP.evaluation.tasks import empirical_graph_prior
+    from CITNP.evaluation.experiments import run_kshot
+    from CITNP.evaluation.model_api import load_model
 
-    dev = a.device
     data_cfg = load_config(a.data_config)
-    lo, hi = data_cfg.n_ctx_range
-    if not (lo <= a.n_obs and a.n_obs + a.k_max <= hi):
-        print(f"WARNING: context sizes {a.n_obs}..{a.n_obs + a.k_max} "
-              f"outside training n_ctx_range {data_cfg.n_ctx_range}")
-
-    model = load_model(a.ckpt, a.model_config, dev)
-    prior = empirical_graph_prior(data_cfg)
-
-    fixed = confounder_scm()
-    if not a.random_weights:
-        S = obs_cov(fixed)
-        print(f"true SCM (standardised) B =\n{np.round(fixed.B, 3)}\ns2 = {np.round(fixed.s2, 3)}")
-        for T, Y in QUERIES:
-            b, v = fixed.do_dist(T, Y)
-            print(f"  {qname(T, Y):26s} N({b:+.3f} t, {v:.3f})   "
-                  f"naive obs slope {naive_slope(S, T, Y):+.3f}")
-
-    grid = np.linspace(-a.t_max, a.t_max, a.n_t)
-    g = torch.tensor(grid, dtype=torch.float64, device=dev)
-    Ts = np.array([T for T, _ in QUERIES])
-    Ys = np.array([Y for _, Y in QUERIES])
-    contexts = [("obs", 0)] + [(d, k) for d in DESIGNS for k in k_list if k > 0]
-
-    rows, rows_t = [], []
-    for s in range(a.n_seeds):
-        rng = np.random.default_rng([s, 7])
-        scm = random_confounder_scm(rng) if a.random_weights else fixed
-        S = obs_cov(scm)
-        truth = {q: scm.do_dist(*q) for q in QUERIES}
-        naive = {(T, Y): naive_slope(S, T, Y) for T, Y in QUERIES}
-
-        obs_x, obs_m = scm.sample(a.n_obs, None, None, rng)
-        pools = make_pools(scm, a.k_max, a.do_scale, rng)
-
-        for c_i, (design, k) in enumerate(contexts):
-            if k == 0:
-                x, m, nodes = obs_x, obs_m, frozenset()
-            else:
-                px, pm, seq = pools[design]
-                x = np.concatenate([obs_x, px[:k]])
-                m = np.concatenate([obs_m, pm[:k]])
-                nodes = frozenset(int(j) for j in seq[:k])
-            perm = np.random.default_rng([s, c_i, k]).permutation(len(x))
-            x, m = x[perm], m[perm]
-
-            orc = LinGaussOracle(D, prior).fit(x, m)
-            # all six queries share the context: one batch of six elements
-            mod = predict_mixture(model, x, m, Ts, Ys, grid, device=dev)
-            mod_nf = predict_mixture(model, x, m, Ts, Ys, grid, device=dev, zero_flags=True)
-            qrng = np.random.default_rng([s, c_i, k, 99])
-
-            for qi, (T, Y) in enumerate(QUERIES):
-                # truth p*
-                b, v = truth[(T, Y)]
-                y_true = torch.tensor(sample_truth(b, v, grid, a.n_y, qrng), device=dev)
-                lp_true = truth_logpdf(b, v, g, y_true)
-
-                # exact Bayes p_B
-                log_w, slope, var = orc.predictive_components(
-                    T, Y, n_mc=a.n_mc, min_graph_prob=a.min_graph_prob, seed=s
-                )
-                log_w, w, var = oracle_weights(log_w, var)
-                y_or = sample_oracle(w, slope, var, grid, a.n_y, qrng)
-                y_or = torch.tensor(y_or, device=dev)
-                o_par = oracle_mixture_on_grid(log_w, slope, var, g)
-
-                m_par = tuple(p[qi] for p in mod)
-                nf_par = tuple(p[qi] for p in mod_nf)
-
-                lp_o_on_o = mix_logpdf(y_or, *o_par)
-                kl_om = kl_mc(lp_o_on_o, mix_logpdf(y_or, *m_par))
-                kl_om_nf = kl_mc(lp_o_on_o, mix_logpdf(y_or, *nf_par))
-                kl_tm = kl_mc(lp_true, mix_logpdf(y_true, *m_par))
-                kl_to = kl_mc(lp_true, mix_logpdf(y_true, *o_par))
-
-                # moments
-                s_bar, s_sd, mean_o, var_o = oracle_moments(w, slope, var, grid)
-                mean_m, var_m = mixture_moments(*(p.cpu().numpy() for p in m_par))
-                slope_m, icpt_m = implied_slope(grid, mean_m)
-
-                q = qname(T, Y)
-                qtype = query_type(nodes, T, Y)
-                rows.append({
-                    "seed": s, "design": design, "k": k, "T": T, "Y": Y,
-                    "query": q, "query_type": qtype,
-                    "intervened_nodes": "".join(str(j) for j in sorted(nodes)),
-                    "effect": "zero" if abs(b) < 1e-9 else "nonzero",
-                    "kl_truth_model": float(kl_tm.mean()),
-                    "kl_truth_oracle": float(kl_to.mean()),
-                    "kl_oracle_model": float(kl_om.mean()),
-                    "kl_oracle_model_noflag": float(kl_om_nf.mean()),
-                    "excess_kl_truth": float((kl_tm - kl_to).mean()),
-                    "slope_truth": float(b), "slope_naive_obs": naive[(T, Y)],
-                    "slope_oracle": s_bar, "slope_sd_oracle": s_sd,
-                    "slope_model": float(slope_m), "intercept_model": float(icpt_m),
-                    "slope_err_model_truth": float(slope_m - b),
-                    "slope_err_oracle_truth": float(s_bar - b),
-                    "slope_err_naive_truth": float(naive[(T, Y)] - b),
-                    "var_ratio_model_oracle": variance_ratio(var_m, var_o),
-                })
-                for ti, tv in enumerate(grid):
-                    rows_t.append({
-                        "seed": s, "design": design, "k": k, "query": q,
-                        "query_type": qtype, "t": float(tv),
-                        "kl_truth_model": float(kl_tm[ti]),
-                        "kl_truth_oracle": float(kl_to[ti]),
-                        "kl_oracle_model": float(kl_om[ti]),
-                        "mean_truth": float(b * tv), "sd_truth": float(np.sqrt(v)),
-                        "mean_oracle": float(mean_o[ti]), "sd_oracle": float(np.sqrt(var_o[ti])),
-                        "mean_model": float(mean_m[ti]),
-                        "sd_model": float(np.sqrt(max(var_m[ti], 0.0))),
-                    })
-        if (s + 1) % 10 == 0:
-            print(f"{s + 1}/{a.n_seeds} seeds done")
-
-    df = pd.DataFrame(rows)
+    model = load_model(a.ckpt, a.model_config, a.device)
+    df, df_t = run_kshot(
+        model, data_cfg, device=a.device, k_list=k_list, n_seeds=a.n_seeds,
+        n_obs=a.n_obs, random_weights=a.random_weights, do_scale=a.do_scale,
+        t_max=a.t_max, n_t=a.n_t, n_y=a.n_y, n_mc=a.n_mc,
+        min_graph_prob=a.min_graph_prob,
+    )  # fmt: skip
     df.to_csv(a.out, index=False)
     prefix = a.out.removesuffix(".csv")
-    pd.DataFrame(rows_t).to_csv(prefix + "_by_t.csv", index=False)
+    df_t.to_csv(prefix + "_by_t.csv", index=False)
     print(f"wrote {a.out} and {prefix}_by_t.csv")
 
     cols = ["kl_truth_model", "kl_truth_oracle", "kl_oracle_model", "kl_oracle_model_noflag"]
