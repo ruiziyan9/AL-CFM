@@ -7,7 +7,7 @@ Everything else derives what it needs from `predict_mixture` via
 
 import numpy as np
 import torch
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from CITNP.trainer.mixed_context_trainer import _normalisation_stats
 from CITNP.utils.configs import CausalInfModelConfig

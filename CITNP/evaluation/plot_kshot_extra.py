@@ -1,14 +1,11 @@
-"""Deprecated: use `python -m CITNP.evaluation plot-kshot` (writes all k-shot figures)."""
+"""Deprecated: use `python -m CITNP.evaluation plot-kshot` (all k-shot figures)."""
 
 import warnings
 
 from CITNP.evaluation.__main__ import plot_kshot_cli as main
-from CITNP.evaluation.plots import (  # noqa: F401  (re-exports)
-    plot_by_t,
-    plot_flag,
-    plot_qtype,
-    plot_varratio,
-)
+from CITNP.evaluation.plots import plot_by_t, plot_flag, plot_qtype, plot_varratio
+
+__all__ = ["main", "plot_by_t", "plot_flag", "plot_qtype", "plot_varratio"]
 
 warnings.warn(
     "CITNP.evaluation.plot_kshot_extra is deprecated; "

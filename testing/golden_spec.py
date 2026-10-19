@@ -12,7 +12,7 @@ from typing import Callable
 
 import numpy as np
 import torch
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 REPO = Path(__file__).resolve().parents[1]
 GOLDEN = REPO / "testing" / "golden"

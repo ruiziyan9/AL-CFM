@@ -58,10 +58,19 @@ def main() -> None:
     ap.add_argument("--ckpt", default=None, help="trained checkpoint (size-m config)")
     a = ap.parse_args()
 
+    # These names exist only on the pre-refactor baseline (commit abbb68c),
+    # which is the only code this script is meant to run on.
     from CITNP.evaluation import eval_d3_kshot, eval_d3_oracle, oracle_bank
-    from CITNP.evaluation.eval_d3_oracle import load_model, model_logpdf
-    from CITNP.evaluation.eval_d3_kshot import model_mixtures
-    from CITNP.trainer.monitor_callbacks import mog_predictive
+    from CITNP.evaluation.eval_d3_kshot import (  # type: ignore[attr-defined]
+        model_mixtures,
+    )
+    from CITNP.evaluation.eval_d3_oracle import (  # type: ignore[attr-defined]
+        load_model,
+        model_logpdf,
+    )
+    from CITNP.trainer.monitor_callbacks import (  # type: ignore[attr-defined]
+        mog_predictive,
+    )
 
     os.chdir(REPO)
     GOLDEN.mkdir(parents=True, exist_ok=True)

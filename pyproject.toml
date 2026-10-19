@@ -1,3 +1,13 @@
 [tool.ruff]
 line-length = 82
 lint.extend-select = ["RUF012", "RUF100", "RUF200"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # pyparsing 3.x deprecates its camelCase API; matplotlib still calls it.
+    # Matched by message (the warning is attributed to the caller's module)
+    # and by module, without naming a pyparsing warning class, which older
+    # pyparsing versions do not define.
+    "ignore:.* deprecated - use .*:DeprecationWarning",
+    "ignore::DeprecationWarning:pyparsing.*",
+]

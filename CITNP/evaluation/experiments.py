@@ -116,7 +116,8 @@ def run_kshot(
     Ys = np.array([Y for _, Y in QUERIES])
     contexts = [("obs", 0)] + [(d, k) for d in DESIGNS for k in k_list if k > 0]
 
-    rows, rows_t = [], []
+    rows: list[dict] = []
+    rows_t: list[dict] = []
     for s in range(n_seeds):
         rng = np.random.default_rng([s, 7])
         scm = random_confounder_scm(rng) if random_weights else fixed
@@ -303,7 +304,9 @@ def run_bank_gap(
     log-density gained from the intervention flags. Keys are the column names
     of the training-time oracle_gap.csv. The model must be in eval mode."""
     gaps: dict[str, list] = {}
-    pits, effs, flag_gain = [], [], []
+    pits: list[np.ndarray] = []
+    effs: list[np.ndarray] = []
+    flag_gain: list[float] = []
     for it in bank:
         lp, pit, eff = _item_scores(model, it, device, normalise)
         gap = float(np.mean(it["oracle_logp"] - lp))  # nats per query point

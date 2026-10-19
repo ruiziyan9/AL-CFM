@@ -3,7 +3,7 @@
 
 import warnings
 
-from CITNP.evaluation.oracle import (  # noqa: F401  (re-exports)
+from CITNP.evaluation.oracle import (
     ETA,
     NODE_A,
     NODE_B,
@@ -19,7 +19,25 @@ from CITNP.evaluation.oracle import (  # noqa: F401  (re-exports)
     node_posterior,
     topo,
 )
-from CITNP.evaluation.tasks import make_context  # noqa: F401
+from CITNP.evaluation.tasks import make_context
+
+__all__ = [
+    "ETA",
+    "NODE_A",
+    "NODE_B",
+    "ROOT_A",
+    "ROOT_B",
+    "LinGaussOracle",
+    "LinearSCM",
+    "NodePosterior",
+    "all_dags",
+    "dag_key",
+    "has_path",
+    "is_acyclic",
+    "make_context",
+    "node_posterior",
+    "topo",
+]
 
 warnings.warn(
     "CITNP.evaluation.oracle_lingauss is deprecated; use CITNP.evaluation.oracle "

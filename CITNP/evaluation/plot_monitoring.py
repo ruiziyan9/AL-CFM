@@ -3,7 +3,9 @@
 import warnings
 
 from CITNP.evaluation.__main__ import plot_monitoring_cli as main
-from CITNP.evaluation.plots import plot_monitoring  # noqa: F401  (re-export)
+from CITNP.evaluation.plots import plot_monitoring
+
+__all__ = ["main", "plot_monitoring"]
 
 warnings.warn(
     "CITNP.evaluation.plot_monitoring is deprecated; "

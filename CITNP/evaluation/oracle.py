@@ -192,7 +192,9 @@ class LinGaussOracle:
         (Zero-mean priors and linear SEM => interventional mean is linear in t.)
         """
         rng = np.random.default_rng(seed)
-        log_ws, slopes, vars_ = [], [], []
+        log_ws: list[np.ndarray] = []
+        slopes: list[np.ndarray] = []
+        vars_: list[np.ndarray] = []
         for g_i, lp in enumerate(self.log_post):
             if np.exp(lp) < min_graph_prob:
                 continue

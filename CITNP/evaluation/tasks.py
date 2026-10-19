@@ -79,7 +79,9 @@ def confounder_scm(
 
 def random_confounder_scm(rng: np.random.Generator) -> LinearSCM:
     """Confounder SCM with random signs, weights and noise variances."""
-    sign = lambda: rng.choice([-1.0, 1.0])  # noqa: E731
+    def sign() -> float:
+        return rng.choice([-1.0, 1.0])
+
     return confounder_scm(
         b_ct=sign() * rng.uniform(0.5, 1.5),
         b_cy=sign() * rng.uniform(0.5, 1.5),
@@ -92,15 +94,27 @@ def scm_suite() -> list[tuple[str, LinearSCM, tuple[int, int], str]]:
     """Fixed 3-variable SCMs: (name, SCM, query (T, Y), why it is interesting)."""
     D = 3
     out = []
-    B = np.zeros((D, D)); B[0, 1] = 0.9; B[1, 2] = -0.8  # fmt: skip
-    out.append(("chain_0to1to2", LinearSCM(B, np.array([0.3, 0.2, 0.25])), (0, 2),
-                "obs MEC = {chain, reverse chain, fork}: effect not identified"))  # fmt: skip
-    B = np.zeros((D, D)); B[1, 0] = 0.9; B[1, 2] = 0.8  # fmt: skip
-    out.append(("fork_1_to_0_2", LinearSCM(B, np.array([0.2, 0.3, 0.25])), (0, 2),
-                "same MEC, true effect is ZERO (confounded association)"))  # fmt: skip
-    B = np.zeros((D, D)); B[0, 2] = 0.9; B[1, 2] = 0.7  # fmt: skip
-    out.append(("collider_0_1_to_2", LinearSCM(B, np.array([0.3, 0.3, 0.2])), (0, 2),
-                "v-structure: identified from obs, experiments add little"))  # fmt: skip
+
+    B = np.zeros((D, D))
+    B[0, 1], B[1, 2] = 0.9, -0.8
+    out.append((
+        "chain_0to1to2", LinearSCM(B, np.array([0.3, 0.2, 0.25])), (0, 2),
+        "obs MEC = {chain, reverse chain, fork}: effect not identified",
+    ))  # fmt: skip
+
+    B = np.zeros((D, D))
+    B[1, 0], B[1, 2] = 0.9, 0.8
+    out.append((
+        "fork_1_to_0_2", LinearSCM(B, np.array([0.2, 0.3, 0.25])), (0, 2),
+        "same MEC, true effect is ZERO (confounded association)",
+    ))  # fmt: skip
+
+    B = np.zeros((D, D))
+    B[0, 2], B[1, 2] = 0.9, 0.7
+    out.append((
+        "collider_0_1_to_2", LinearSCM(B, np.array([0.3, 0.3, 0.2])), (0, 2),
+        "v-structure: identified from obs, experiments add little",
+    ))  # fmt: skip
     return out
 
 
@@ -112,7 +126,7 @@ def context_designs(
 ) -> list[tuple[str, list[tuple[int | None, int]]]]:
     """(label, regimes). Total rows stay inside training n_ctx_range; every
     design keeps n_obs observational rows (normalisation needs them)."""
-    out = [("obs_only", [(None, n_obs)])]
+    out: list[tuple[str, list[tuple[int | None, int]]]] = [("obs_only", [(None, n_obs)])]
     for node, m in itertools.product(range(num_nodes), m_grid[1:]):
         out.append((f"obs+do(X{node})x{m}", [(None, n_obs), (node, m)]))
     return out
@@ -122,7 +136,8 @@ def make_context(
     scm: LinearSCM, regimes: list[tuple[int | None, int]], do_scale: float, rng
 ) -> tuple[np.ndarray, np.ndarray]:
     """regimes: list of (intervened node or None for obs, n_rows). Returns x, mask."""
-    xs, ms = [], []
+    xs: list[np.ndarray] = []
+    ms: list[np.ndarray] = []
     for node, n in regimes:
         if n == 0:
             continue
@@ -145,7 +160,8 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
         pools[design] = (x, m, np.full(k_max, node))
     seq = rng.integers(0, len(scm.s2), k_max)
     dv = rng.normal(0, do_scale, k_max)
-    rx, rm = [], []
+    rx: list[np.ndarray] = []
+    rm: list[np.ndarray] = []
     for i in range(k_max):
         xi, mi = scm.sample(1, int(seq[i]), dv[i : i + 1], rng)
         rx.append(xi)
