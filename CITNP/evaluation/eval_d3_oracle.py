@@ -20,61 +20,21 @@ a reference.
 
 import argparse
 import csv
-import itertools
 
 import numpy as np
 import torch
 
 from CITNP.datasets.create_mixed_regime_chunks import load_config
-from CITNP.datasets.mixed_regime_generator import sample_graph
 from CITNP.evaluation.model_api import load_model, mixture_logpdf, predict_mixture
-from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, dag_key
-from CITNP.evaluation.oracle_lingauss import make_context
+from CITNP.evaluation.oracle import LinGaussOracle
+from CITNP.evaluation.tasks import (
+    context_designs,
+    empirical_graph_prior,
+    make_context,
+    scm_suite,
+)
 
 D = 3
-
-
-# --------------------------------------------------------------------------- #
-# Graph prior of the training generator (incl. its random variable permutation)
-# --------------------------------------------------------------------------- #
-def empirical_graph_prior(cfg, n=20000, seed=0):
-    np.random.seed(seed)
-    import random
-
-    random.seed(seed)
-    counts = {}
-    for _ in range(n):
-        g, _ = sample_graph(cfg, D)
-        p = np.random.permutation(D)
-        g = g[np.ix_(p, p)].astype(int)
-        counts[dag_key(g)] = counts.get(dag_key(g), 0) + 1
-    return {k: np.log(v / n) for k, v in counts.items()}
-
-
-# --------------------------------------------------------------------------- #
-# Known-truth SCMs. Each: (name, SCM, query (T, Y), why it is interesting)
-# --------------------------------------------------------------------------- #
-def scms():
-    out = []
-    B = np.zeros((D, D)); B[0, 1] = 0.9; B[1, 2] = -0.8
-    out.append(("chain_0to1to2", LinearSCM(B, np.array([0.3, 0.2, 0.25])), (0, 2),
-                "obs MEC = {chain, reverse chain, fork}: effect not identified"))
-    B = np.zeros((D, D)); B[1, 0] = 0.9; B[1, 2] = 0.8
-    out.append(("fork_1_to_0_2", LinearSCM(B, np.array([0.2, 0.3, 0.25])), (0, 2),
-                "same MEC, true effect is ZERO (confounded association)"))
-    B = np.zeros((D, D)); B[0, 2] = 0.9; B[1, 2] = 0.7
-    out.append(("collider_0_1_to_2", LinearSCM(B, np.array([0.3, 0.3, 0.2])), (0, 2),
-                "v-structure: identified from obs, experiments add little"))
-    return out
-
-
-def designs(n_obs=128, m_grid=(0, 8, 16, 32, 64, 128)):
-    """(label, regimes). Total rows stay inside training n_ctx_range."""
-    out = [("obs_only", [(None, n_obs)])]
-    for node, m in itertools.product(range(D), m_grid[1:]):
-        out.append((f"obs+do(X{node})x{m}", [(None, n_obs), (node, m)]))
-   # out.append(("do(X0)_only_x128", [(0, 128)]))
-    return out
 
 
 def main():
@@ -94,10 +54,10 @@ def main():
     prior = empirical_graph_prior(load_config(a.data_config))
 
     rows = []
-    for name, scm, (T, Y), why in scms():
+    for name, scm, (T, Y), why in scm_suite():
         slope, var = scm.do_dist(T, Y)
         print(f"\n=== {name}: Y=X{Y} | do(X{T}=t) ~ N({slope:.2f} t, {var:.3f})  [{why}]")
-        for label, regimes in designs():
+        for label, regimes in context_designs():
             r = {k: [] for k in ("truth", "oracle", "model", "model_noflag", "p_anc", "H")}
             for s in range(a.n_seeds):
                 rng = np.random.default_rng(1000 * s + 7)

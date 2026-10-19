@@ -58,115 +58,35 @@ import argparse
 import numpy as np
 import pandas as pd
 import torch
-from scipy.special import logsumexp
 
-TREAT, CONF, OUTC = 0, 1, 2
-ROLE = {TREAT: "treatment", CONF: "confounder", OUTC: "outcome"}
+from CITNP.evaluation.metrics import (
+    implied_slope,
+    kl_mc,
+    mix_logpdf,
+    mixture_moments,
+    naive_slope,
+    obs_cov,
+    oracle_mixture_on_grid,
+    oracle_moments,
+    oracle_weights,
+    sample_oracle,
+    sample_truth,
+    truth_logpdf,
+    variance_ratio,
+)
+from CITNP.evaluation.tasks import (
+    DESIGNS,
+    MAIN_QUERY,
+    QUERIES,
+    confounder_scm,
+    make_pools,
+    qname,
+    query_type,
+    random_confounder_scm,
+)
+
 D = 3
-QUERIES = [(T, Y) for T in range(D) for Y in range(D) if T != Y]  # (treatment, outcome)
-MAIN_QUERY = f"{ROLE[OUTC]}|do({ROLE[TREAT]})"
-DESIGNS = ["random", "do(treatment)", "do(confounder)", "do(outcome)"]
-FIXED_NODE = {"do(treatment)": TREAT, "do(confounder)": CONF, "do(outcome)": OUTC}
 COLORS = {"random": "C0", "do(treatment)": "C1", "do(confounder)": "C2", "do(outcome)": "C3"}
-
-
-def qname(T, Y):
-    return f"{ROLE[Y]}|do({ROLE[T]})"
-
-
-# --------------------------------------------------------------------------- #
-# Identifiability labels (confounder graph, true order X1, X0, X2)
-# --------------------------------------------------------------------------- #
-_ALL = frozenset(QUERIES)
-
-
-def identified_queries(nodes: frozenset) -> frozenset:
-    """Queries whose effect is identified, as k grows, by interventions on
-    `nodes` (plus observational data), for the confounder graph."""
-    if TREAT in nodes or {CONF, OUTC} <= nodes:
-        return _ALL  # the causal order X1, X0, X2 is pinned down
-    if nodes == {CONF}:
-        # X1 first; X0 - X2 orientation open
-        return frozenset({(CONF, TREAT), (CONF, OUTC), (TREAT, CONF), (OUTC, CONF)})
-    if nodes == {OUTC}:
-        # X2 last; X0 - X1 orientation open
-        return frozenset({(OUTC, TREAT), (OUTC, CONF)})
-    return frozenset()
-
-
-def query_type(nodes: frozenset, T: int, Y: int) -> str:
-    if T in nodes:
-        return "seen"
-    if (T, Y) in identified_queries(nodes):
-        return "unseen_identified"
-    return "unidentified"
-
-
-# --------------------------------------------------------------------------- #
-# Ground truth
-# --------------------------------------------------------------------------- #
-def standardise(scm):
-    """Rescale every variable to unit marginal (observational) variance.
-    x'_j = x_j / sd_j  =>  B'[i, j] = B[i, j] sd_i / sd_j,  s2'_j = s2_j / sd_j^2."""
-    from CITNP.evaluation.oracle import LinearSCM
-
-    A = np.linalg.inv(np.eye(D) - scm.B.T)
-    sd = np.sqrt(np.diag(A @ np.diag(scm.s2) @ A.T))
-    return LinearSCM(scm.B * sd[:, None] / sd[None, :], scm.s2 / sd**2)
-
-
-def confounder_scm(b_ct=0.9, b_cy=0.8, b_ty=-0.3, s2=(0.2, 0.3, 0.25)):
-    from CITNP.evaluation.oracle import LinearSCM
-
-    B = np.zeros((D, D))
-    B[CONF, TREAT], B[CONF, OUTC], B[TREAT, OUTC] = b_ct, b_cy, b_ty
-    return standardise(LinearSCM(B, np.asarray(s2, dtype=float)))
-
-
-def random_confounder_scm(rng):
-    sign = lambda: rng.choice([-1.0, 1.0])
-    return confounder_scm(
-        b_ct=sign() * rng.uniform(0.5, 1.5),
-        b_cy=sign() * rng.uniform(0.5, 1.5),
-        b_ty=sign() * rng.uniform(0.2, 1.0),
-        s2=rng.uniform(0.1, 1.0, D),
-    )
-
-
-def obs_cov(scm):
-    A = np.linalg.inv(np.eye(D) - scm.B.T)
-    return A @ np.diag(scm.s2) @ A.T
-
-
-# --------------------------------------------------------------------------- #
-# Densities
-# --------------------------------------------------------------------------- #
-def mix_logpdf(y, mu, sd, logw):
-    """log density of y [n_t, n_y] under per-t Gaussian mixtures
-    mu, sd, logw [n_t, K]  ->  [n_t, n_y]."""
-    lp = torch.distributions.Normal(mu[:, None, :], sd[:, None, :]).log_prob(y[:, :, None])
-    return torch.logsumexp(lp + logw[:, None, :], dim=-1)
-
-
-# --------------------------------------------------------------------------- #
-# Experiment pools (nested in k)
-# --------------------------------------------------------------------------- #
-def make_pools(scm, k_max, do_scale, rng):
-    """For each design: (x [k_max, D], int_mask [k_max, D], target node per row)."""
-    pools = {}
-    for design, node in FIXED_NODE.items():
-        dv = rng.normal(0, do_scale, k_max)
-        x, m = scm.sample(k_max, node, dv, rng)
-        pools[design] = (x, m, np.full(k_max, node))
-    seq = rng.integers(0, D, k_max)
-    dv = rng.normal(0, do_scale, k_max)
-    rx, rm = [], []
-    for i in range(k_max):
-        xi, mi = scm.sample(1, int(seq[i]), dv[i : i + 1], rng)
-        rx.append(xi)
-        rm.append(mi)
-    pools["random"] = (np.concatenate(rx), np.concatenate(rm), seq)
-    return pools
 
 
 # --------------------------------------------------------------------------- #
@@ -295,9 +215,9 @@ def main():
         ap.error("--ckpt, --model_config and --data_config are required")
 
     from CITNP.datasets.create_mixed_regime_chunks import load_config
-    from CITNP.evaluation.eval_d3_oracle import empirical_graph_prior
     from CITNP.evaluation.model_api import load_model, predict_mixture
     from CITNP.evaluation.oracle import LinGaussOracle
+    from CITNP.evaluation.tasks import empirical_graph_prior
 
     dev = a.device
     data_cfg = load_config(a.data_config)
@@ -316,7 +236,7 @@ def main():
         for T, Y in QUERIES:
             b, v = fixed.do_dist(T, Y)
             print(f"  {qname(T, Y):26s} N({b:+.3f} t, {v:.3f})   "
-                  f"naive obs slope {S[T, Y] / S[T, T]:+.3f}")
+                  f"naive obs slope {naive_slope(S, T, Y):+.3f}")
 
     grid = np.linspace(-a.t_max, a.t_max, a.n_t)
     g = torch.tensor(grid, dtype=torch.float64, device=dev)
@@ -330,7 +250,7 @@ def main():
         scm = random_confounder_scm(rng) if a.random_weights else fixed
         S = obs_cov(scm)
         truth = {q: scm.do_dist(*q) for q in QUERIES}
-        naive = {(T, Y): float(S[T, Y] / S[T, T]) for T, Y in QUERIES}
+        naive = {(T, Y): naive_slope(S, T, Y) for T, Y in QUERIES}
 
         obs_x, obs_m = scm.sample(a.n_obs, None, None, rng)
         pools = make_pools(scm, a.k_max, a.do_scale, rng)
@@ -355,48 +275,31 @@ def main():
             for qi, (T, Y) in enumerate(QUERIES):
                 # truth p*
                 b, v = truth[(T, Y)]
-                y_true = b * grid[:, None] + np.sqrt(v) * qrng.standard_normal((a.n_t, a.n_y))
-                y_true = torch.tensor(y_true, device=dev)
-                lp_true = torch.distributions.Normal(b * g[:, None], np.sqrt(v)).log_prob(y_true)
+                y_true = torch.tensor(sample_truth(b, v, grid, a.n_y, qrng), device=dev)
+                lp_true = truth_logpdf(b, v, g, y_true)
 
                 # exact Bayes p_B
                 log_w, slope, var = orc.predictive_components(
                     T, Y, n_mc=a.n_mc, min_graph_prob=a.min_graph_prob, seed=s
                 )
-                log_w = log_w - logsumexp(log_w)
-                w = np.exp(log_w)
-                var = np.maximum(var, 1e-12)
-                idx = qrng.choice(len(w), size=(a.n_t, a.n_y), p=w)
-                y_or = slope[idx] * grid[:, None] + np.sqrt(var[idx]) * qrng.standard_normal(
-                    (a.n_t, a.n_y)
-                )
+                log_w, w, var = oracle_weights(log_w, var)
+                y_or = sample_oracle(w, slope, var, grid, a.n_y, qrng)
                 y_or = torch.tensor(y_or, device=dev)
-                o_mu = torch.tensor(slope, device=dev)[None] * g[:, None]
-                o_sd = torch.tensor(np.sqrt(var), device=dev)[None].expand_as(o_mu)
-                o_lw = torch.tensor(log_w, device=dev)[None].expand_as(o_mu)
+                o_par = oracle_mixture_on_grid(log_w, slope, var, g)
 
                 m_par = tuple(p[qi] for p in mod)
                 nf_par = tuple(p[qi] for p in mod_nf)
 
-                lp_o_on_o = mix_logpdf(y_or, o_mu, o_sd, o_lw)
-                kl_om = (lp_o_on_o - mix_logpdf(y_or, *m_par)).mean(1)
-                kl_om_nf = (lp_o_on_o - mix_logpdf(y_or, *nf_par)).mean(1)
-                kl_tm = (lp_true - mix_logpdf(y_true, *m_par)).mean(1)
-                kl_to = (lp_true - mix_logpdf(y_true, o_mu, o_sd, o_lw)).mean(1)
-                kl_om, kl_om_nf, kl_tm, kl_to = (
-                    z.cpu().numpy() for z in (kl_om, kl_om_nf, kl_tm, kl_to)
-                )
+                lp_o_on_o = mix_logpdf(y_or, *o_par)
+                kl_om = kl_mc(lp_o_on_o, mix_logpdf(y_or, *m_par))
+                kl_om_nf = kl_mc(lp_o_on_o, mix_logpdf(y_or, *nf_par))
+                kl_tm = kl_mc(lp_true, mix_logpdf(y_true, *m_par))
+                kl_to = kl_mc(lp_true, mix_logpdf(y_true, *o_par))
 
                 # moments
-                s_bar = float(w @ slope)
-                s_sd = float(np.sqrt(max(w @ slope**2 - s_bar**2, 0.0)))
-                mean_o = s_bar * grid
-                var_o = float(w @ var) + grid**2 * s_sd**2
-                mu_m, sd_m, lw_m = (p.cpu().numpy() for p in m_par)
-                w_m = np.exp(lw_m)
-                mean_m = (w_m * mu_m).sum(-1)
-                var_m = (w_m * (sd_m**2 + mu_m**2)).sum(-1) - mean_m**2
-                slope_m, icpt_m = np.polyfit(grid, mean_m, 1)
+                s_bar, s_sd, mean_o, var_o = oracle_moments(w, slope, var, grid)
+                mean_m, var_m = mixture_moments(*(p.cpu().numpy() for p in m_par))
+                slope_m, icpt_m = implied_slope(grid, mean_m)
 
                 q = qname(T, Y)
                 qtype = query_type(nodes, T, Y)
@@ -416,7 +319,7 @@ def main():
                     "slope_err_model_truth": float(slope_m - b),
                     "slope_err_oracle_truth": float(s_bar - b),
                     "slope_err_naive_truth": float(naive[(T, Y)] - b),
-                    "var_ratio_model_oracle": float(np.mean(var_m / var_o)),
+                    "var_ratio_model_oracle": variance_ratio(var_m, var_o),
                 })
                 for ti, tv in enumerate(grid):
                     rows_t.append({
