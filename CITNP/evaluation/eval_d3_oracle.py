@@ -73,7 +73,7 @@ def designs(n_obs=128, m_grid=(0, 8, 16, 32, 64, 128)):
     out = [("obs_only", [(None, n_obs)])]
     for node, m in itertools.product(range(D), m_grid[1:]):
         out.append((f"obs+do(X{node})x{m}", [(None, n_obs), (node, m)]))
-    out.append(("do(X0)_only_x128", [(0, 128)]))
+   # out.append(("do(X0)_only_x128", [(0, 128)]))
     return out
 
 
