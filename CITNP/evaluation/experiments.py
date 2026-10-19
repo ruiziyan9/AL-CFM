@@ -65,11 +65,31 @@ def run_kshot(
     n_mc: int = 200,
     min_graph_prob: float = 1e-4,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """K-shot evaluation (see `eval_d3_kshot` for the experiment design).
+    """K-shot evaluation against the TRUTH and the EXACT BAYESIAN ORACLE on
+    the confounder SCM, for all six queries X_Y | do(X_T), T != Y.
 
-    k_list: numbers of interventional rows added to n_obs observational rows
-    (default 0..10). Returns (one row per seed, design, k, query, averaged
-    over the t grid; one row per seed, design, k, query, t).
+    Ground truth (`tasks.confounder_scm`), standardised to unit marginal
+    variances: X1 -> X0 (0.9), X1 -> X2 (0.8), X0 -> X2 (-0.3), noise
+    variances (0.2, 0.3, 0.25) on the raw scale; X0 = treatment, X1 =
+    confounder, X2 = outcome. The skeleton is complete, so observational data
+    orients no edge; X2 | do(X0) is confounded with a sign flip. With
+    random_weights each seed draws fresh weights for the same graph.
+
+    k = number of interventional rows added to n_obs observational rows,
+    nested in k within a seed. Designs: random (each row intervenes on a
+    uniformly random node), do(treatment), do(confounder), do(outcome); k = 0
+    is shared by all four. For each context, query and do-value t on a grid,
+    truth p*, oracle p_B (LinGaussOracle) and model p_m are compared:
+        kl_truth_model    KL(p*  || p_m)   how wrong the model is about the world
+        kl_truth_oracle   KL(p*  || p_B)   the best achievable from this context
+        kl_oracle_model   KL(p_B || p_m)   distance from the Bayes answer
+    plus implied effects (slope of the predictive mean in t) and variance
+    ratios. query_type is seen / unseen_identified / unidentified. The oracle
+    is Bayes-optimal only for the prior the model was trained on
+    (`linearnonidentifiable`, normalise: false).
+
+    k_list: values of k (default 0..10). Returns (one row per seed, design, k,
+    query, averaged over the t grid; one row per seed, design, k, query, t).
     """
     k_list = list(range(11)) if k_list is None else sorted(set(k_list))
     k_max = max(k_list)
@@ -207,7 +227,12 @@ def run_scm_suite(
 ) -> pd.DataFrame:
     """NLL per query point (raw scale) of truth, oracle and model, with and
     without intervention flags, for every SCM in `scm_suite()` and design in
-    `context_designs()`; one row per (scm, design), mean and s.e. over seeds."""
+    `context_designs()`; one row per (scm, design), mean and s.e. over seeds.
+
+    NLLs are in nats per query row on the RAW data scale. The oracle is only
+    Bayes-optimal for the prior the model was trained on
+    (`linearnonidentifiable`, normalise: false); for other priors the truth
+    columns are still exact and the oracle columns are a reference."""
     prior = empirical_graph_prior(data_cfg, num_nodes=num_nodes)
 
     rows = []

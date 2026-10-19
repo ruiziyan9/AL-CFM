@@ -5,7 +5,7 @@ Training monitors for the mixed-context model.
   gradient norm before clipping, fraction of clipped steps, learning rate,
   steps per second and the fraction of wall time spent waiting for data.
 - OracleGapCallback: every `every` steps, the model's excess NLL over the exact
-  Bayes oracle on a fixed bank (CITNP/evaluation/oracle_bank.py), overall and
+  Bayes oracle on a fixed bank (`python -m CITNP.evaluation bank`), overall and
   per slice, plus calibration (50% / 90% interval coverage), the effective
   number of mixture components, and the log-density gained from the
   intervened-cell flags (flags on vs all-False).

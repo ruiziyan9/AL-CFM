@@ -106,7 +106,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     extra.add_argument(
         "--oracle_bank", default=None,
-        help="pickle from CITNP.evaluation.oracle_bank; enables OracleGapCallback",
+        help="pickle from `python -m CITNP.evaluation bank`; enables OracleGapCallback",
     )
     extra.add_argument("--oracle_every", type=int, default=2500)
     extra.add_argument(

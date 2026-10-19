@@ -1,5 +1,5 @@
 # D=3 conjugate linear-Gaussian prior: the exact Bayes oracle
-# (CITNP/evaluation/oracle_lingauss.py) is optimal for models trained on this.
+# (CITNP/evaluation/oracle.py) is optimal for models trained on this.
 function_generator: linearnonidentifiable
 num_variables: [3]
 graph_type: [ER]

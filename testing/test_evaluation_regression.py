@@ -48,31 +48,23 @@ pytestmark = pytest.mark.skipif(
 # --------------------------------------------------------------------------- #
 # Entry points under test (the only part that changes during the refactor)
 # --------------------------------------------------------------------------- #
-def _run_main(main, args: list[str]) -> None:
-    argv = sys.argv
-    sys.argv = ["prog", *args]
-    try:
-        main()
-    finally:
-        sys.argv = argv
+def _cli(command: str, args: list[str]) -> None:
+    """`python -m CITNP.evaluation <command> <args>`, in process."""
+    from CITNP.evaluation.__main__ import main
+
+    main([command, *args])
 
 
 def run_kshot(args: list[str]) -> None:
-    from CITNP.evaluation.eval_d3_kshot import main
-
-    _run_main(main, args)
+    _cli("kshot", args)
 
 
 def run_suite(args: list[str]) -> None:
-    from CITNP.evaluation.eval_d3_oracle import main
-
-    _run_main(main, args)
+    _cli("scm-suite", args)
 
 
 def run_bank(args: list[str]) -> None:
-    from CITNP.evaluation.oracle_bank import main
-
-    _run_main(main, args)
+    _cli("bank", args)
 
 
 def load(ckpt: str, model_cfg: str):

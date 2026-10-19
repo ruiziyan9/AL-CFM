@@ -27,7 +27,7 @@ for CKPT in $(ls "$RUN_DIR"/step_*.pt | sort -V) "$RUN_DIR"/best_model.pt "$RUN_
     [ -f "$CKPT" ] || continue
     TAG=$(basename "$CKPT" .pt)
     echo "=== $TAG"
-    "$CONDA_ENV"/bin/python -m CITNP.evaluation.eval_d3_oracle \
+    "$CONDA_ENV"/bin/python -m CITNP.evaluation scm-suite \
         --ckpt "$CKPT" --model_config "$MODEL_CFG" \
         --data_config CITNP/experiments/configs/oracle_d3.yaml \
         --n_seeds 30 --device cuda \
