@@ -190,6 +190,30 @@ def _real_batch():
     return ctx, cint, tgt, T, Y
 
 
+def _per_task_nll(model, ctx, cint, tgt, T, Y) -> np.ndarray:
+    """NLL per query row of each task, one task at a time (as in
+    testing/calibrate_overfit_memorisation.py); the loss sums query rows."""
+    out = []
+    with torch.no_grad():
+        for b in range(len(T)):
+            s = slice(b, b + 1)
+            o = model(ctx[s], tgt[s], T[s], Y[s], context_int_mask=cint[s])
+            loss = model.calculate_loss(o, target=tgt[s], outcome_index=Y[s])
+            out.append(loss.item() / tgt.shape[1])
+    return np.array(out)
+
+
+# Overfit-one-batch sanity check: the model, loss and optimiser can memorise
+# one fixed batch of 8 tasks, and every task improves (not just the mean).
+# Gradients are clipped at norm 1.0 between backward and step, as in
+# MixedContextTrainer.train_step (gradient_clip_val=1.0 in mixed_train.py):
+# without clipping, the predicted sd collapses during memorisation and the
+# mixture parameters can become NaN. The sd keeps shrinking with more steps,
+# so the test stops at 1000. Thresholds come from
+# testing/calibrate_overfit_memorisation.py (clipped, 3 batches of the current
+# generator plus the pre-n_obs_min batch): at 1000 steps the worst batch had a
+# mean NLL of 0.09 per row and the smallest per-task drop was 0.39; the
+# asserts (mean < 0.5, every drop >= 0.1) leave a wide margin.
 def test_overfits_one_batch():
     torch.manual_seed(0)
     model = MixedContextMoGModel(tiny_config()).train()
@@ -200,12 +224,16 @@ def test_overfits_one_batch():
         out = model(ctx, tgt, T, Y, context_int_mask=cint)
         return model.calculate_loss(out, target=tgt, outcome_index=Y)
 
-    first = loss_fn().item()
-    for _ in range(200):
+    start = _per_task_nll(model, ctx, cint, tgt, T, Y)
+    for _ in range(1000):
         opt.zero_grad()
         loss = loss_fn()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
-    last = loss_fn().item()
-    assert np.isfinite(last)
-    assert first - last > 0.5 * abs(first), (first, last)
+    with torch.no_grad():
+        last = loss_fn().item()
+    final = _per_task_nll(model, ctx, cint, tgt, T, Y)
+    assert np.isfinite(last), last
+    assert final.mean() < 0.5, (start.round(3), final.round(3))
+    assert (start - final >= 0.1).all(), (start.round(3), final.round(3))
