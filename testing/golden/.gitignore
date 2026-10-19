@@ -1,0 +1,8 @@
+# Golden regression outputs (see testing/make_golden.py): override the
+# repository-wide ignores for these file types.
+!*.pt
+!*.pkl
+!*.csv
+!*.json
+!*.npz
+*.png
