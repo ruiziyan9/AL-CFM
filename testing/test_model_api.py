@@ -8,15 +8,15 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from golden_spec import GRID, QUERIES, build_tiny_model  # noqa: E402
+from golden_spec import GRID, QUERIES, build_tiny_model
 
-from CITNP.evaluation.model_api import (  # noqa: E402
+from CITNP.evaluation.model_api import (
     effective_components,
     mixture_cdf,
     mixture_logpdf,
     predict_mixture,
 )
-from CITNP.evaluation.oracle import LinearSCM  # noqa: E402
+from CITNP.evaluation.oracle import LinearSCM
 
 
 @pytest.fixture(scope="module")

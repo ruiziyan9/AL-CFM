@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from golden_spec import GOLDEN  # noqa: E402
+from golden_spec import GOLDEN
 
 KSHOT_FIGURES = ["main", "by_query", "effect", "flag", "varratio", "qtype", "by_t"]
 SHIMS = [

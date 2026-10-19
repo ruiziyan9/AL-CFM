@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from golden_spec import (  # noqa: E402
+from golden_spec import (
     BANK_ARGS,
     DATA_CFG,
     GOLDEN,
@@ -88,8 +88,10 @@ def wrapper_fns():
         )
 
     def logpdf(model, x, m, T, Y, t, y, device, zero_flags):
-        mix = predict_mixture(model, x, m, T, Y, t, device=device, zero_flags=zero_flags)
-        return mixture_logpdf(*mix, y)[0].cpu().numpy()
+        mu, sd, logw = predict_mixture(
+            model, x, m, T, Y, t, device=device, zero_flags=zero_flags
+        )
+        return mixture_logpdf(mu, sd, logw, y)[0].cpu().numpy()
 
     return mixtures, logpdf, _item_scores
 
@@ -107,7 +109,7 @@ def model_set(request) -> tuple[Path, str, str]:
     """(golden dir, checkpoint, model config)."""
     if request.param == "tiny":
         return GOLDEN, str(GOLDEN / "tiny_model.pt"), TINY_CFG
-    ckpt = os.environ.get(TRAINED_ENV)
+    ckpt = os.environ.get(TRAINED_ENV, "")
     if not ckpt:
         pytest.skip(f"${TRAINED_ENV} not set")
     if not (GOLDEN / "trained").exists():

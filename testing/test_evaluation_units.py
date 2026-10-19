@@ -9,10 +9,10 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from golden_spec import REPO, TINY_CFG, build_tiny_model  # noqa: E402
+from golden_spec import REPO, TINY_CFG, build_tiny_model
 
-from CITNP.evaluation import metrics, tasks  # noqa: E402
-from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, all_dags  # noqa: E402
+from CITNP.evaluation import metrics, tasks
+from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, all_dags
 
 
 @pytest.fixture(scope="module")
@@ -168,6 +168,34 @@ def _bank(scm) -> list[dict]:
             oracle_logp=np.zeros(6), n_int_T=n_T, labels=["all", label],
         ))  # fmt: skip
     return items
+
+
+def test_run_scm_suite_direct(model):
+    """Calls run_scm_suite directly (its model NLL goes through
+    predict_mixture -> mixture_logpdf), independent of the golden files."""
+    from CITNP.datasets.create_mixed_regime_chunks import load_config
+    from CITNP.evaluation.experiments import run_scm_suite
+    from CITNP.evaluation.model_api import mixture_logpdf, predict_mixture
+
+    data_cfg = load_config(str(REPO / "CITNP/experiments/configs/oracle_d3.yaml"))
+    df = run_scm_suite(model, data_cfg, device="cpu", n_seeds=1, n_query=8, n_mc=10)
+    suite, designs = tasks.scm_suite(), tasks.context_designs()
+    assert len(df) == len(suite) * len(designs)
+    assert list(df.scm.unique()) == [name for name, *_ in suite]
+    for col in ("truth", "oracle", "model", "model_noflag", "model_minus_oracle"):
+        assert np.isfinite(df[col]).all(), col
+
+    # The "model" column of the first row by hand: same context and queries as
+    # run_scm_suite (seed 0), same call into model_api.
+    name, scm, (T, Y), _ = suite[0]
+    _, regimes = designs[0]
+    rng = np.random.default_rng(7)
+    x, m = tasks.make_context(scm, regimes, 1.5, rng)
+    t = rng.normal(0, 1.5, 8)
+    y = scm.sample(8, T, t, rng)[0][:, Y]
+    mu, sd, logw = predict_mixture(model, x, m, T, Y, t, device="cpu")
+    expected = -mixture_logpdf(mu, sd, logw, y)[0].mean().item()
+    assert df.loc[0, "model"] == pytest.approx(expected, rel=1e-12)
 
 
 @pytest.mark.parametrize("flag_ablation", [True, False])

@@ -30,7 +30,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from golden_spec import (  # noqa: E402
+from golden_spec import (
     BANK_ARGS,
     DATA_CFG,
     GOLDEN,

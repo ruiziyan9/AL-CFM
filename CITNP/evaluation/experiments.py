@@ -129,6 +129,7 @@ def run_kshot(
         pools = make_pools(scm, k_max, do_scale, rng)
 
         for c_i, (design, k) in enumerate(contexts):
+            nodes: frozenset[int]  # intervened nodes in this context
             if k == 0:
                 x, m, nodes = obs_x, obs_m, frozenset()
             else:
@@ -256,8 +257,10 @@ def run_scm_suite(
                 r["truth"].append(-scm.do_logpdf(T, Y, t, y).mean())
                 r["oracle"].append(-orc.logpdf(T, Y, t, y, n_mc=n_mc, seed=s).mean())
                 for key, zf in (("model", False), ("model_noflag", True)):
-                    mix = predict_mixture(model, x, m, T, Y, t, device=device, zero_flags=zf)
-                    r[key].append(-mixture_logpdf(*mix, y)[0].mean().item())
+                    mu, sd, logw = predict_mixture(
+                        model, x, m, T, Y, t, device=device, zero_flags=zf
+                    )
+                    r[key].append(-mixture_logpdf(mu, sd, logw, y)[0].mean().item())
                 r["p_anc"].append(orc.prob_ancestor(T, Y))
                 r["H"].append(orc.graph_entropy())
             row: dict = {"scm": name, "design": label}
@@ -280,13 +283,13 @@ def run_scm_suite(
 def _item_scores(model, item, device, normalise=True, zero_flags=False):
     """Per query point of a bank item: log p_model(y | do(T = t), context) on
     the RAW scale, the PIT value F_model(y), and exp(entropy) of the weights."""
-    mix = predict_mixture(
+    mu, sd, logw = predict_mixture(
         model, item["ctx_x"], item["ctx_int"], int(item["T"]), int(item["Y"]),
         item["t"], device=device, zero_flags=zero_flags, normalise=normalise,
     )  # fmt: skip
-    logp = mixture_logpdf(*mix, item["y"])[0]
-    pit = mixture_cdf(*mix, item["y"])[0]
-    eff = effective_components(mix[2])[0]
+    logp = mixture_logpdf(mu, sd, logw, item["y"])[0]
+    pit = mixture_cdf(mu, sd, logw, item["y"])[0]
+    eff = effective_components(logw)[0]
     return logp.cpu().numpy(), pit.cpu().numpy(), eff.cpu().numpy()
 
 
