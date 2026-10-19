@@ -722,6 +722,8 @@ def test_set_epoch_callback_calls_every_dataset():
 # sha256 (first 16 hex chars) of the task arrays for
 # make_key(SOURCE_CHUNK, 0, 7, i), i = 0..9, recorded with the code BEFORE the
 # n_ctx override was added. Without n_ctx, generation must be byte-identical.
+# Recorded before n_obs_min existed: the test sets n_obs_min=0, which is exactly
+# the old design path (p_obs draw kept, no reserved observational rows).
 PRE_NCTX_HASHES = {
     "linearfixedstd": [
         "2b75fde5d7738d47", "caab3c21a022fa0e", "075edd4304d7b453",
@@ -748,7 +750,7 @@ def _task_hash(task) -> str:
 
 @pytest.mark.parametrize("family", list(PRE_NCTX_HASHES))
 def test_generation_unchanged_without_nctx(family):
-    cfg = make_cfg(family)
+    cfg = make_cfg(family, n_obs_min=0)
     got = [
         _task_hash(generate_task(cfg, make_key(SOURCE_CHUNK, 0, 7, i)))
         for i in range(10)
@@ -1005,7 +1007,9 @@ def test_len_exact_single_bucket_per_worker(tmp_path, drop_last):
 
 # R1 Part A: grouped query mode ------------------------------------------------ #
 # Per-row regression fixtures, recorded with the code BEFORE grouped mode was
-# added. They hash only fields and batch keys that existed then.
+# added. They hash only fields and batch keys that existed then. They also
+# predate n_obs_min, so the configs set n_obs_min=0, which is exactly the old
+# design path (p_obs draw kept, no reserved observational rows).
 _FIX_TASK_FIELDS = [
     "ctx_x",
     "ctx_int",
@@ -1042,16 +1046,17 @@ def _fix_task_hash(task) -> str:
     return h.hexdigest()[:16]
 
 
-def _fix_small_cfg():
+def _fix_small_cfg(**kw):
     return MixedRegimeConfig(
         "linearfixedstd", [2, 3, 4, 5], ["ER"], _FIX_DEGREES,
-        n_ctx_range=(16, 64), n_qry=8,
+        n_ctx_range=(16, 64), n_qry=8, **kw,
     )  # fmt: skip
 
 
 def test_per_row_task_hashes_unchanged():
     cfg = MixedRegimeConfig(
-        "linearnonidentifiable", [2, 3, 4, 5], ["ER"], _FIX_DEGREES
+        "linearnonidentifiable", [2, 3, 4, 5], ["ER"], _FIX_DEGREES,
+        n_obs_min=0,
     )
     got = [
         _fix_task_hash(generate_task(cfg, make_key(SOURCE_CHUNK, 0, 11, i)))
@@ -1062,7 +1067,7 @@ def test_per_row_task_hashes_unchanged():
 
 def test_per_row_stream_batch_hashes_unchanged():
     ds = MixedRegimeTaskDataset(
-        _fix_small_cfg(),
+        _fix_small_cfg(n_obs_min=0),
         batch_size=4,
         base_seed=21,
         iterations_per_epoch=3,
@@ -1079,7 +1084,7 @@ def test_per_row_stream_batch_hashes_unchanged():
 
 
 def test_per_row_chunk_hashes_unchanged(tmp_path):
-    cfg = _fix_small_cfg()
+    cfg = _fix_small_cfg(n_obs_min=0)
     for k in range(2):
         write_chunk(
             cfg, tmp_path, k, 32, 16, 5, split="train", shape_group_size=16
