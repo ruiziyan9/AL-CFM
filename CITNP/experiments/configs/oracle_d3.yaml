@@ -10,3 +10,4 @@ n_ctx_range: [64, 256]
 n_qry: 48
 qry_mode: grouped
 qry_groups: [1, 2, 3]
+n_obs_min: 32
