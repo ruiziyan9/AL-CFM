@@ -199,3 +199,4 @@ lightning_logs/
 slurm-*.out
 wandb/
 *.npz
+figs/

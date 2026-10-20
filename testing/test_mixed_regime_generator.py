@@ -1237,13 +1237,13 @@ def test_grouped_chunks_bucket_by_D_Nc_G(tmp_path):
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-def test_plot_mixed_prior_runs(tmp_path, grouped):
-    from CITNP.datasets import plot_mixed_prior
+def test_prior_summary_runs(tmp_path, grouped):
+    from CITNP.prior_diagnostics import summary
 
     cfg = _grouped_cfg() if grouped else _fix_small_cfg()
-    s = plot_mixed_prior.collect(cfg, 20, 0)
+    s = summary.collect(cfg, 20, 0)
     out = tmp_path / "p.png"
-    plot_mixed_prior.plot(s, str(out), "t")
+    summary.plot(s, str(out), "t")
     assert out.exists()
 
 

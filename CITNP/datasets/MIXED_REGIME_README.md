@@ -54,6 +54,7 @@ design; the model sees the same information through `ctx_int`.
 | `normalise` | `True` | reference standardisation; set `False` for oracle-matched families |
 | `n_ref` | 256 | hidden reference rows |
 | `p_obs` | 0.85 | probability the context includes an observational regime |
+| `n_obs_min` | 10 | minimum observational rows; if > 0 the observational regime is always present (`p_obs` is then unused) |
 | `k_max` | 4 | max number of interventional regimes (also capped at D) |
 | `p_geom` | 0.5 | P(K=k) ∝ (1−p_geom)^k on {0..min(k_max, D)} |
 | `n_ctx_range` | (64, 1024) | total context rows, uniform inclusive |
@@ -189,7 +190,7 @@ seeds overlapped: base seeds 0 and 1 shared almost all tasks.)
 
 | source | key | used by |
 |---|---|---|
-| `SOURCE_ADHOC` (0) | `(0, 0, base_seed, i, 0, 0)` | tests, `plot_mixed_prior.py`; `generate_task(cfg, i)` with an int |
+| `SOURCE_ADHOC` (0) | `(0, 0, base_seed, i, 0, 0)` | tests, `python -m CITNP.prior_diagnostics` (all commands); `generate_task(cfg, i)` with an int |
 | `SOURCE_CHUNK` (1) | `(1, split_id, base_seed, global_task_index, 0, 0)` | chunk writer |
 | `SOURCE_STREAM` (2) | `(2, split_id, base_seed, epoch, worker_id, counter)` | `MixedRegimeTaskDataset` |
 | `SOURCE_STREAM_D` (3) | `(3, split_id, base_seed, epoch, worker_id, batch_idx)` | per-batch D and N_ctx in `MixedRegimeTaskDataset` |
@@ -288,11 +289,27 @@ device its mechanisms ran on (`"cpu"` for the CPU-only families
 `CPU_ONLY_FAMILIES`: `linearfixedstd`, `linearnonidentifiable`, `uniformlinear`,
 `sinusoid`, `resnet`).
 
+## Diagnostic options
+
+Two optional arguments exist for diagnostics (used by `CITNP/prior_diagnostics`).
+Both are off by default, and generation with the defaults is byte-identical to
+before (same random stream).
+
+- `Design.regime_do_values: list[float | None] | None = None`: one entry per
+  context regime. A float fixes every intervened cell of that regime to that
+  value instead of a draw from `do_dist`; `None` keeps the usual draws. The
+  draws still happen and are then overwritten, so the random stream is unchanged.
+- `generate_task(..., permute=False)`: skips the random variable permutation, so a task
+  generated from an explicit `graph` / `design` keeps their variable labels.
+  The permutation is still drawn, so the random stream is unchanged.
+
 ## Diagnostics and tests
 
+Prior visualisations live in [`CITNP/prior_diagnostics`](../prior_diagnostics/README.md):
+
 ```bash
-python -m CITNP.datasets.plot_mixed_prior --config <cfg> --num_tasks 2000 --out prior.png
-pytest testing/test_mixed_regime_generator.py
+python -m CITNP.prior_diagnostics summary --config <cfg> --num_tasks 2000 --out prior.png
+pytest testing/test_mixed_regime_generator.py testing/test_prior_diagnostics.py
 ```
 
 ## Not done yet
