@@ -397,6 +397,11 @@ class Design:
         Grouped query mode only: G, the treatment of each group (unpermuted)
         and whether it is "seen" or "unseen" in the context. 0 / [] / [] in
         per-row mode.
+
+    regime_do_values : list[float | None] | None
+        Optional, one entry per context regime: every intervened cell of that
+        regime takes this value instead of a draw from do_dist. None (default)
+        keeps the usual random do-values.
     """
 
     num_variables: int
@@ -409,6 +414,9 @@ class Design:
     n_groups: int = 0
     group_treatments: list[int] = field(default_factory=list)
     group_types: list[str] = field(default_factory=list)
+    # Optional fixed do-value per context regime (None = draw from do_dist as
+    # usual). Used by diagnostics such as plot_obs_vs_int; default off.
+    regime_do_values: list[float | None] | None = None
 
     def __post_init__(self):
         """Cast to plain python ints/tuples and check sizes and target ranges."""
@@ -425,6 +433,10 @@ class Design:
         for t in self.regime_targets + self.qry_targets:
             if any(j < 0 or j >= D for j in t):
                 raise ValueError(f"Target {t} out of range for D={D}")
+        if self.regime_do_values is not None and len(self.regime_do_values) != len(
+            self.regime_targets
+        ):
+            raise ValueError("regime_do_values and regime_targets differ in length")
 
 
 @dataclass
@@ -914,6 +926,17 @@ def _generate_once(
     # Independent do-value per intervened cell.
     int_val = np.zeros((n_tot, D), dtype=np.float64)
     int_val[int_mask] = _sample_do_values(design.do_dist, int(int_mask.sum()))
+    # Fixed do-values overwrite the draws (the draws still happen, so the RNG
+    # stream is the same as without them).
+    if design.regime_do_values is not None:
+        row = n_ref
+        for targets, n_r, v in zip(
+            design.regime_targets, design.regime_sizes, design.regime_do_values
+        ):
+            if v is not None:
+                for j in targets:
+                    int_val[row : row + n_r, j] = v
+            row += n_r
 
     for i in topo:
         pa = np.where(graph[:, i])[0]
@@ -971,6 +994,7 @@ def generate_task(
     return_debug: bool = False,
     n_ctx: int | None = None,
     n_groups: int | None = None,
+    permute: bool = True,
 ):
     """
     Generate one task. `graph` / `design` are sampled if not given;
@@ -1011,6 +1035,10 @@ def generate_task(
 
     return_debug : bool
         Also return a debug dict.
+
+    permute : bool
+        Randomly permute the variables (default). False keeps the input
+        labels, so an explicit graph/design is returned in its own indices.
 
     Returns:
     ----------
@@ -1060,7 +1088,9 @@ def generate_task(
 
     # Variable permutation, as in the original generator: new column k holds
     # old variable perm[k]; old index j moves to inv[j].
-    perm = np.random.permutation(D)
+    perm = np.random.permutation(D)  # drawn even when unused: same RNG stream
+    if not permute:
+        perm = np.arange(D)
     inv = np.argsort(perm)
     X, int_mask, int_val = X[:, perm], int_mask[:, perm], int_val[:, perm]
     g = g[perm][:, perm]

@@ -49,7 +49,7 @@ import os
 import sys
 
 # Force CPU before torch initialises CUDA. Only when run as a script: other
-# modules (plot_mixed_prior, tests) import load_config from here and must keep
+# modules (CITNP.prior_diagnostics, tests) import load_config from here and must keep
 # their CUDA setting. The mechanisms in functions_generator.py choose their
 # device when they are constructed, so this is early enough.
 if __name__ == "__main__" and "--allow_cuda" not in sys.argv:
