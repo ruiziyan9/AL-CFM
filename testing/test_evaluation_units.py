@@ -239,5 +239,5 @@ def test_load_model_class_from_yaml(tmp_path):
         torch.testing.assert_close(a, b)
     bad = tmp_path / "bad.yaml"
     bad.write_text(cfg_text + "\nmodel_class: NoSuchModel\n")
-    with pytest.raises(AttributeError):
+    with pytest.raises(ValueError, match="Unknown model_class"):
         load_model(str(ckpt), str(bad), "cpu")

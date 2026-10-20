@@ -322,7 +322,7 @@ class _MixedContextMixin(_MixinBase):
     model's (predictor and loss come from the upstream class).
     """
 
-    encoder_cls: type[MixedCausalInfEncoder] = MixedCausalInfEncoder
+    encoder_cls: type[CausalInfEncoder] = MixedCausalInfEncoder
 
     def __init__(self, config):
         super().__init__(config)  # type: ignore[call-arg]
@@ -401,6 +401,57 @@ class LayerwiseMixedContextMoGModel(MixedContextMoGModel):
     """MixedContextMoGModel with the flag re-injected before every block."""
 
     encoder_cls = LayerwiseMixedCausalInfEncoder
+
+
+# ---------------------------------------------------------------------------
+# Intervention-encoding switch. The single place that maps a method name to a
+# model class: mixed_train.py and evaluation/model_api.py both resolve here.
+# ---------------------------------------------------------------------------
+
+DEFAULT_INTERVENTION_ENCODING = "r1"
+INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
+    "r1": MixedContextMoGModel,
+    "layerwise": LayerwiseMixedContextMoGModel,
+}
+
+
+def resolve_model_class(
+    intervention_encoding: Optional[str] = None,
+    model_class: Optional[str] = None,
+) -> tuple[type[CausalInferenceModel], str]:
+    """Return (model class, encoding name).
+
+    - Neither given: the default encoding (r1, the upstream-compatible model).
+    - intervention_encoding only: its registered (mixture-of-Gaussians) class.
+    - model_class only (legacy configs): that class from this module; the
+      returned name is its encoding if registered, else the class name.
+    - Both: allowed only if they agree.
+    """
+    if (
+        intervention_encoding is not None
+        and intervention_encoding not in INTERVENTION_ENCODINGS
+    ):
+        raise ValueError(
+            f"Unknown intervention_encoding {intervention_encoding!r}; "
+            f"choose from {sorted(INTERVENTION_ENCODINGS)}"
+        )
+    if model_class is None:
+        name = intervention_encoding or DEFAULT_INTERVENTION_ENCODING
+        return INTERVENTION_ENCODINGS[name], name
+
+    cls = globals().get(model_class)
+    if not (isinstance(cls, type) and issubclass(cls, CausalInferenceModel)):
+        raise ValueError(
+            f"Unknown model_class {model_class!r} (not a model class in {__name__})"
+        )
+    matches = [k for k, v in INTERVENTION_ENCODINGS.items() if v is cls]
+    name = matches[0] if matches else cls.__name__
+    if intervention_encoding is not None and intervention_encoding != name:
+        raise ValueError(
+            f"model_class={model_class!r} is encoding {name!r}, which "
+            f"contradicts intervention_encoding={intervention_encoding!r}"
+        )
+    return cls, name
 
 
 def _load_with_new_params(

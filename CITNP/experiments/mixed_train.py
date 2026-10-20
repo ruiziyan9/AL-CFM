@@ -12,6 +12,8 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --model_config <yaml>: optional; overrides model arguments (d_model, nhead,
   num_layers_encoder, sample_attn_mode, dim_feedforward, emb_depth,
   num_mixture_components, ...).
+- --intervention_encoding {r1,layerwise}: how intervention information enters
+  the model (default r1). --model_class <name> is still accepted (legacy).
 - --init_from_upstream <ckpt>: warm start from an upstream MACE-TNP
   checkpoint (only the new intervened-flag embedding starts from zero).
 - --val_iterations / --test_iterations: fixed validation / test batches.
@@ -32,11 +34,16 @@ from CITNP.datasets.mixed_regime_generator import (
     MixedRegimeConfig,
     MixedRegimeTaskDataset,
 )
-from CITNP.models import mixed_context_model
+
 from CITNP.models.mixed_context_model import (
+    INTERVENTION_ENCODINGS,
+    LayerwiseMixedContextModel,
+    LayerwiseMixedContextMoGModel,
     load_r1_checkpoint,
     load_upstream_checkpoint,
+    resolve_model_class,
 )
+
 from CITNP.trainer.callbacks import (
     Callback,
     CheckpointCallback,
@@ -95,7 +102,12 @@ MODEL_KEYS = (
     "mean_loss_across_samples",
     "num_mixture_components",
     "model_class",
+    "intervention_encoding",
 )
+
+# Keys that select the method: if given both on the command line and in the
+# model YAML, they must agree.
+SELECTION_KEYS = ("model_class", "intervention_encoding")
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -109,11 +121,20 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=None,
         help="R1 checkpoint to warm-start a Layerwise* model from",
     )
+
     extra.add_argument(
         "--model_class",
-        default="MixedContextMoGModel",
-        help="class in CITNP.models.mixed_context_model (or YAML model_class)",
+        default=None,
+        help="legacy: class name in CITNP.models.mixed_context_model; "
+        "prefer --intervention_encoding",
     )
+    extra.add_argument(
+        "--intervention_encoding",
+        default=None,
+        choices=sorted(INTERVENTION_ENCODINGS),
+        help="how intervention information enters the model (default: r1)",
+    )
+
     extra.add_argument("--val_iterations", type=int, default=20)
     extra.add_argument("--test_iterations", type=int, default=20)
     extra.add_argument(
@@ -144,16 +165,31 @@ def parse_args(argv=None) -> argparse.Namespace:
     return args
 
 
+def apply_model_config(args: argparse.Namespace) -> None:
+    """Copy the --model_config YAML onto args (YAML values override the
+    command line, as before), except that a selection key given in both
+    places must have the same value."""
+    if not args.model_config:
+        return
+    with open(args.model_config) as f:
+        cfg = yaml.safe_load(f) or {}
+    for k, v in cfg.items():
+        if k not in MODEL_KEYS:
+            raise ValueError(f"Unknown model_config key {k!r}")
+        current = getattr(args, k, None)
+        if k in SELECTION_KEYS and current is not None and current != v:
+            raise ValueError(
+                f"{k}={current!r} on the command line contradicts "
+                f"{k}={v!r} in {args.model_config}"
+            )
+        setattr(args, k, v)
+
+
 def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     """Datasets, model, configs and callbacks; returns (trainer, model_config)."""
     if data_cfg.qry_mode != "grouped":
         raise ValueError("mixed_train needs a data config with qry_mode: grouped")
-    if args.model_config:
-        with open(args.model_config) as f:
-            for k, v in yaml.safe_load(f).items():
-                if k not in MODEL_KEYS:
-                    raise ValueError(f"Unknown model_config key {k!r}")
-                setattr(args, k, v)
+    apply_model_config(args)
 
     train_ds = MixedRegimeTaskDataset(
         data_cfg,
@@ -195,9 +231,15 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         dtype=args.dtype,
         num_mixture_components=args.num_mixture_components,
     )
-    model_cls = getattr(mixed_context_model, args.model_class)
+    model_cls, encoding = resolve_model_class(
+        args.intervention_encoding, args.model_class
+    )
+    if args.init_from_r1 and not issubclass(
+        model_cls, (LayerwiseMixedContextModel, LayerwiseMixedContextMoGModel)
+    ):
+        raise ValueError("--init_from_r1 only applies to the layerwise encoding")
     model = model_cls(model_config)
-    print(f"Model class: {args.model_class}")
+    print(f"Intervention encoding: {encoding} (model class {model_cls.__name__})")
     if args.init_from_upstream:
         load_upstream_checkpoint(model, args.init_from_upstream)
     if args.init_from_r1:
@@ -215,6 +257,17 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     model_save_dir.parent.mkdir(parents=True, exist_ok=True)
     # Don't allow to override models
     model_save_dir.mkdir(parents=False, exist_ok=False)
+
+    resolved = {
+        k: getattr(args, k)
+        for k in MODEL_KEYS
+        if k not in SELECTION_KEYS and getattr(args, k, None) is not None
+    }
+    resolved["model_class"] = model_cls.__name__
+    if encoding in INTERVENTION_ENCODINGS:
+        resolved["intervention_encoding"] = encoding
+    with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
+        yaml.safe_dump(resolved, f, sort_keys=False)
 
     dataconfig, optimizerconfig, trainingconfig, loggingconfig = (
         convert_trainerdict_to_config(
