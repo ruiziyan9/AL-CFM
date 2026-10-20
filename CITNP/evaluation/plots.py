@@ -11,6 +11,9 @@ K-shot figures, from <prefix>.csv and <prefix>_by_t.csv written by `kshot`:
     <prefix>_by_t.png       KL to truth against |do-value t|, for a few k
 Training monitoring, from oracle_gap.csv / train_stats.csv in run directories:
     plot_monitoring(run_dirs, out)
+Flag probe, from <prefix>.csv written by `probe-flag`:
+    <prefix>.png            probe AUC (flags on / off) and relative change of the
+                            representation against encoder depth
 
 KL = Kullback-Leibler divergence, in nats per query point. Curves are means
 over seeds (queries averaged within a seed first), bands are +/- one standard
@@ -379,4 +382,47 @@ def plot_monitoring(run_dirs: list[str], out: str = "monitoring.png") -> None:
         ax.axis("off")
     axes.flat[0].legend(fontsize=8)
     _save(fig, out, dpi=120)
+    print(f"wrote {out}")
+
+
+# --------------------------------------------------------------------------- #
+# Flag probe
+# --------------------------------------------------------------------------- #
+def plot_flag_probe(df: pd.DataFrame, out: str) -> None:
+    """Two panels against encoder depth (`run_flag_probe` output):
+    left, out-of-fold AUC of the linear probe for ctx_int with flags on
+    (solid) and off (dashed), value-only baseline dotted; right, relative
+    change ||h_on - h_off|| / ||h_off|| on intervened and other cells."""
+    d = df[df.depth >= 0].sort_values("depth")
+    on = d[d["condition"] == "flags_on"]
+    off = d[d["condition"] == "flags_off"]
+    ticks = on.depth.to_numpy()
+    labels = on.point.to_list()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.5))
+
+    for g, ls, lab in ((on, "-", "flags on"), (off, "--", "flags off")):
+        ax1.errorbar(g.depth, g.auc, yerr=g.auc_se, ls=ls, marker="o",
+                     color="C0", capsize=3, label=lab)  # fmt: skip
+    base = df[df.point == "value_baseline"]
+    if len(base):
+        ax1.axhline(float(base.auc.iloc[0]), color="grey", ls=":",
+                    label="value + variable only")  # fmt: skip
+    ax1.axhline(0.5, color="k", lw=0.6)
+    ax1.set_ylim(0.45, 1.01)
+    ax1.set_ylabel("probe AUC for ctx_int (out of fold)")
+    ax1.set_title("Is the intervention flag linearly decodable?")
+
+    ax2.plot(on.depth, on.rel_change_int, "-o", color="C1",
+             label="intervened cells")  # fmt: skip
+    ax2.plot(on.depth, on.rel_change_obs, "-o", color="C2",
+             label="other context cells")  # fmt: skip
+    ax2.set_ylabel("||h_on - h_off|| / ||h_off||")
+    ax2.set_title("How much do the flags move the representation?")
+
+    for ax in (ax1, ax2):
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+        ax.set_xlabel("encoder depth")
+        ax.legend(fontsize=8)
+    _save(fig, out)
     print(f"wrote {out}")

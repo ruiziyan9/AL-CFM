@@ -7,8 +7,11 @@
     python -m CITNP.evaluation bank --data_config ... --out bank.pkl
     python -m CITNP.evaluation plot-kshot kshot.csv     # all k-shot figures, no GPU
     python -m CITNP.evaluation plot-monitoring RUN_DIR [RUN_DIR ...] --out monitoring.png
+    python -m CITNP.evaluation probe-flag --ckpt ... --model_config ... \
+           --bank bank.pkl --out probe.csv               # + probe.png
 
-See CITNP.evaluation.experiments for what `kshot` and `scm-suite` compute,
+See CITNP.evaluation.experiments for what `kshot`, `scm-suite` and
+`probe-flag` compute,
 CITNP.evaluation.tasks.build_bank for the bank and CITNP.evaluation.plots for
 the figures.
 """
@@ -93,6 +96,25 @@ def _plot_kshot_parser(p: argparse.ArgumentParser) -> None:
 def _plot_monitoring_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("run_dirs", nargs="+")
     p.add_argument("--out", default="monitoring.png")
+
+
+def _probe_flag_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--ckpt")
+    p.add_argument("--model_config")
+    p.add_argument("--bank", help="pickle from `python -m CITNP.evaluation bank`")
+    p.add_argument(
+        "--plot_only", default=None, help="CSV from a previous run: only plot"
+    )
+    p.add_argument("--max_contexts", type=int, default=400)
+    p.add_argument("--cells_per_context", type=int, default=64)
+    p.add_argument("--n_folds", type=int, default=5)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--no_normalise", action="store_true",
+                   help="skip per-task standardisation (as in training)")  # fmt: skip
+    p.add_argument("--out", default="probe.csv")
+    p.add_argument(
+        "--device", default=None, help="default: cuda if available, else cpu"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +224,49 @@ def _run_bank(a: argparse.Namespace) -> None:
         print(f"  {lab:14s} n={n:4d}  oracle NLL {nll:.4f}")
 
 
+def _plot_probe(csv_path: str) -> None:
+    import matplotlib
+    import pandas as pd
+
+    matplotlib.use("Agg")
+    from CITNP.evaluation.plots import plot_flag_probe
+
+    plot_flag_probe(pd.read_csv(csv_path), csv_path.removesuffix(".csv") + ".png")
+
+
+def _run_probe_flag(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
+    if a.plot_only:
+        _plot_probe(a.plot_only)
+        return
+    if not (a.ckpt and a.model_config and a.bank):
+        parser.error("--ckpt, --model_config and --bank are required")
+    import pickle
+
+    import pandas as pd
+
+    from CITNP.evaluation.experiments import run_flag_probe
+    from CITNP.evaluation.model_api import load_model
+
+    device = a.device or _default_device()
+    model = load_model(a.ckpt, a.model_config, device)
+    with open(a.bank, "rb") as f:
+        bank = pickle.load(f)["items"]
+    df = run_flag_probe(
+        model, bank, device=device, normalise=not a.no_normalise,
+        max_contexts=a.max_contexts, cells_per_context=a.cells_per_context,
+        n_folds=a.n_folds, seed=a.seed,
+    )  # fmt: skip
+    df.to_csv(a.out, index=False)
+    print(f"wrote {a.out}")
+    cols = ["point", "condition", "auc", "auc_se", "bal_acc",
+            "rel_change_int", "rel_change_obs"]  # fmt: skip
+    with pd.option_context("display.width", 200, "display.max_rows", 200):
+        print(df[cols].round(3).to_string(index=False))
+    _plot_probe(a.out)
+
+
 def _run_plot_monitoring(a: argparse.Namespace) -> None:
     import matplotlib
 
@@ -226,6 +291,10 @@ COMMANDS = {
         _plot_monitoring_parser,
         "figures from oracle_gap / train_stats CSVs",
     ),
+    "probe-flag": (
+        _probe_flag_parser,
+        "linear probes: is the intervention flag still present at each depth?",
+    ),
 }
 
 
@@ -247,6 +316,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_bank(a)
     elif a.command == "plot-kshot":
         _plot_kshot(a.csv)
+    elif a.command == "probe-flag":
+        _run_probe_flag(a, parsers["probe-flag"])
     else:
         _run_plot_monitoring(a)
 
@@ -266,6 +337,7 @@ scm_suite_cli = _command("scm-suite")
 bank_cli = _command("bank")
 plot_kshot_cli = _command("plot-kshot")
 plot_monitoring_cli = _command("plot-monitoring")
+probe_flag_cli = _command("probe-flag")
 
 
 if __name__ == "__main__":

@@ -25,12 +25,15 @@ from CITNP.evaluation.metrics import (
     variance_ratio,
 )
 from CITNP.evaluation.model_api import (
+    context_states,
     effective_components,
     mixture_cdf,
     mixture_logpdf,
     predict_mixture,
+    probe_points,
 )
 from CITNP.evaluation.oracle import LinGaussOracle
+from CITNP.evaluation.probes import fit_linear_probe
 from CITNP.evaluation.tasks import (
     DESIGNS,
     QUERIES,
@@ -355,3 +358,133 @@ def run_bank_gap(
             float(np.mean(flag_gain)) if flag_gain else float("nan")
         )
     return row
+
+
+# --------------------------------------------------------------------------- #
+# Does the intervention flag survive through the encoder?
+# --------------------------------------------------------------------------- #
+def _distinct_contexts(bank: list[dict], max_contexts: int, seed: int):
+    """One bank item per distinct context (its first question), shuffled
+    with `seed`, at most `max_contexts`."""
+    first: dict[bytes, dict] = {}
+    for it in bank:
+        key = np.ascontiguousarray(it["ctx_x"]).tobytes()
+        first.setdefault(key, it)
+    items = list(first.values())
+    order = np.random.default_rng(seed).permutation(len(items))
+    return [items[i] for i in order[:max_contexts]]
+
+
+def _pick_cells(ci: np.ndarray, n: int, rng) -> np.ndarray:
+    """Up to n flat cell indices of ci [N, D], half intervened where possible."""
+    pos, neg = np.flatnonzero(ci.ravel()), np.flatnonzero(~ci.ravel())
+    n_pos = min(n // 2, len(pos))
+    n_neg = min(n - n_pos, len(neg))
+    return np.concatenate([
+        rng.choice(pos, n_pos, replace=False),
+        rng.choice(neg, n_neg, replace=False),
+    ])  # fmt: skip
+
+
+def _value_features(ctx_x: np.ndarray, ci: np.ndarray) -> np.ndarray:
+    """Baseline features per cell [N * D, 1 + D]: the value standardised by
+    its column's non-intervened cells, and a one-hot of the variable."""
+    x = np.asarray(ctx_x, dtype=np.float64)
+    N, D = x.shape
+    z = np.zeros_like(x)
+    for d in range(D):
+        obs = x[~ci[:, d], d]
+        mu, sd = (obs.mean(), obs.std() + 1e-8) if len(obs) > 1 else (0.0, 1.0)
+        z[:, d] = (x[:, d] - mu) / sd
+    onehot = np.broadcast_to(np.eye(D), (N, D, D))
+    return np.concatenate([z[..., None], onehot], -1).reshape(N * D, 1 + D)
+
+
+def run_flag_probe(
+    model: torch.nn.Module,
+    bank: list[dict],
+    *,
+    device,
+    normalise: bool = True,
+    max_contexts: int = 400,
+    cells_per_context: int = 64,
+    n_folds: int = 5,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Where in the encoder is the intervened-cell flag still present?
+
+    For each depth of `model_api.probe_points(model)` and each distinct
+    context of the bank (`tasks.build_bank` items), takes the representation
+    of every context cell twice: with the flags on and with zero_flags. Then
+      - probe (flags on / off): out-of-fold AUC of a linear probe predicting
+        ctx_int from the representation (`probes.fit_linear_probe`, folds
+        split by context). "off" measures what is decodable WITHOUT the flag
+        (from values and context structure); the gap on - off is the flag's
+        contribution at that depth;
+      - rel_change_int / rel_change_obs: mean over contexts of
+        ||h_on - h_off|| / ||h_off|| on intervened / non-intervened cells,
+        i.e. how much the flag moves the residual stream at that depth.
+    A row with point "value_baseline" (depth -1) probes the cell's
+    standardised value plus its variable index only.
+
+    Returns one row per (point, condition) with columns point, depth,
+    condition ("flags_on", "flags_off" or "baseline"),
+    auc, auc_se, bal_acc, n, n_pos, rel_change_int, rel_change_obs.
+    The model must be in eval mode.
+    """
+    names = probe_points(model)
+    rng = np.random.default_rng(seed)
+    feats: dict[tuple[str, str], list[np.ndarray]] = {
+        (n, f): [] for n in names for f in ("on", "off")
+    }
+    rel: dict[str, dict[str, list[float]]] = {
+        n: {"int": [], "obs": []} for n in names
+    }
+    base, labels, groups = [], [], []
+    for g, it in enumerate(_distinct_contexts(bank, max_contexts, seed)):
+        ci = np.asarray(it["ctx_int"], dtype=bool)
+        N, D = ci.shape
+        pick = _pick_cells(ci, cells_per_context, rng)
+        kw = dict(device=device, normalise=normalise)
+        on = context_states(model, it["ctx_x"], ci, it["T"], it["Y"], **kw)
+        off = context_states(
+            model, it["ctx_x"], ci, it["T"], it["Y"], zero_flags=True, **kw
+        )
+        flat = ci.ravel()
+        for n in names:
+            a, b = on[n].reshape(N * D, -1), off[n].reshape(N * D, -1)
+            feats[(n, "on")].append(a[pick].numpy())
+            feats[(n, "off")].append(b[pick].numpy())
+            r = ((a - b).norm(dim=-1) / b.norm(dim=-1).clamp_min(1e-8)).numpy()
+            if flat.any():
+                rel[n]["int"].append(float(r[flat].mean()))
+            if (~flat).any():
+                rel[n]["obs"].append(float(r[~flat].mean()))
+        base.append(_value_features(it["ctx_x"], ci)[pick])
+        labels.append(flat[pick])
+        groups.append(np.full(len(pick), g))
+
+    y, grp = np.concatenate(labels), np.concatenate(groups)
+    probe = dict(n_folds=n_folds, seed=seed)
+    rows = [
+        dict(point="value_baseline", depth=-1, condition="baseline",
+             **fit_linear_probe(np.concatenate(base), y, grp, **probe))
+    ]  # fmt: skip
+    for depth, n in enumerate(names):
+        for f in ("on", "off"):
+            row = dict(point=n, depth=depth, condition=f"flags_{f}")
+            row.update(
+                fit_linear_probe(np.concatenate(feats[(n, f)]), y, grp, **probe)
+            )
+            row["rel_change_int"] = (
+                float(np.mean(rel[n]["int"]))
+                if f == "on" and rel[n]["int"]
+                else np.nan
+            )
+            row["rel_change_obs"] = (
+                float(np.mean(rel[n]["obs"]))
+                if f == "on" and rel[n]["obs"]
+                else np.nan
+            )
+            rows.append(row)
+    return pd.DataFrame(rows)
