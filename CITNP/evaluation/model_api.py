@@ -21,10 +21,9 @@ def load_model(
     """Build the model described by the YAML `model_config` for `num_nodes`
     variables, load the weights in `ckpt` and return it in eval mode.
 
-    The class is read from the optional YAML key `model_class` (a name in
-    CITNP.models.mixed_context_model), default MixedContextMoGModel.
+    The class is resolved by resolve_model_class from the optional YAML keys intervention_encoding and/or model_class (default: r1, MixedContextMoGModel).
     """
-    from CITNP.models import mixed_context_model
+    from CITNP.models.mixed_context_model import resolve_model_class
 
     with open(model_config) as f:
         m = yaml.safe_load(f)
@@ -43,8 +42,9 @@ def load_model(
         dtype="float32",
         num_mixture_components=m["num_mixture_components"],
     )
-    cls_name = m.get("model_class", DEFAULT_MODEL_CLASS)
-    model_cls = getattr(mixed_context_model, cls_name)
+    model_cls, _ = resolve_model_class(
+        m.get("intervention_encoding"), m.get("model_class")
+    )
     model = model_cls(cfg)
     state = torch.load(ckpt, map_location="cpu")
     model.load_state_dict(state.get("model_state_dict", state))
