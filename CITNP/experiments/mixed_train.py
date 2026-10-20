@@ -164,6 +164,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         setattr(args, k, v)
     return args
 
+
 def apply_model_config(args: argparse.Namespace) -> None:
     """Copy the --model_config YAML onto args (YAML values override the
     command line, as before), except that a selection key given in both
@@ -182,6 +183,7 @@ def apply_model_config(args: argparse.Namespace) -> None:
                 f"{k}={v!r} in {args.model_config}"
             )
         setattr(args, k, v)
+
 
 def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     """Datasets, model, configs and callbacks; returns (trainer, model_config)."""

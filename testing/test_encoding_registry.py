@@ -19,7 +19,7 @@ from CITNP.models.mixed_context_model import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_mixed_context_model import tiny_config  # noqa: E402
+from test_mixed_context_model import tiny_config
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIGS = REPO / "CITNP" / "experiments" / "configs"
@@ -124,11 +124,14 @@ def test_existing_layerwise_config_still_resolves():
     [
         ({}, MixedContextMoGModel),
         ({"intervention_encoding": "layerwise"}, LayerwiseMixedContextMoGModel),
-        ({"model_class": "LayerwiseMixedContextMoGModel"}, LayerwiseMixedContextMoGModel),
+        (
+            {"model_class": "LayerwiseMixedContextMoGModel"},
+            LayerwiseMixedContextMoGModel,
+        ),
     ],
 )
 def test_load_model_uses_registry(tmp_path, extra, cls):
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     c = tiny_config()
     cfg = {

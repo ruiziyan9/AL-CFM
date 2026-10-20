@@ -402,6 +402,7 @@ class LayerwiseMixedContextMoGModel(MixedContextMoGModel):
 
     encoder_cls = LayerwiseMixedCausalInfEncoder
 
+
 # ---------------------------------------------------------------------------
 # Intervention-encoding switch. The single place that maps a method name to a
 # model class: mixed_train.py and evaluation/model_api.py both resolve here.
@@ -451,6 +452,7 @@ def resolve_model_class(
             f"contradicts intervention_encoding={intervention_encoding!r}"
         )
     return cls, name
+
 
 def _load_with_new_params(
     model: nn.Module, path_or_state_dict, new_prefixes: tuple[str, ...]
