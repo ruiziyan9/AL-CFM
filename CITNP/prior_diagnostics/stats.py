@@ -14,6 +14,9 @@ shared by the plot_* diagnostics in this package.
   linear families; a linear summary of the dependence for nonlinear ones.
 - effect_gaps: how far do(X_t = x) moves X_y, compared with the marginal and
   with the observational conditional X_y | X_t ~= x.
+- question_class / context_role: whether p(Y | T) and p(Y | do(T)) differ
+  (an open back-door path from T to Y), and the role of a context
+  intervention do(C) for a question (T, Y). Any D.
 """
 
 from __future__ import annotations
@@ -23,7 +26,12 @@ import numpy as np
 from CITNP.datasets.mixed_regime_generator import Task
 
 __all__ = [
+    "CONTEXT_ROLES",
+    "DIFFER_CLASSES",
+    "QUESTION_CLASSES",
     "RELATIONS",
+    "context_role",
+    "question_class",
     "conditional_rows",
     "context_pair_records",
     "edge_strengths",
@@ -158,3 +166,70 @@ def effect_gaps(
         "int_vs_cond": float((m_int - x_obs[idx, y].mean()) / sd),
         "cond_window": (float(x_obs[idx, t].min()), float(x_obs[idx, t].max())),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Question classes: does conditioning answer the interventional question?
+# --------------------------------------------------------------------------- #
+QUESTION_CLASSES = (
+    "reverse",  # Y is an ancestor of T
+    "confounded effect",  # T -> ... -> Y plus a common cause (back-door path)
+    "pure confounding",  # no directed path either way, common cause
+    "unconfounded effect",  # T -> ... -> Y, no back-door path
+    "unrelated",  # no directed path and no common cause
+)
+# p(Y | T=x) != p(Y | do(T=x)) generically iff there is an open back-door path.
+DIFFER_CLASSES = frozenset(QUESTION_CLASSES[:3])
+
+CONTEXT_ROLES = (
+    "obs",
+    "do(T)",  # samples the target distribution directly
+    "do(confounder)",  # ancestor of T with a directed path to Y avoiding T
+    "do(mediator)",  # on a directed path T -> ... -> Y
+    "do(Y)",
+    "do(other)",  # e.g. ancestors of T only, descendants of Y, unrelated
+)
+
+
+def _without(graph: np.ndarray, node: int) -> np.ndarray:
+    g = np.array(graph, copy=True)
+    g[node, :] = 0
+    g[:, node] = 0
+    return g
+
+
+def question_class(graph: np.ndarray, t: int, y: int) -> str:
+    """One of QUESTION_CLASSES for treatment t and outcome y (t != y).
+
+    A back-door path from t to y with no conditioning is a trek
+    t <- ... <- a -> ... -> y whose source a has a directed path to t and a
+    directed path to y that avoids t (a = y is the reverse case)."""
+    dist = path_lengths(graph)
+    if np.isfinite(dist[y, t]):
+        return "reverse"
+    d_no_t = path_lengths(_without(graph, t))
+    back = any(
+        np.isfinite(dist[a, t]) and np.isfinite(d_no_t[a, y])
+        for a in range(len(dist))
+        if a not in (t, y)
+    )
+    if np.isfinite(dist[t, y]):
+        return "confounded effect" if back else "unconfounded effect"
+    return "pure confounding" if back else "unrelated"
+
+
+def context_role(graph: np.ndarray, t: int, y: int, c: int | None) -> str:
+    """Role (CONTEXT_ROLES) of a context regime do(X_c) for question (t, y);
+    c=None is the observational regime."""
+    if c is None:
+        return "obs"
+    if c == t:
+        return "do(T)"
+    if c == y:
+        return "do(Y)"
+    dist = path_lengths(graph)
+    if np.isfinite(dist[t, c]) and np.isfinite(dist[c, y]):
+        return "do(mediator)"
+    if np.isfinite(dist[c, t]) and np.isfinite(path_lengths(_without(graph, t))[c, y]):
+        return "do(confounder)"
+    return "do(other)"
