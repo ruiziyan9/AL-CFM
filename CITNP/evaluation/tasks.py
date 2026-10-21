@@ -253,7 +253,12 @@ def build_bank(
         if not todo:
             continue
 
-        orc = LinGaussOracle(D, prior, eta=getattr(cfg, "weight_scale", 1.0)).fit(ctx_x, ctx_int)
+        orc = LinGaussOracle(
+            D,
+            prior,
+            eta=getattr(cfg, "weight_scale", 1.0),
+            weight_mean=getattr(cfg, "weight_mean", 0.0),
+        ).fit(ctx_x, ctx_int)
         K = int(task.meta["K"])
         has_obs = bool(task.meta["has_obs"])
         for T, b, n_T in todo:

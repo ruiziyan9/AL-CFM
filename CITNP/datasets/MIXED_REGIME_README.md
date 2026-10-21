@@ -53,6 +53,7 @@ design; the model sees the same information through `ctx_int`.
 | `graph_degrees` | — | expected **number of edges** (`s0` of `generate_synthetic_dag`), as a list or a dict keyed by D (same convention as the original repo). ER is capped at D(D−1)/2 |
 | `normalise` | `True` | reference standardisation; set `False` for oracle-matched families |
 | `weight_scale` | 1.0 | edge-weight scale η of `linearnonidentifiable`: w \| s² ~ N(0, η s²); the exact oracle must use the same η |
+| `weight_mean` | 0.0 | signed edge-weight mean m of `linearnonidentifiable`: w \| s² ~ N(s m, η s²) with sign s = ±1 w.p. ½ per edge, so weights sit away from zero; 0 is the original prior. The exact oracle (`CITNP.evaluation.oracle.LinGaussOracle(weight_mean=m)`) stays exact by summing over the 2^p sign patterns of each node's p parents |
 | `n_ref` | 256 | hidden reference rows |
 | `p_obs` | 0.85 | probability the context includes an observational regime |
 | `n_obs_min` | 10 | minimum observational rows; if > 0 the observational regime is always present (`p_obs` is then unused) |

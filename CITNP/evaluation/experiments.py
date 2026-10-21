@@ -146,7 +146,10 @@ def run_kshot(
             x, m = x[perm], m[perm]
 
             orc = LinGaussOracle(
-                len(scm.s2), prior, eta=getattr(data_cfg, "weight_scale", 1.0)
+                len(scm.s2),
+                prior,
+                eta=getattr(data_cfg, "weight_scale", 1.0),
+                weight_mean=getattr(data_cfg, "weight_mean", 0.0),
             ).fit(x, m)
             # all six queries share the context: one batch of six elements
             mod = predict_mixture(model, x, m, Ts, Ys, grid, device=dev)
@@ -277,7 +280,10 @@ def run_scm_suite(
                 xq, _ = scm.sample(n_query, T, t, rng)
                 y = xq[:, Y]
                 orc = LinGaussOracle(
-                    num_nodes, prior, eta=getattr(data_cfg, "weight_scale", 1.0)
+                    num_nodes,
+                    prior,
+                    eta=getattr(data_cfg, "weight_scale", 1.0),
+                    weight_mean=getattr(data_cfg, "weight_mean", 0.0),
                 ).fit(x, m)
                 r["truth"].append(-scm.do_logpdf(T, Y, t, y).mean())
                 r["oracle"].append(

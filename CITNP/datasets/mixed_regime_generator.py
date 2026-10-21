@@ -280,6 +280,10 @@ class MixedRegimeConfig:
     # Edge-weight scale eta of linearnonidentifiable: w | s2 ~ N(0, eta * s2).
     # 1.0 is the original prior; the exact oracle must use the same value.
     weight_scale: float = 1.0
+    # Edge-weight mean m of linearnonidentifiable: w | s2 ~ N(sign * m, eta * s2),
+    # sign = +-1 with prob 1/2 per edge. 0.0 is the original prior; the exact
+    # oracle must use the same value.
+    weight_mean: float = 0.0
     # P(K = 0), i.e. observation-only contexts. None keeps the truncated
     # geometric over {0..k_cap}; otherwise K >= 1 follows its shape.
     p_k0: float | None = None
@@ -328,6 +332,14 @@ class MixedRegimeConfig:
             raise ValueError("max_abs_value must be > 0")
         if self.n_obs_min < 0:
             raise ValueError("n_obs_min must be >= 0")
+        self.weight_mean = float(self.weight_mean)
+        if not self.weight_mean >= 0:
+            raise ValueError("weight_mean must be >= 0")
+        if (
+            self.weight_mean != 0.0
+            and self.function_generator != "linearnonidentifiable"
+        ):
+            raise ValueError("weight_mean is only supported for linearnonidentifiable")
         self.weight_scale = float(self.weight_scale)
         if not self.weight_scale > 0:
             raise ValueError("weight_scale must be > 0")
@@ -941,6 +953,12 @@ def _generate_once(
         # read only there, so no random numbers change before that point.
         for f in fdict.values():
             f.eta = cfg.weight_scale
+    if cfg.weight_mean != 0.0:
+        # Signed-mean mixture prior: LinearNonIdentifiable adds sign * weight_mean
+        # (sign = +-1 per edge) to w at its call. The sign is drawn only when
+        # weight_mean != 0, so default configs keep the same random numbers.
+        for f in fdict.values():
+            f.weight_mean = cfg.weight_mean
 
     # Row layout: [ref | ctx regime 0 | ... | ctx regime R-1 | qry]
     n_ref = cfg.n_ref
