@@ -145,7 +145,9 @@ def run_kshot(
             perm = np.random.default_rng([s, c_i, k]).permutation(len(x))
             x, m = x[perm], m[perm]
 
-            orc = LinGaussOracle(len(scm.s2), prior).fit(x, m)
+            orc = LinGaussOracle(
+                len(scm.s2), prior, eta=getattr(data_cfg, "weight_scale", 1.0)
+            ).fit(x, m)
             # all six queries share the context: one batch of six elements
             mod = predict_mixture(model, x, m, Ts, Ys, grid, device=dev)
             mod_nf = predict_mixture(
@@ -274,7 +276,9 @@ def run_scm_suite(
                 t = rng.normal(0, do_scale, n_query)
                 xq, _ = scm.sample(n_query, T, t, rng)
                 y = xq[:, Y]
-                orc = LinGaussOracle(num_nodes, prior).fit(x, m)
+                orc = LinGaussOracle(
+                    num_nodes, prior, eta=getattr(data_cfg, "weight_scale", 1.0)
+                ).fit(x, m)
                 r["truth"].append(-scm.do_logpdf(T, Y, t, y).mean())
                 r["oracle"].append(
                     -orc.logpdf(T, Y, t, y, n_mc=n_mc, seed=s).mean()

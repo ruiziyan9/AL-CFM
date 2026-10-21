@@ -277,6 +277,12 @@ class MixedRegimeConfig:
     qry_mode: str = "per_row"
     # Allowed numbers of question groups G (grouped mode only).
     qry_groups: list[int] = field(default_factory=lambda: [1, 2, 3])
+    # Edge-weight scale eta of linearnonidentifiable: w | s2 ~ N(0, eta * s2).
+    # 1.0 is the original prior; the exact oracle must use the same value.
+    weight_scale: float = 1.0
+    # P(K = 0), i.e. observation-only contexts. None keeps the truncated
+    # geometric over {0..k_cap}; otherwise K >= 1 follows its shape.
+    p_k0: float | None = None
 
     def __post_init__(self):
         """Validate the config and normalise types after JSON/YAML loading."""
@@ -322,6 +328,26 @@ class MixedRegimeConfig:
             raise ValueError("max_abs_value must be > 0")
         if self.n_obs_min < 0:
             raise ValueError("n_obs_min must be >= 0")
+        self.weight_scale = float(self.weight_scale)
+        if not self.weight_scale > 0:
+            raise ValueError("weight_scale must be > 0")
+        if (
+            self.weight_scale != 1.0
+            and self.function_generator != "linearnonidentifiable"
+        ):
+            raise ValueError("weight_scale is only supported for linearnonidentifiable")
+        if self.p_k0 is not None:
+            self.p_k0 = float(self.p_k0)
+            if not 0.0 <= self.p_k0 < 1.0:
+                raise ValueError("p_k0 must be in [0, 1)")
+        if "ER_CC" in self.graph_type:
+            degs = (
+                [v for vs in self.graph_degrees.values() for v in vs]
+                if isinstance(self.graph_degrees, dict)
+                else self.graph_degrees
+            )
+            if min(degs) < 2 or min(self.num_variables) < 3:
+                raise ValueError("ER_CC needs >= 2 edges and D >= 3 (a common cause)")
         # A task has at most R = min(k_max, D) + 1 regimes and reserves n_obs_min
         # observational rows; requiring n_ctx_range[0] >= max R + n_obs_min keeps
         # the n_ctx floor a no-op, so a fixed per-batch n_ctx gives equal sizes.
@@ -535,7 +561,8 @@ def sample_graph(cfg: MixedRegimeConfig, D: int) -> tuple[np.ndarray, dict]:
 
     Uses the global numpy RNG and Python's `random` (via igraph), so call it
     after seeding. Index order is NOT guaranteed to be topological (e.g. "FC"),
-    so always use `topological_order` on the result.
+    so always use `topological_order` on the result. "ER_CC" is "ER" redrawn
+    until some node has >= 2 children (a common cause).
 
     Returns:
     ----------
@@ -544,14 +571,23 @@ def sample_graph(cfg: MixedRegimeConfig, D: int) -> tuple[np.ndarray, dict]:
     """
     s0 = _sample_expected_edges(cfg, D)
     graph_type = str(np.random.choice(cfg.graph_type))
-    if graph_type == "ER":
+    if graph_type in ("ER", "ER_CC"):
         # igraph errors if m exceeds the number of possible edges.
         s0 = min(s0, D * (D - 1) // 2)
     elif graph_type == "SF" and round(s0 / D) < 1:
         # SF adds m = round(s0 / D) edges per new node, so a small s0 would
         # silently give an empty graph; use m = 1 instead.
         s0 = D
-    graph = generate_synthetic_dag(d=D, s0=s0, graph_type=graph_type)
+    if graph_type == "ER_CC":
+        # ER conditioned on a common cause: some node has >= 2 children.
+        for _ in range(1000):
+            graph = generate_synthetic_dag(d=D, s0=s0, graph_type="ER")
+            if (np.asarray(graph) != 0).sum(axis=1).max() >= 2:
+                break
+        else:
+            raise RuntimeError(f"ER_CC: no common cause in 1000 draws (D={D}, s0={s0})")
+    else:
+        graph = generate_synthetic_dag(d=D, s0=s0, graph_type=graph_type)
     info = {"graph_type": graph_type, "s0": int(s0)}
     return (np.asarray(graph) != 0).astype(np.int8), info
 
@@ -650,6 +686,11 @@ def sample_design(
     k_cap = max(0, min(cfg.k_max, D))
     # larger p_geom makes K=0 more likely
     k_probs = (1.0 - cfg.p_geom) ** np.arange(k_cap + 1)
+    if cfg.p_k0 is not None and k_cap > 0:
+        # P(K = 0) = p_k0; K >= 1 keeps the geometric shape.
+        k_probs[0] = 0.0
+        k_probs = (1.0 - cfg.p_k0) * k_probs / k_probs.sum()
+        k_probs[0] = cfg.p_k0
     k_probs = k_probs / k_probs.sum()
     # Resample until the context is non-empty (obs regime and/or K >= 1).
     while True:
@@ -895,6 +936,11 @@ def _generate_once(
         num_variables=D, intervention_range_multiplier=1
     )
     fdict = gen.generate_functions(graph)
+    if cfg.weight_scale != 1.0:
+        # LinearNonIdentifiable draws w ~ N(0, eta * var1) at its call; eta is
+        # read only there, so no random numbers change before that point.
+        for f in fdict.values():
+            f.eta = cfg.weight_scale
 
     # Row layout: [ref | ctx regime 0 | ... | ctx regime R-1 | qry]
     n_ref = cfg.n_ref
