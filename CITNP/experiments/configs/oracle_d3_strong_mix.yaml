@@ -1,0 +1,28 @@
+# D=3 conjugate linear-Gaussian prior with a signed-mean weight prior: edge
+# weights are bounded away from zero, so effects and confounding are stronger.
+# Same family and raw scale as oracle_d3.yaml, so the exact Bayes oracle still
+# applies; it reads weight_scale, weight_mean and the graph prior (via
+# sample_graph) from this file. Differences from oracle_d3.yaml:
+#   weight_mean 1          w | s2 ~ N(s * 1, s2), sign s = +-1 w.p. 1/2 per
+#   weight_scale 1         edge: a two-component mixture around +-1 instead of
+#                          N(0, s2) (the oracle sums over the 2^p sign patterns)
+#   graph_type ER + ER_CC  half the graphs are conditioned to contain a common
+#   graph_degrees 2-3      cause (a node with >= 2 children)
+#   p_k0 0.15, p_geom 0.3  15% observation-only contexts; otherwise K in {1,2,3}
+#   qry_type_probs         question treatments seen / unseen in the context 50/50
+function_generator: linearnonidentifiable
+num_variables: [3]
+graph_type: [ER, ER_CC]
+graph_degrees: {3: [2, 3]}
+normalise: false        # raw scale, so the prior stays conjugate
+weight_scale: 1.0
+weight_mean: 1.0
+k_max: 3
+p_k0: 0.15
+p_geom: 0.3
+n_ctx_range: [64, 256]
+n_qry: 48
+qry_mode: grouped
+qry_groups: [1, 2, 3]
+qry_type_probs: [0.5, 0.5, 0.0]   # grouped mode uses (seen, unseen) only
+n_obs_min: 32

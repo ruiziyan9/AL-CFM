@@ -277,13 +277,13 @@ class MixedRegimeConfig:
     qry_mode: str = "per_row"
     # Allowed numbers of question groups G (grouped mode only).
     qry_groups: list[int] = field(default_factory=lambda: [1, 2, 3])
+    # Edge-weight scale eta of linearnonidentifiable: w | s2 ~ N(0, eta * s2).
+    # 1.0 is the original prior; the exact oracle must use the same value.
+    weight_scale: float = 1.0
     # Edge-weight mean m of linearnonidentifiable: w | s2 ~ N(sign * m, eta * s2),
     # sign = +-1 with prob 1/2 per edge. 0.0 is the original prior; the exact
     # oracle must use the same value.
     weight_mean: float = 0.0
-    # Edge-weight scale eta of linearnonidentifiable: w | s2 ~ N(0, eta * s2).
-    # 1.0 is the original prior; the exact oracle must use the same value.
-    weight_scale: float = 1.0
     # P(K = 0), i.e. observation-only contexts. None keeps the truncated
     # geometric over {0..k_cap}; otherwise K >= 1 follows its shape.
     p_k0: float | None = None

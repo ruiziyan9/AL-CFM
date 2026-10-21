@@ -9,7 +9,10 @@ Prior (matches functions_generator.LinearNonIdentifiable, per node j):
     non-root:  x_j = w_j^T x_pa + e_j, e_j ~ N(0, s2),  s2 ~ IG(3.0, 0.5),
                w_j | s2 ~ N(0, eta * s2 * I), eta = weight_scale of the data config (default 1)
 This is Normal-Inverse-Gamma conjugate, so every DAG's marginal likelihood is
-closed form. Hard interventions are handled by dropping node j's likelihood
+closed form. With weight_mean = m != 0 (signed-mean prior) the weight prior is
+    w_j | s2 ~ sum_s 2^-p N(m * s, eta * s2 * I),  s in {+1, -1}^p,
+a mixture of 2^p NIG components, which stays exact in closed form.
+Hard interventions are handled by dropping node j's likelihood
 term on rows where j was intervened (its value is set, not generated); the
 intervened values still act as parents of j's children.
 
@@ -80,13 +83,27 @@ class NodePosterior:
     m_n: np.ndarray | None  # posterior mean of weights
     V_n: np.ndarray | None  # posterior cov / s2 of weights
     log_ml: float
+    # Signed-mean mixture prior only (weight_mean != 0), one entry per sign
+    # pattern s; None otherwise. m_n / b_n above then hold component 0.
+    comp_m: np.ndarray | None = None  # [S, p] posterior means
+    comp_b: np.ndarray | None = None  # [S] posterior IG scales
+    comp_logw: np.ndarray | None = None  # [S] normalised log posterior weights
 
 
 def node_posterior(
-    x: np.ndarray, int_mask: np.ndarray, j: int, parents: np.ndarray, eta: float = ETA
+    x: np.ndarray,
+    int_mask: np.ndarray,
+    j: int,
+    parents: np.ndarray,
+    eta: float = ETA,
+    weight_mean: float = 0.0,
 ) -> NodePosterior:
     """NIG posterior and log marginal likelihood for node j given its parents,
-    using only rows where j was NOT intervened."""
+    using only rows where j was NOT intervened.
+
+    With weight_mean = m != 0 the weight prior is the signed-mean mixture
+    sum_s 2^-p N(m * s, eta * s2 * I) over sign patterns s in {+1, -1}^p: one
+    NIG component per pattern, so the posterior is a mixture of NIGs."""
     keep = ~int_mask[:, j]
     y = x[keep, j]
     n = y.shape[0]
@@ -112,6 +129,37 @@ def node_posterior(
     a_n = a + n / 2
     b_n = b + 0.5 * float(y @ y - m_n @ prec @ m_n)
     _, logdet = np.linalg.slogdet(np.eye(p) + eta * X.T @ X)
+    if weight_mean != 0.0:
+        # One NIG component per sign pattern s, prior mean mu_s = m * s. All
+        # components share prec, V_n, a_n and logdet; mean and b differ.
+        signs = np.array(list(itertools.product([1.0, -1.0], repeat=p)))  # [S, p]
+        mu = weight_mean * signs
+        comp_m = (X.T @ y + mu / eta) @ V_n.T  # rows: V_n (X^T y + mu_s / eta)
+        comp_b = b + 0.5 * (
+            float(y @ y)
+            + (mu * mu).sum(1) / eta
+            - np.einsum("sp,pq,sq->s", comp_m, prec, comp_m)
+        )
+        log_ml_s = (
+            gammaln(a_n)
+            - gammaln(a)
+            + a * np.log(b)
+            - a_n * np.log(comp_b)
+            - 0.5 * n * np.log(2 * np.pi)
+            - 0.5 * logdet
+        )
+        lse = logsumexp(log_ml_s)
+        return NodePosterior(
+            False,
+            a_n,
+            float(comp_b[0]),
+            comp_m[0],
+            V_n,
+            float(lse - p * np.log(2.0)),
+            comp_m=comp_m,
+            comp_b=comp_b,
+            comp_logw=log_ml_s - lse,
+        )
     log_ml = (
         gammaln(a_n)
         - gammaln(a)
@@ -133,11 +181,20 @@ class LinGaussOracle:
         log_graph_prior: dict dag_key -> log prior. Use `empirical_graph_prior`
             (matches the training generator) or None for uniform over DAGs.
         eta: weight-prior scale; must equal the data config's weight_scale.
+        weight_mean: signed weight-prior mean; must equal the data config's
+            weight_mean (0 = the original zero-mean prior).
     """
 
-    def __init__(self, d: int, log_graph_prior: dict | None = None, eta: float = ETA):
+    def __init__(
+        self,
+        d: int,
+        log_graph_prior: dict | None = None,
+        eta: float = ETA,
+        weight_mean: float = 0.0,
+    ):
         self.d = d
         self.eta = float(eta)
+        self.weight_mean = float(weight_mean)
         self.dags = all_dags(d)
         if log_graph_prior is None:
             lp = np.full(len(self.dags), -np.log(len(self.dags)))
@@ -159,7 +216,12 @@ class LinGaussOracle:
                 key = (j, pa)
                 if key not in cache:
                     cache[key] = node_posterior(
-                        x, int_mask, j, np.array(pa, dtype=int), eta=self.eta
+                        x,
+                        int_mask,
+                        j,
+                        np.array(pa, dtype=int),
+                        eta=self.eta,
+                        weight_mean=self.weight_mean,
                     )
                 posts.append(cache[key])
                 log_ml[g_i] += cache[key].log_ml
@@ -191,15 +253,21 @@ class LinGaussOracle:
         B = np.zeros((n_mc, self.d, self.d))
         s2 = np.zeros((n_mc, self.d))
         for j, post in enumerate(self.node_post[g_i]):
-            s2_j = 1.0 / rng.gamma(
-                post.a_n, 1.0 / post.b_n, size=n_mc
-            )  # IG(a_n, b_n)
+            if post.comp_m is None:  # single NIG (roots: m_n is None)
+                b_n = post.b_n
+                m_n = None if post.m_n is None else post.m_n[None]
+            else:
+                # Signed-mean mixture: one component (sign pattern) per draw.
+                pk = np.exp(post.comp_logw)
+                k = rng.choice(len(pk), size=n_mc, p=pk / pk.sum())
+                b_n, m_n = post.comp_b[k], post.comp_m[k]  # [n_mc], [n_mc, p]
+            s2_j = 1.0 / rng.gamma(post.a_n, 1.0 / b_n, size=n_mc)  # IG(a_n, b_n)
             s2[:, j] = s2_j
             if not post.root:
                 pa = np.where(g[:, j])[0]
                 L = np.linalg.cholesky(post.V_n)
                 z = rng.standard_normal((n_mc, len(pa)))
-                w = post.m_n[None] + np.sqrt(s2_j)[:, None] * (z @ L.T)
+                w = m_n + np.sqrt(s2_j)[:, None] * (z @ L.T)
                 B[:, pa, j] = w
         return B, s2
 
