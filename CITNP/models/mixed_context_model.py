@@ -43,9 +43,15 @@ from CITNP.utils.utils import (
     reshape_for_node_attention,
     reshape_for_sample_attention,
 )
+from CITNP.models.extra_node_encoder import (
+    ExtraNodeMixedCausalInfEncoder,
+)
 
 # Parameters that upstream checkpoints do not have.
 NEW_PARAM_PREFIX = "encoder.context_intervened."
+EXTRA_NODE_PARAM_PREFIXES = (
+    "encoder.intervention_set.",
+)
 # Parameters that R1 (embedding-only flag) checkpoints do not have.
 LAYERWISE_PARAM_PREFIXES = ("encoder.flag_code.", "encoder.encoder.inject_")
 
@@ -403,6 +409,17 @@ class LayerwiseMixedContextMoGModel(MixedContextMoGModel):
     encoder_cls = LayerwiseMixedCausalInfEncoder
 
 
+class ExtraNodeMixedContextModel(MixedContextModel):
+    """Gaussian mixed-context model with extra-node encoding."""
+
+    encoder_cls = ExtraNodeMixedCausalInfEncoder
+
+
+class ExtraNodeMixedContextMoGModel(MixedContextMoGModel):
+    """MoG mixed-context model with extra-node encoding."""
+
+    encoder_cls = ExtraNodeMixedCausalInfEncoder
+
 # ---------------------------------------------------------------------------
 # Intervention-encoding switch. The single place that maps a method name to a
 # model class: mixed_train.py and evaluation/model_api.py both resolve here.
@@ -412,6 +429,7 @@ DEFAULT_INTERVENTION_ENCODING = "r1"
 INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
     "r1": MixedContextMoGModel,
     "layerwise": LayerwiseMixedContextMoGModel,
+    "extra_node": ExtraNodeMixedContextMoGModel,
 }
 
 
@@ -481,23 +499,37 @@ def _load_with_new_params(
     return result
 
 
+
 def load_upstream_checkpoint(
-    model: nn.Module, path_or_state_dict: str | PathLike | dict
+    model: nn.Module,
+    path_or_state_dict: str | PathLike | dict,
 ):
-    """Load upstream MACE-TNP weights into a mixed-context model.
+    """Initialize a mixed-context model from upstream MACE-TNP.
 
-    Accepts a checkpoint path, a CheckpointCallback dict (state dict under
-    "model_state_dict"), or a raw state dict. The only parameters allowed to be
-    missing are the new mixed-context ones (`encoder.context_intervened.*`,
-    plus the layer-wise ones for Layerwise* models), which keep their
-    zero-initialised last layers; unexpected keys are not allowed.
-
-    Returns the `load_state_dict` result.
+    New encoding-specific parameters must be absent in the
+    upstream checkpoint; all shared weights must match.
     """
+
+    if isinstance(
+        model,
+        (
+            ExtraNodeMixedContextModel,
+            ExtraNodeMixedContextMoGModel,
+        ),
+    ):
+        prefixes = EXTRA_NODE_PARAM_PREFIXES
+
+    else:
+        # Preserve existing R1/layerwise behavior.
+        prefixes = (
+            NEW_PARAM_PREFIX,
+            *LAYERWISE_PARAM_PREFIXES,
+        )
+
     return _load_with_new_params(
         model,
         path_or_state_dict,
-        (NEW_PARAM_PREFIX, *LAYERWISE_PARAM_PREFIXES),
+        prefixes,
     )
 
 

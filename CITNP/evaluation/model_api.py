@@ -207,8 +207,14 @@ def context_states(
     B = 1
     states: dict[str, torch.Tensor] = {}
 
-    def keep(name, x):  # x [B, Nc, D, d_model]
-        states[name] = x.detach().float().cpu()[0]
+    num_real_nodes = int(np.asarray(ctx_x).shape[1])
+    def keep(name, x):
+        states[name] = (
+            x[:, :, :num_real_nodes, :]
+            .detach()
+            .float()
+            .cpu()[0]
+        )
 
     def pre_embed(_mod, args):
         keep("embed", args[0][:, :Nc])
