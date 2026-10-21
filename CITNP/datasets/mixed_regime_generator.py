@@ -984,6 +984,9 @@ def _generate_once(
                     int_val[row : row + n_r, j] = v
             row += n_r
 
+    # Per-node mechanism and standardisation constants, for diagnostics only
+    # (returned through generate_task(..., return_debug=True)).
+    mechanisms: dict[int, dict] = {}
     for i in topo:
         pa = np.where(graph[:, i])[0]
         # ONE call on ALL rows (see module docstring). Rows where i is
@@ -993,15 +996,24 @@ def _generate_once(
         # evalutate the mechanism function for variable i
         # using the parent values for all rows (reference, context, query)
         out = np.asarray(fdict[i](X[:, pa]), dtype=np.float64).reshape(n_tot)
+        loc, scale = 0.0, 1.0
         if cfg.normalise:
             # Statistics from the hidden observational reference rows only, so
             # the SCM does not depend on the design. Children then see
             # standardised parents, as in the original generator.
             ref = out[:n_ref]
+            loc, scale = float(ref.mean()), max(float(ref.std()), 1e-6)
             out = _standardise(out, ref.mean(), ref.std())
+        mechanisms[int(i)] = {
+            "parents": pa.tolist(),
+            "mechanism": fdict[i],
+            "loc": loc,
+            "scale": scale,
+        }
         # Intervened cells take their do-value, so descendants see it.
         X[:, i] = np.where(int_mask[:, i], int_val[:, i], out)
 
+    meta["_mechanisms"] = mechanisms  # popped in generate_task
     meta.update(
         {
             "family": cfg.function_generator,
@@ -1081,6 +1093,10 @@ def generate_task(
 
     return_debug : bool
         Also return a debug dict.
+        debug["mechanisms"] maps each unpermuted node index to {"parents",
+        "mechanism", "loc", "scale"}: the mechanism object after its single
+        call and the reference standardisation (0, 1 when normalise=False).
+        Combine with debug["perm"] to map to the task's permuted indices.
 
     permute : bool
         Randomly permute the variables (default). False keeps the input
@@ -1128,6 +1144,7 @@ def generate_task(
             f"{cfg.max_abs_value} after {cfg.max_resample_attempts} resamples"
         )
     X, int_mask, int_val, ctx_regime, g, des, topo, n_ref, n_ctx, meta = res
+    mechanisms = meta.pop("_mechanisms")  # never stored in Task.meta
     # Computed on the rows that are returned (reference rows are dropped).
     max_abs = float(np.abs(X[n_ref:]).max())
     D = des.num_variables
@@ -1202,6 +1219,7 @@ def generate_task(
         "topo": topo,
         "n_ref": n_ref,
         "n_tot": X.shape[0],
+        "mechanisms": mechanisms,  # unpermuted node index -> mechanism record
     }
     return task, debug
 
