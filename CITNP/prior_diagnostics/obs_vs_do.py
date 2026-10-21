@@ -140,14 +140,14 @@ def collect_obs_vs_do(
                 recs.append(rec)
     examples = {}
     for cls in QUESTION_CLASSES:
-        rec = select_example(recs, cls, example)
-        if rec is not None:
-            task, scm = _task_and_scm(cfg, rec["task"], base_seed, num_variables)
-            examples[cls] = (task, scm, rec["t"], rec["y"], rec)
+        ex = select_example(recs, cls, example)
+        if ex is not None:
+            task, scm = _task_and_scm(cfg, ex["task"], base_seed, num_variables)
+            examples[cls] = (task, scm, ex["t"], ex["y"], ex)
     return recs, examples
 
 
-def _bands(ax, task, scm, t, y, rec, legend):
+def _bands(ax, task, scm, t, y, rec, *, legend):
     mu, S = scm.moments()
     xs = mu[t] + np.sqrt(S[t, t]) * np.linspace(-2.5, 2.5, 100)
     for (a, b, v), color, label in (
@@ -186,7 +186,8 @@ def plot_obs_vs_do(recs: list[dict], examples: dict, title: str):
         differ = cls in DIFFER_CLASSES
         a = ax[0, k]
         if cls in examples:
-            _bands(a, *examples[cls], legend=(k == 0))
+            task, scm, t, y, rec = examples[cls]
+            _bands(a, task, scm, t, y, rec, legend=(k == 0))
         a.set_title(f"{cls}\n{share:.0%} of questions · Y|T {'≠' if differ else '='} Y|do(T)",
                     fontsize=9, color=DO_COLOR if differ else "black")  # fmt: skip
         if not R:
