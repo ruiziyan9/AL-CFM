@@ -103,3 +103,20 @@ def test_cli_obs_vs_do(tmp_path):
     cli.main(["obs-vs-do", "--config", str(p), "--num_tasks", "40",
               "--num_variables", "3", "--out", str(out), "--png"])  # fmt: skip
     assert out.exists() and out.with_suffix(".csv").exists() and out.with_suffix(".png").exists()
+
+
+def test_select_example_weighted_median():
+    recs = [{"cls": "reverse", "w2_sd": g, "weight": w, "task": i}
+            for i, (g, w) in enumerate([(0.1, 1), (0.9, 1), (0.5, 1), (2.0, 0.1)])]
+    assert ovd.select_example(recs, "reverse")["w2_sd"] == 0.5
+    assert ovd.select_example(recs, "reverse", "first")["task"] == 0
+    assert ovd.select_example(recs, "pure confounding") is None
+    with pytest.raises(ValueError):
+        ovd.select_example(recs, "reverse", "mean")
+
+
+def test_examples_are_class_medians():
+    recs, ex = ovd.collect_obs_vs_do(MixedRegimeConfig(**RAW), 30)
+    for cls, (task, scm, t, y, rec) in ex.items():
+        assert rec is ovd.select_example(recs, cls)
+        assert ps.question_class(task.graph, t, y) == cls  # regenerated task is the same task

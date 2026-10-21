@@ -11,7 +11,7 @@ same `--base_seed`.
 | `examples` | `examples.py` | per task: DAG with edge width ∝ estimated standardised coefficient (blue +, red −), pairwise scatters of context rows by regime and query rows |
 | `obs-vs-int` | `obs_vs_int.py` | one SCM: p(X_y), p(X_y \| X_t≈x) and p(X_y \| do(X_t=x)) for a few x, with standardised mean gaps |
 | `stats` | `population.py` | over many tasks: where training (treatment, outcome) pairs sit in the DAG (direct, downstream 2 / 3+, upstream, confounded, independent) by D, and effect sizes / do-vs-conditional gaps by relation; also writes CSVs |
-| `obs-vs-do` | `obs_vs_do.py` | **Main prior check** (linear-Gaussian, exact). One column per question class (reverse, confounded effect, pure confounding, unconfounded effect, unrelated): share of training questions, exact 90% bands of p(Y \| T=x) vs p(Y \| do(T=x)), their W2 gap, the context's rows by role (obs, do(T), do(confounder), do(mediator), do(Y), do(other)), and the evidence (nats) the do(T) rows carry against the observational answer. Any D; `--num_variables 3` gives the three-variable view. Writes a CSV |
+| `obs-vs-do` | `obs_vs_do.py` | **Main prior check** (linear-Gaussian, exact). One column per question class (reverse, confounded effect, pure confounding, unconfounded effect, unrelated): share of training questions, exact 90% bands of p(Y \| T=x) vs p(Y \| do(T=x)) for the question at the class's weighted-median W2 gap (`--example first`: the first question collected), with that gap printed and marked on the gap histogram, their W2 gap, the context's rows by role (obs, do(T), do(confounder), do(mediator), do(Y), do(other)), and the evidence (nats) the do(T) rows carry against the observational answer. Any D; `--num_variables 3` gives the three-variable view. Writes a CSV |
 | `summary` | `summary.py` | histograms of design statistics (D, K, regime sizes, do-values, …) |
 
 ```bash
@@ -19,7 +19,7 @@ python -m CITNP.prior_diagnostics examples   --config <cfg> --num_tasks 12 --out
 python -m CITNP.prior_diagnostics obs-vs-int --config <cfg> --num_tasks 4 --out obs_vs_int.pdf --png
 python -m CITNP.prior_diagnostics stats      --config <cfg> --num_tasks 2000 --n_probe_tasks 300 --out prior_stats.pdf
 python -m CITNP.prior_diagnostics summary    --config <cfg> --num_tasks 2000 --out prior.png
-python -m CITNP.prior_diagnostics obs-vs-do  --config <cfg> --num_tasks 2000 --out obs_vs_do.pdf --png [--num_variables 3]
+python -m CITNP.prior_diagnostics obs-vs-do  --config <cfg> --num_tasks 2000 --out obs_vs_do.pdf --png [--num_variables 3] [--example median|first]
 pytest testing/test_prior_diagnostics.py testing/test_prior_obs_vs_do.py
 ```
 
@@ -51,3 +51,8 @@ Python API: `from CITNP.prior_diagnostics import probe_task, plot_obs_vs_int, ed
   differ generically iff there is an open back-door path from T to Y, i.e. Y
   is an ancestor of T ("reverse") or some node has directed paths to T and,
   avoiding T, to Y ("confounded effect" / "pure confounding").
+- **Example question** (`obs-vs-do`, row 1): by default the question at the
+  weighted median of its class's W2/sd(Y), using the same trainer weights as
+  the row-2 histogram, so the example is typical rather than arbitrary. The
+  panel prints its task index and gap; the task is regenerated from
+  `--base_seed` and that index, so `--example first` reproduces earlier figures.
