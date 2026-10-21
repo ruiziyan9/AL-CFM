@@ -49,14 +49,16 @@ design; the model sees the same information through `ctx_int`.
 |---|---|---|
 | `function_generator` | — | registry key (`linearnonidentifiable`, `linearfixedstd`, `neuralnet`, `gp`, …) |
 | `num_variables` | — | list of D values to sample from |
-| `graph_type` | — | list of `ER` / `SF` / `BP` / `FC` |
+| `graph_type` | — | list of `ER` / `ER_CC` / `SF` / `BP` / `FC` (`ER_CC`: ER conditioned on containing a common cause, i.e. a node with ≥ 2 children; needs ≥ 2 edges) |
 | `graph_degrees` | — | expected **number of edges** (`s0` of `generate_synthetic_dag`), as a list or a dict keyed by D (same convention as the original repo). ER is capped at D(D−1)/2 |
 | `normalise` | `True` | reference standardisation; set `False` for oracle-matched families |
+| `weight_scale` | 1.0 | edge-weight scale η of `linearnonidentifiable`: w \| s² ~ N(0, η s²); the exact oracle must use the same η |
 | `n_ref` | 256 | hidden reference rows |
 | `p_obs` | 0.85 | probability the context includes an observational regime |
 | `n_obs_min` | 10 | minimum observational rows; if > 0 the observational regime is always present (`p_obs` is then unused) |
 | `k_max` | 4 | max number of interventional regimes (also capped at D) |
 | `p_geom` | 0.5 | P(K=k) ∝ (1−p_geom)^k on {0..min(k_max, D)} |
+| `p_k0` | None | P(K = 0), the share of observation-only contexts; None keeps the truncated geometric over {0..k_cap}, otherwise K ≥ 1 follows its shape |
 | `n_ctx_range` | (64, 1024) | total context rows, uniform inclusive |
 | `dirichlet_alpha_range` | (0.3, 3.0) | log-uniform α of the Dirichlet over regime sizes |
 | `do_scale_range` | (0.5, 3.0) | std of Gaussian do-values (standardised space) |

@@ -7,7 +7,7 @@ Exact Bayesian oracle for small linear-Gaussian SCMs under the
 Prior (matches functions_generator.LinearNonIdentifiable, per node j):
     root:      x_j = e_j,              e_j ~ N(0, s2),  s2 ~ IG(2.5, 0.5)
     non-root:  x_j = w_j^T x_pa + e_j, e_j ~ N(0, s2),  s2 ~ IG(3.0, 0.5),
-               w_j | s2 ~ N(0, eta * s2 * I), eta = 1
+               w_j | s2 ~ N(0, eta * s2 * I), eta = weight_scale of the data config (default 1)
 This is Normal-Inverse-Gamma conjugate, so every DAG's marginal likelihood is
 closed form. Hard interventions are handled by dropping node j's likelihood
 term on rows where j was intervened (its value is set, not generated); the
@@ -83,7 +83,7 @@ class NodePosterior:
 
 
 def node_posterior(
-    x: np.ndarray, int_mask: np.ndarray, j: int, parents: np.ndarray
+    x: np.ndarray, int_mask: np.ndarray, j: int, parents: np.ndarray, eta: float = ETA
 ) -> NodePosterior:
     """NIG posterior and log marginal likelihood for node j given its parents,
     using only rows where j was NOT intervened."""
@@ -106,12 +106,12 @@ def node_posterior(
     a, b = NODE_A, NODE_B
     X = x[keep][:, parents]
     p = X.shape[1]
-    prec = X.T @ X + np.eye(p) / ETA
+    prec = X.T @ X + np.eye(p) / eta
     V_n = np.linalg.inv(prec)
     m_n = V_n @ X.T @ y
     a_n = a + n / 2
     b_n = b + 0.5 * float(y @ y - m_n @ prec @ m_n)
-    _, logdet = np.linalg.slogdet(np.eye(p) + ETA * X.T @ X)
+    _, logdet = np.linalg.slogdet(np.eye(p) + eta * X.T @ X)
     log_ml = (
         gammaln(a_n)
         - gammaln(a)
@@ -132,10 +132,12 @@ class LinGaussOracle:
     Args:
         log_graph_prior: dict dag_key -> log prior. Use `empirical_graph_prior`
             (matches the training generator) or None for uniform over DAGs.
+        eta: weight-prior scale; must equal the data config's weight_scale.
     """
 
-    def __init__(self, d: int, log_graph_prior: dict | None = None):
+    def __init__(self, d: int, log_graph_prior: dict | None = None, eta: float = ETA):
         self.d = d
+        self.eta = float(eta)
         self.dags = all_dags(d)
         if log_graph_prior is None:
             lp = np.full(len(self.dags), -np.log(len(self.dags)))
@@ -157,7 +159,7 @@ class LinGaussOracle:
                 key = (j, pa)
                 if key not in cache:
                     cache[key] = node_posterior(
-                        x, int_mask, j, np.array(pa, dtype=int)
+                        x, int_mask, j, np.array(pa, dtype=int), eta=self.eta
                     )
                 posts.append(cache[key])
                 log_ml[g_i] += cache[key].log_ml
