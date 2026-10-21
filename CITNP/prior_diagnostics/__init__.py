@@ -14,8 +14,15 @@ Modules:
 """
 
 from CITNP.prior_diagnostics.examples import plot_graph, plot_task, save_examples
-from CITNP.prior_diagnostics.linear_gaussian import LinearGaussianSCM, scm_from_debug
-from CITNP.prior_diagnostics.obs_vs_do import collect_obs_vs_do, plot_obs_vs_do, select_example
+from CITNP.prior_diagnostics.linear_gaussian import (
+    LinearGaussianSCM,
+    scm_from_debug,
+)
+from CITNP.prior_diagnostics.obs_vs_do import (
+    collect_obs_vs_do,
+    plot_obs_vs_do,
+    select_example,
+)
 from CITNP.prior_diagnostics.obs_vs_int import plot_obs_vs_int, probe_task
 from CITNP.prior_diagnostics.population import (
     collect_effects,

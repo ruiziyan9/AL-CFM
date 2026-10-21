@@ -10,7 +10,7 @@ One column per question class (stats.QUESTION_CLASSES):
 ("differ" = open back-door path from T to Y.)
 
 Rows:
-  1. the example question at the class's weighted median W2 gap 
+  1. the example question at the class's weighted median W2 gap
     (--example first: the first one collected): exact 90% bands of p(Y | T=x) (blue) and
      p(Y | do(T=x)) (red), with the task's observational and do(T) rows;
   2. distribution gap: W2 distance / sd(Y), averaged over x ~ observational T;
@@ -61,7 +61,13 @@ from CITNP.prior_diagnostics.stats import (
     question_class,
 )
 
-__all__ = ["collect_obs_vs_do", "plot_obs_vs_do", "select_example", "question_record", "summary"]
+__all__ = [
+    "collect_obs_vs_do",
+    "plot_obs_vs_do",
+    "select_example",
+    "question_record",
+    "summary",
+]
 
 ROLE_COLORS = ("#BDBDBD", "#C44E52", "#8172B3", "#55A868", "#DD8452", "#E5E5E5")
 COND_COLOR, DO_COLOR = "#4C72B0", "#C44E52"
@@ -71,7 +77,9 @@ Z90 = 1.6449
 EXAMPLE_MODES = ("median", "first")
 
 
-def select_example(recs: list[dict], cls: str, how: str = "median") -> dict | None:
+def select_example(
+    recs: list[dict], cls: str, how: str = "median"
+) -> dict | None:
     """The record shown in row 1 for class `cls`: the question at the
     weighted median of w2_sd (an actual question, not an interpolated value),
     or the first one collected (how="first")."""
@@ -86,6 +94,7 @@ def select_example(recs: list[dict], cls: str, how: str = "median") -> dict | No
     cum = np.cumsum([R[i]["weight"] for i in order])
     return R[order[np.searchsorted(cum, 0.5 * cum[-1])]]
 
+
 def question_record(task: Task, scm: LinearGaussianSCM, t: int, y: int) -> dict:
     """Exact gap between Y | T and Y | do(T) for one question, and what the
     task's context offers for it."""
@@ -94,7 +103,11 @@ def question_record(task: Task, scm: LinearGaussianSCM, t: int, y: int) -> dict:
     ad, bd, vd = scm.interventional_line(t, y)
     # squared W2 between the Gaussians at x, averaged over x ~ N(mu_t, S_tt)
     gap_at_mean = (ad + bd * mu[t]) - (ac + bc * mu[t])
-    w2 = np.sqrt(gap_at_mean**2 + (bd - bc) ** 2 * S[t, t] + (np.sqrt(vd) - np.sqrt(vc)) ** 2)
+    w2 = np.sqrt(
+        gap_at_mean**2
+        + (bd - bc) ** 2 * S[t, t]
+        + (np.sqrt(vd) - np.sqrt(vc)) ** 2
+    )
 
     n = dict.fromkeys(CONTEXT_ROLES, 0)
     for r, targets in enumerate(task.regime_targets):
@@ -115,7 +128,9 @@ def question_record(task: Task, scm: LinearGaussianSCM, t: int, y: int) -> dict:
 
 def _task_and_scm(cfg, i, base_seed, num_variables):
     key = make_key(SOURCE_ADHOC, 0, base_seed, i)
-    task, debug = generate_task(cfg, key, num_variables=num_variables, return_debug=True)
+    task, debug = generate_task(
+        cfg, key, num_variables=num_variables, return_debug=True
+    )
     return task, scm_from_debug(debug)
 
 
@@ -157,8 +172,13 @@ def _bands(ax, task, scm, t, y, rec, *, legend):
         m, h = a + b * xs, Z90 * np.sqrt(v)
         ax.plot(xs, m, color=color, lw=2, label=label)
         ax.fill_between(xs, m - h, m + h, color=color, alpha=0.18)
-    for target, color, size, name in (((), "#7F7F7F", 4, "obs"), ((t,), DO_COLOR, 7, "do(T)")):
-        regs = [r for r, tg in enumerate(task.regime_targets) if tuple(tg) == target]
+    for target, color, size, name in (
+        ((), "#7F7F7F", 4, "obs"),
+        ((t,), DO_COLOR, 7, "do(T)"),
+    ):
+        regs = [
+            r for r, tg in enumerate(task.regime_targets) if tuple(tg) == target
+        ]
         rows = np.isin(task.ctx_regime, regs)
         ax.scatter(task.ctx_x[rows, t], task.ctx_x[rows, y], s=size, color=color,
                    alpha=0.5, label=f"context {name} rows")  # fmt: skip
@@ -203,23 +223,44 @@ def plot_obs_vs_do(recs: list[dict], examples: dict, title: str):
         a.set_xlabel("W2(Y|T=x, Y|do(T=x)) / sd(Y)", fontsize=8)
 
         a = ax[2, k]
-        n_rows = np.array([[r[f"n_{q}"] for q in CONTEXT_ROLES] for r in R], float)
-        frac = (W[:, None] * n_rows / n_rows.sum(1, keepdims=True)).sum(0) / W.sum()
+        n_rows = np.array(
+            [[r[f"n_{q}"] for q in CONTEXT_ROLES] for r in R], float
+        )
+        frac = (W[:, None] * n_rows / n_rows.sum(1, keepdims=True)).sum(
+            0
+        ) / W.sum()
         left = 0.0
         for f, q, c in zip(frac, CONTEXT_ROLES, ROLE_COLORS):
             a.barh(0, f, left=left, color=c)
             if f > 0.07:
-                a.text(left + f / 2, 0, f"{q}\n{f:.0%}", ha="center", va="center", fontsize=6.5)
+                a.text(
+                    left + f / 2,
+                    0,
+                    f"{q}\n{f:.0%}",
+                    ha="center",
+                    va="center",
+                    fontsize=6.5,
+                )
             left += f
-        mean_t = float((W * n_rows[:, CONTEXT_ROLES.index("do(T)")]).sum() / W.sum())
+        mean_t = float(
+            (W * n_rows[:, CONTEXT_ROLES.index("do(T)")]).sum() / W.sum()
+        )
         a.set_xlim(0, 1)
         a.set_yticks([])
-        a.set_xlabel(f"share of context rows (mean do(T) rows: {mean_t:.0f})", fontsize=8)
+        a.set_xlabel(
+            f"share of context rows (mean do(T) rows: {mean_t:.0f})", fontsize=8
+        )
 
         a = ax[3, k]
         if differ:
             ev = np.array([r["evidence_nats"] for r in R])
-            a.hist(np.log10(1 + ev), bins=30, range=(0, emax), weights=W / W.sum(), color=DO_COLOR)
+            a.hist(
+                np.log10(1 + ev),
+                bins=30,
+                range=(0, emax),
+                weights=W / W.sum(),
+                color=DO_COLOR,
+            )
             a.axvline(np.log10(1 + STRONG_NATS), color="black", ls="--", lw=1)
             none = W[np.array([r["n_do(T)"] for r in R]) == 0].sum() / W.sum()
             strong = W[ev >= STRONG_NATS].sum() / W.sum()
@@ -234,7 +275,13 @@ def plot_obs_vs_do(recs: list[dict], examples: dict, title: str):
                                "usefulness of do(T) rows")):  # fmt: skip
         ax[r, 0].set_ylabel(label, fontsize=10)
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in ROLE_COLORS]
-    fig.legend(handles, CONTEXT_ROLES, loc="lower center", ncol=len(CONTEXT_ROLES), fontsize=8)
+    fig.legend(
+        handles,
+        CONTEXT_ROLES,
+        loc="lower center",
+        ncol=len(CONTEXT_ROLES),
+        fontsize=8,
+    )
     fig.suptitle(title, fontsize=12)
     fig.tight_layout(rect=(0, 0.03, 1, 1))
     return fig
@@ -246,7 +293,9 @@ def summary(recs: list[dict]) -> str:
     wd = sum(r["weight"] for r in d)
     strong = sum(r["weight"] for r in d if r["evidence_nats"] >= STRONG_NATS)
     useful = sum(r["weight"] * r["n_do(T)"] for r in d)
-    n_int = sum(r["weight"] * sum(r[f"n_{q}"] for q in CONTEXT_ROLES[1:]) for r in recs)
+    n_int = sum(
+        r["weight"] * sum(r[f"n_{q}"] for q in CONTEXT_ROLES[1:]) for r in recs
+    )
     return (
         f"questions where Y|T != Y|do(T): {wd / total:.1%}; "
         f"of these, do(T) rows give >= {STRONG_NATS:g} nats: {strong / max(wd, 1e-12):.1%}; "
@@ -273,16 +322,25 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = load_config(args.config)
     if cfg.function_generator != "linearnonidentifiable":
-        parser.error("obs-vs-do is exact only for function_generator: linearnonidentifiable")
-    recs, examples = collect_obs_vs_do(cfg, args.num_tasks, args.base_seed, 
-                                       args.num_variables, args.example)
+        parser.error(
+            "obs-vs-do is exact only for function_generator: linearnonidentifiable"
+        )
+    recs, examples = collect_obs_vs_do(
+        cfg, args.num_tasks, args.base_seed, args.num_variables, args.example
+    )
     for cls, ex in examples.items():
-        print(f"example {cls}: task {ex[4]['task']}, T=X{ex[2]}, Y=X{ex[3]}, "
-              f"W2/sd(Y)={ex[4]['w2_sd']:.3f}")
+        print(
+            f"example {cls}: task {ex[4]['task']}, T=X{ex[2]}, Y=X{ex[3]}, "
+            f"W2/sd(Y)={ex[4]['w2_sd']:.3f}"
+        )
     text = summary(recs)
     print(text)
 
-    d_text = f"D={args.num_variables}" if args.num_variables else f"D in {cfg.num_variables}"
+    d_text = (
+        f"D={args.num_variables}"
+        if args.num_variables
+        else f"D in {cfg.num_variables}"
+    )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig = plot_obs_vs_do(recs, examples, f"{Path(args.config).name}, {d_text}, "
