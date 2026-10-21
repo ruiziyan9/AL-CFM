@@ -107,7 +107,14 @@ class LinearNonIdentifiable:
                     scale=np.sqrt(self.eta * self.var1),
                     size=(inputs.shape[1], 1),
                 )
-                self.weight = weight
+                # Signed-mean mixture prior: w | s2 ~ N(sign * m, eta * s2),
+                sign = +-1 w.p. 1/2 per edge. Off (m = 0) by default.
+                m = getattr(self, "weight_mean", 0.0)
+                if m != 0.0:
+                    sign = np.where(np.random.random(size=weight.shape) < 0.5, -1.0, 1.0)
+                    weight = weight + m * sign
+                    self.sign = sign
+		self.weight = weight
                 feature = np.dot(inputs, weight)
                 outputs = feature + np.random.normal(
                     loc=0, scale=np.sqrt(self.var1), size=(inputs.shape[0], 1)
