@@ -139,3 +139,8 @@ epoch. Use the same configs and `--epochs`. Only epoch-boundary checkpoints
 recorded config hashes match. Checkpoints written before this change lack the
 best validation loss, so the first validation after resuming may overwrite
 `best_model.pt`.
+
+`--fine_tune_from <ckpt>` (formerly `--resume_from`) is the other half: it starts
+a NEW run from a checkpoint's model weights only (strict match, fresh optimiser,
+step 0, new warmup and cosine schedule, new run directory). The two flags are
+mutually exclusive.

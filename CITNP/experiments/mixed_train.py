@@ -18,6 +18,8 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --scale_conditioning {none,stats}: stats feeds each variable's standardisation
   (log std, mean / std) to the model (information parity with the oracle;
   default none: no new parameters).
+- --fine_tune_from <ckpt>: start a new run from these weights (fresh optimiser,
+  step 0); not for continuing a run, see --resume_full.
 - --resume_full <last_model.pt>: continue this run (model, optimiser, step, epoch)
   in its own results directory; same configs and --epochs required.
 - --init_from_upstream <ckpt>: warm start from an upstream MACE-TNP
@@ -170,9 +172,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         "configs and --epochs",
     )
     extra.add_argument(
-        "--resume_from",
+        "--fine_tune_from",
         default=None,
-        help="checkpoint of this model to start from (weights only; fresh optimiser)",
+        help="start a NEW run from the weights of this checkpoint (strict; fresh "
+        "optimiser, step 0, new schedule). To continue an interrupted run use "
+        "--resume_full",
     )
     argv = sys.argv[1:] if argv is None else argv
     mixed, rest = extra.parse_known_args(argv)
@@ -297,14 +301,14 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     if args.init_from_r1:
         load_r1_checkpoint(model, args.init_from_r1)
         print(f"Warm-started from R1 checkpoint {args.init_from_r1}")
-    if args.resume_from and args.resume_full:
-        raise ValueError("--resume_from (weights only) and --resume_full are exclusive")
+    if args.fine_tune_from and args.resume_full:
+        raise ValueError("--fine_tune_from (weights only) and --resume_full are exclusive")
     if args.resume_full and not Path(args.resume_full).is_file():
         raise FileNotFoundError(args.resume_full)
-    if args.resume_from:
-        state = torch.load(args.resume_from, map_location="cpu")
+    if args.fine_tune_from:
+        state = torch.load(args.fine_tune_from, map_location="cpu")
         model.load_state_dict(state.get("model_state_dict", state))  # strict
-        print(f"Loaded weights from {args.resume_from}")
+        print(f"Loaded weights from {args.fine_tune_from}")
 
     results_path = (
         Path.cwd() if args.results_path is None else Path(args.results_path)
