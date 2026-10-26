@@ -47,13 +47,14 @@ design; the model sees the same information through `ctx_int`.
 
 | field | default | meaning |
 |---|---|---|
-| `function_generator` | — | registry key (`linearnonidentifiable`, `linearfixedstd`, `neuralnet`, `gp`, …) |
+| `function_generator` | — | registry key (`linear_iw`, `linear_nig`, `linear_nig_legacy`, `linearnonidentifiable`, `linearfixedstd`, `neuralnet`, `gp`, …) |
 | `num_variables` | — | list of D values to sample from |
 | `graph_type` | — | list of `ER` / `ER_CC` / `SF` / `BP` / `FC` (`ER_CC`: ER conditioned on containing a common cause, i.e. a node with ≥ 2 children; needs ≥ 2 edges) |
 | `graph_degrees` | — | expected **number of edges** (`s0` of `generate_synthetic_dag`), as a list or a dict keyed by D (same convention as the original repo). ER is capped at D(D−1)/2 |
 | `normalise` | `True` | reference standardisation; set `False` for oracle-matched families |
-| `weight_scale` | 1.0 | edge-weight scale η of `linearnonidentifiable`: w \| s² ~ N(0, η s²); the exact oracle must use the same η |
-| `weight_mean` | 0.0 | signed edge-weight mean m of `linearnonidentifiable`: w \| s² ~ N(s m, η s²) with sign s = ±1 w.p. ½ per edge, so weights sit away from zero; 0 is the original prior. The exact oracle (`CITNP.evaluation.oracle.LinGaussOracle(weight_mean=m)`) stays exact by summing over the 2^p sign patterns of each node's p parents |
+| `weight_scale` | 1.0 | edge-weight scale η of the linear-Gaussian families (`linear_iw` requires 1): w \| s² ~ N(0, η s²); the exact oracle must use the same η |
+| `weight_mean` | 0.0 | signed edge-weight mean m of the linear-Gaussian families (`linear_iw` requires 0): w \| s² ~ N(s m, η s²) with sign s = ±1 w.p. ½ per edge, so weights sit away from zero; 0 is the original prior. The exact oracle (`CITNP.evaluation.oracle.LinGaussOracle(weight_mean=m)`) stays exact by summing over the 2^p sign patterns of each node's p parents |
+| `alpha0` | None | root IG shape α₀ of `linear_iw` / `linear_nig` (default 2.5; non-roots get α₀ + \|pa\|/2); not allowed for the legacy keys |
 | `n_ref` | 256 | hidden reference rows |
 | `p_obs` | 0.85 | probability the context includes an observational regime |
 | `n_obs_min` | 10 | minimum observational rows; if > 0 the observational regime is always present (`p_obs` is then unused) |
@@ -86,6 +87,34 @@ raised to D (one edge per node) instead of silently giving an empty graph.
 `meta["graph_type"]` and `meta["s0"]` record what was actually used (`None`
 when an explicit graph is passed).
 
+
+## Linear-Gaussian prior families
+
+The per-node prior is one frozen dataclass, `CITNP.datasets.linear_gaussian_prior.LinearGaussianPrior`, read by both the generator and the exact oracle (`LinearGaussianPrior.from_config(cfg)`). Each task's `meta` carries `prior` (its fields) and `is_iw_compatible`.
+
+### Definitions
+
+- **Legacy prior** (current `LinearNonIdentifiable`, now `LinearNIGLegacy`):
+  - roots: s² ~ IG(2.5, 0.5);
+  - every non-root, whatever its number of parents: s² ~ IG(3.0, 0.5);
+  - weights: w | s² ~ N(±m, η s² I).
+
+  IG = Inverse-Gamma (shape, scale).
+- **IW prior** (inverse-Wishart; registry key `linear_iw`): one inverse-Wishart prior on the whole covariance matrix, Σ ~ IW(ν, 2β·I), equivalently precision ~ Wishart(ν, (2β·I)⁻¹), with ν = 2α₀ + D − 1. The variable means are known to be zero. For any DAG, this induces a per-node prior (Geiger & Heckerman's parameter modularity): node j with |pa_j| parents has s_j² ~ IG(α₀ + |pa_j|/2, β) and w_j | s_j² ~ N(0, η s_j² I), with η = 1/(2β) and no signed mean (m = 0). Consequence: the prior is **score-equivalent**, meaning Markov-equivalent DAGs have identical marginal likelihoods on observational data.
+- **Naming rule.** "NIG" (Normal–Inverse-Gamma) names the *per-node* form, which both priors share; that is why the oracle stays closed-form for both. "IW" names the *joint* prior from which the IW family's per-node NIGs are derived. Use `linear_nig*` only for per-node NIG priors that are **not** IW-compatible, and `linear_iw` for the IW family. Do not call it NIW (Normal–inverse-Wishart): there is no prior on the means, because they are fixed at zero. NIW would only be correct if intercepts or unknown means were added later.
+- **MEC** = Markov equivalence class, identified by skeleton plus v-structures. For D=3: 25 DAGs in 11 MECs.
+- The legacy prior equals the IW prior with α₀ = 2.5, β = 0.5, η = 1, m = 0 on every node with at most one parent. It differs for nodes with two parents: 3.0 instead of 3.5. So the legacy prior is score-equivalent for graphs with in-degree ≤ 1 (any D, e.g. D=3 chains and forks), but not for the complete DAG or colliders.
+
+### Registry keys
+
+| key | mechanism | prior |
+|---|---|---|
+| `linear_iw` | `LinearNIG` | IW-compatible only (`alpha0`, β = 0.5, η = 1, m = 0) |
+| `linear_nig` | `LinearNIG` | free per-node NIG (`alpha0`, `weight_scale`, `weight_mean`); not necessarily IW-compatible |
+| `linear_nig_legacy` | `LinearNIGLegacy` | legacy prior |
+| `linearnonidentifiable` | `LinearNIGLegacy` | deprecated alias of `linear_nig_legacy`; emits a `DeprecationWarning` once per process |
+
+Only the legacy keys patch `eta` / `weight_mean` onto the mechanisms after construction (so the goldens hold); the new keys receive the prior at construction.
 
 ## Batch contract (`collate_tasks`)
 

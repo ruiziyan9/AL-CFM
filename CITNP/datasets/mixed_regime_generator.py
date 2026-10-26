@@ -35,6 +35,7 @@ Example:
 See MIXED_REGIME_README.md for the config fields and the batch contract.
 """
 
+import dataclasses
 import glob
 import json
 import math
@@ -53,6 +54,9 @@ from CITNP.datasets.causal_graph_generator import generate_synthetic_dag
 from CITNP.datasets.functions_generator import (
     GPFunctionGenerator,
     LinearFixedStdFunctionGenerator,
+    LinearIWFunctionGenerator,
+    LinearNIGFunctionGenerator,
+    LinearNIGLegacyFunctionGenerator,
     LinearNonIdentifiableFunctionGenerator,
     NeuralGPLVMFunctionGenerator,
     NeuralNetFunctionGenerator,
@@ -64,6 +68,11 @@ from CITNP.datasets.functions_generator import (
     SinusoidFunctionGenerator,
     UniformLinearFunctionGenerator,
 )
+from CITNP.datasets.linear_gaussian_prior import (
+    LinearGaussianPrior,
+    is_legacy_key,
+    is_linear_gaussian,
+)
 
 # Same registry as BaseInterventionDatasetGenerator.__init__ (kept in sync by hand).
 REGISTRY: dict[str, type[Any]] = {
@@ -74,6 +83,10 @@ REGISTRY: dict[str, type[Any]] = {
     "simplegplvm": SimpleGPLVMFunctionGenerator,
     "uniformlinear": UniformLinearFunctionGenerator,
     "linearfixedstd": LinearFixedStdFunctionGenerator,
+    "linear_iw": LinearIWFunctionGenerator,
+    "linear_nig": LinearNIGFunctionGenerator,
+    "linear_nig_legacy": LinearNIGLegacyFunctionGenerator,
+    # Deprecated alias of linear_nig_legacy (warns once per process).
     "linearnonidentifiable": LinearNonIdentifiableFunctionGenerator,
     "neuralgplvm": NeuralGPLVMFunctionGenerator,
     "neuralsimplegp": NeuralSimpleGPFunctionGenerator,
@@ -97,6 +110,9 @@ CPU_ONLY_FAMILIES = {
     "resnet",
     "linearfixedstd",
     "linearnonidentifiable",
+    "linear_nig_legacy",
+    "linear_nig",
+    "linear_iw",
     "uniformlinear",
     "sinusoid",
 }
@@ -284,6 +300,9 @@ class MixedRegimeConfig:
     # sign = +-1 with prob 1/2 per edge. 0.0 is the original prior; the exact
     # oracle must use the same value.
     weight_mean: float = 0.0
+    # IG shape of root variances for linear_iw (default 2.5) and linear_nig
+    # (default 2.5); non-roots get alpha0 + |pa| / 2. Unused by the legacy keys.
+    alpha0: float | None = None
     # P(K = 0), i.e. observation-only contexts. None keeps the truncated
     # geometric over {0..k_cap}; otherwise K >= 1 follows its shape.
     p_k0: float | None = None
@@ -337,17 +356,32 @@ class MixedRegimeConfig:
             raise ValueError("weight_mean must be >= 0")
         if (
             self.weight_mean != 0.0
-            and self.function_generator != "linearnonidentifiable"
+            and not is_linear_gaussian(self.function_generator)
         ):
-            raise ValueError("weight_mean is only supported for linearnonidentifiable")
+            raise ValueError(
+                "weight_mean is only supported for linear-Gaussian families"
+            )
         self.weight_scale = float(self.weight_scale)
         if not self.weight_scale > 0:
             raise ValueError("weight_scale must be > 0")
         if (
             self.weight_scale != 1.0
-            and self.function_generator != "linearnonidentifiable"
+            and not is_linear_gaussian(self.function_generator)
         ):
-            raise ValueError("weight_scale is only supported for linearnonidentifiable")
+            raise ValueError(
+                "weight_scale is only supported for linear-Gaussian families"
+            )
+        if self.alpha0 is not None:
+            self.alpha0 = float(self.alpha0)
+            if not self.alpha0 > 0:
+                raise ValueError("alpha0 must be > 0")
+            if is_legacy_key(self.function_generator) or not is_linear_gaussian(
+                self.function_generator
+            ):
+                raise ValueError("alpha0 is only supported for linear_iw and linear_nig")
+        if is_linear_gaussian(self.function_generator):
+            # Raises for an invalid combination (e.g. linear_iw with weight_scale != 1).
+            LinearGaussianPrior.from_config(self)
         if self.p_k0 is not None:
             self.p_k0 = float(self.p_k0)
             if not 0.0 <= self.p_k0 < 1.0:
@@ -944,16 +978,29 @@ def _generate_once(
 
     # intervention_range_multiplier is unused here: do-values come from the
     # design's do_dist instead.
-    gen = REGISTRY[cfg.function_generator](
-        num_variables=D, intervention_range_multiplier=1
+    prior = (
+        LinearGaussianPrior.from_config(cfg)
+        if is_linear_gaussian(cfg.function_generator)
+        else None
     )
+    if prior is not None and not is_legacy_key(cfg.function_generator):
+        # New families receive the prior at construction.
+        gen = REGISTRY[cfg.function_generator](
+            num_variables=D, intervention_range_multiplier=1, prior=prior
+        )
+    else:
+        gen = REGISTRY[cfg.function_generator](
+            num_variables=D, intervention_range_multiplier=1
+        )
     fdict = gen.generate_functions(graph)
-    if cfg.weight_scale != 1.0:
+    # Legacy keys only: patch eta / weight_mean onto the mechanisms (kept so the
+    # random stream and the goldens are unchanged).
+    if cfg.weight_scale != 1.0 and is_legacy_key(cfg.function_generator):
         # LinearNonIdentifiable draws w ~ N(0, eta * var1) at its call; eta is
         # read only there, so no random numbers change before that point.
         for f in fdict.values():
             f.eta = cfg.weight_scale
-    if cfg.weight_mean != 0.0:
+    if cfg.weight_mean != 0.0 and is_legacy_key(cfg.function_generator):
         # Signed-mean mixture prior: LinearNonIdentifiable adds sign * weight_mean
         # (sign = +-1 per edge) to w at its call. The sign is drawn only when
         # weight_mean != 0, so default configs keep the same random numbers.
@@ -1047,6 +1094,9 @@ def _generate_once(
             "normalise": cfg.normalise,
         }
     )
+    if prior is not None:
+        meta["prior"] = dataclasses.asdict(prior)
+        meta["is_iw_compatible"] = prior.is_iw_compatible
     return (
         X,
         int_mask,
