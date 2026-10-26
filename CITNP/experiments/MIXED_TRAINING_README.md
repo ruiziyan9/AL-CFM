@@ -109,3 +109,20 @@ sets every `m_i` to zero, so every metadata token is `e_INT`.
 The extra-node parameters are not zero-initialised, so `--init_from_upstream`
 loads but does not reproduce upstream at step 0, and `--init_from_r1` is
 rejected. For the comparison with layerwise, train from scratch.
+
+## Scale conditioning (information parity with the oracle)
+
+Per-task standardisation removes each variable's scale from the context, but
+the exact oracle sees the raw context. `--scale_conditioning stats` (or
+`scale_conditioning: stats` in the model YAML; default `none`) gives the model
+the removed statistics: per variable j the pair (log std_j, mean_j / std_j),
+batch key `context_scale` of shape [B·G, D, 2] (zeros when `normalise: false`).
+Standardised context plus these statistics recovers the raw context:
+`x_raw = x_std * exp(log std) + (mean / std) * std`.
+
+An MLP `ScaleConditioning` (2 → `d_model`, depth `emb_depth`, last Linear layer
+zero-initialised) maps the pair to an embedding added to every row (context and
+target) of variable column j, right after the row embeddings are assembled and
+before the transformer stack. It works with all three encodings; with
+`extra_node` the INT_META column gets nothing. With `none` no parameters are
+created, so existing checkpoints load strictly. Configs: `*_stats.yaml`.
