@@ -25,6 +25,8 @@ class BaseModelConfig:
 @dataclass
 class CausalInfModelConfig(BaseModelConfig):
     num_mixture_components: Optional[int] = 1
+    # "none" | "stats": see CITNP.models.scale_conditioning (mixed-context models).
+    scale_conditioning: str = "none"
 
 
 @dataclass

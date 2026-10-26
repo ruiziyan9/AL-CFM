@@ -15,6 +15,9 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --intervention_encoding {r1,layerwise,extra_node}: how intervention
   information enters the model (default r1). --model_class <name> is still
   accepted (legacy).
+- --scale_conditioning {none,stats}: stats feeds each variable's standardisation
+  (log std, mean / std) to the model (information parity with the oracle;
+  default none: no new parameters).
 - --init_from_upstream <ckpt>: warm start from an upstream MACE-TNP
   checkpoint (only the new intervened-flag embedding starts from zero).
 - --val_iterations / --test_iterations: fixed validation / test batches.
@@ -44,6 +47,7 @@ from CITNP.models.mixed_context_model import (
     load_upstream_checkpoint,
     resolve_model_class,
 )
+from CITNP.models.scale_conditioning import SCALE_CONDITIONING_OPTIONS
 
 from CITNP.trainer.callbacks import (
     Callback,
@@ -104,11 +108,12 @@ MODEL_KEYS = (
     "num_mixture_components",
     "model_class",
     "intervention_encoding",
+    "scale_conditioning",
 )
 
 # Keys that select the method: if given both on the command line and in the
 # model YAML, they must agree.
-SELECTION_KEYS = ("model_class", "intervention_encoding")
+SELECTION_KEYS = ("model_class", "intervention_encoding", "scale_conditioning")
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -136,6 +141,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="how intervention information enters the model (default: r1)",
     )
 
+    extra.add_argument(
+        "--scale_conditioning",
+        default=None,
+        choices=list(SCALE_CONDITIONING_OPTIONS),
+        help="feed the standardisation (log std, mean / std) to the model "
+        "(default: none)",
+    )
     extra.add_argument("--val_iterations", type=int, default=20)
     extra.add_argument("--test_iterations", type=int, default=20)
     extra.add_argument(
@@ -231,6 +243,7 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         device=args.device,
         dtype=args.dtype,
         num_mixture_components=args.num_mixture_components,
+        scale_conditioning=args.scale_conditioning or "none",
     )
     model_cls, encoding = resolve_model_class(
         args.intervention_encoding, args.model_class
@@ -265,6 +278,7 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         if k not in SELECTION_KEYS and getattr(args, k, None) is not None
     }
     resolved["model_class"] = model_cls.__name__
+    resolved["scale_conditioning"] = args.scale_conditioning or "none"
     if encoding in INTERVENTION_ENCODINGS:
         resolved["intervention_encoding"] = encoding
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:

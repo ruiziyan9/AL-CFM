@@ -43,6 +43,7 @@ def load_model(
         device=device,
         dtype="float32",
         num_mixture_components=m["num_mixture_components"],
+        scale_conditioning=m.get("scale_conditioning", "none"),
     )
     model_cls, _ = resolve_model_class(
         m.get("intervention_encoding"), m.get("model_class")
@@ -55,7 +56,9 @@ def load_model(
 
 def _model_inputs(ctx_x, ctx_int, T, Y, t, *, zero_flags, normalise):
     """Model keyword inputs (CPU, float32) for one context and Q queries,
-    plus the per-variable standardisation (mean, std) [D] that was applied."""
+    plus the per-variable standardisation (mean, std) [D] that was applied.
+    `context_scale` [Q, D, 2] is (log std, mean / std) per variable (zeros
+    without normalisation), used by models with scale_conditioning "stats"."""
     Ts = torch.as_tensor(np.atleast_1d(T), dtype=torch.long)
     Ys = torch.as_tensor(np.atleast_1d(Y), dtype=torch.long)
     if Ts.ndim != 1 or Ts.shape != Ys.shape:
@@ -70,6 +73,8 @@ def _model_inputs(ctx_x, ctx_int, T, Y, t, *, zero_flags, normalise):
     else:
         mean, std = torch.zeros(D), torch.ones(D)
     cxn = ((cx - mean) / std)[..., None].repeat(Q, 1, 1, 1)
+    # (log std, mean / std) per variable, as in prepare_mixed_batch
+    scale = torch.stack([std.log(), mean / std], dim=-1)[None].repeat(Q, 1, 1)
     flags = (torch.zeros_like(ci) if zero_flags else ci).repeat(Q, 1, 1)
     tt = torch.as_tensor(np.asarray(t), dtype=torch.float32)
     tgt = torch.zeros(Q, len(tt), D, 1)
@@ -81,6 +86,7 @@ def _model_inputs(ctx_x, ctx_int, T, Y, t, *, zero_flags, normalise):
         intervention_index=Ts,
         outcome_index=Ys,
         context_int_mask=flags,
+        context_scale=scale,
     )
     return inp, mean, std
 
@@ -94,6 +100,7 @@ def _call(model: torch.nn.Module, inp: dict, device):
         intervention_index=inp["intervention_index"].to(device),
         outcome_index=inp["outcome_index"].to(device),
         context_int_mask=inp["context_int_mask"].to(device),
+        context_scale=inp["context_scale"].to(device, dt),
     )
 
 

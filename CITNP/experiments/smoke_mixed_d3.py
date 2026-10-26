@@ -80,6 +80,7 @@ def task_losses(model, task, device) -> np.ndarray:
             intervention_index=prep["intervention_index"],
             outcome_index=prep["outcome_index"],
             context_int_mask=prep["context_int_mask"],
+            context_scale=prep["context_scale"],
         )
         loss = model.calculate_loss(
             out,

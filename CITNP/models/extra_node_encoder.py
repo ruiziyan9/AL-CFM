@@ -22,6 +22,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from CITNP.models.causaltransformercomponents import CausalInfEncoder
+from CITNP.models.scale_conditioning import ScaleConditioning, check_scale_conditioning
 
 INDEX_EMBEDDING_INIT_STD = 0.02
 
@@ -43,6 +44,7 @@ class ExtraNodeMixedCausalInfEncoder(CausalInfEncoder):
         dropout: Optional[float] = 0.0,
         sample_attn_mode: str = "MHSA",
         linear_attention: bool = False,
+        scale_conditioning: str = "none",
     ):
         super().__init__(
             d_model=d_model,
@@ -62,6 +64,10 @@ class ExtraNodeMixedCausalInfEncoder(CausalInfEncoder):
         self.int_meta_embedding = nn.Parameter(torch.empty(d_model))
         nn.init.normal_(self.index_embedding.weight, std=INDEX_EMBEDDING_INIT_STD)
         nn.init.normal_(self.int_meta_embedding, std=INDEX_EMBEDDING_INIT_STD)
+        # Created last: the other parameters' init does not depend on it.
+        self.scale_conditioning = check_scale_conditioning(scale_conditioning)
+        if self.scale_conditioning == "stats":
+            self.scale_embedding = ScaleConditioning(d_model, emb_depth)
 
     def index_embeddings(self, num_nodes: int) -> Tensor:
         """E[:num_nodes], shape [num_nodes, d_model]."""
@@ -126,6 +132,7 @@ class ExtraNodeMixedCausalInfEncoder(CausalInfEncoder):
         target_train_data: Optional[Tensor] = None,
         variable_mask: Optional[Tensor] = None,
         context_int_mask: Optional[Tensor] = None,
+        context_scale: Optional[Tensor] = None,
     ):
         """Same signature and return as MixedCausalInfEncoder.encode;
         representation is [B, Nc + Nq, D, d_model] (metadata dropped).
@@ -150,6 +157,11 @@ class ExtraNodeMixedCausalInfEncoder(CausalInfEncoder):
         full_data = self.create_input(
             context_embed, target_embed, target_train_embed
         )
+        if self.scale_conditioning == "stats":
+            if context_scale is None:
+                raise ValueError("scale_conditioning=stats needs context_scale")
+            # the D variable columns only; the INT_META column gets nothing
+            full_data = self.scale_embedding.add_to(full_data, context_scale)
         sample_mask, num_target = self.create_sample_mask(
             context_embed, target_embed, target_train_embed
         )

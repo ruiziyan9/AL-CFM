@@ -99,7 +99,9 @@ def prepare_mixed_batch(
     ----------
     dict with "context" [B*G, Nc, D, 1], "target" [B*G, Nq_g, D, 1],
     "intervention_index" / "outcome_index" [B*G] (long), "context_int_mask"
-    [B*G, Nc, D] (bool), "causal_graphs" [B*G, D, D], "group_types" (list,
+    [B*G, Nc, D] (bool), "context_scale" [B*G, D, 2] (log std,
+    mean / std) of each variable before standardisation (zeros when
+    normalise=False: log 1 = 0 and mean 0), "causal_graphs" [B*G, D, D], "group_types" (list,
     flattened in (b, g) order), "meta", "norm" = (mean, std) [B, D], "B", "G".
     """
     ctx_x, ctx_int = batch["ctx_x"], batch["ctx_int"]
@@ -178,12 +180,16 @@ def prepare_mixed_batch(
         mean, std = _normalisation_stats(ctx_x, ctx_int)
     else:
         mean, std = th.zeros(B, D), th.ones(B, D)
+    # Statistics the standardisation removed, so the raw context is recoverable:
+    # x_raw = x_std * exp(log_std) + (mean / std) * std.
+    scale = th.stack([std.log(), mean / std], dim=-1)  # [B, D, 2]
     ctx_n = (ctx_x - mean[:, None]) / std[:, None]
     qx_n = (qx - mean[:, None, None]) / std[:, None, None]
 
     # 6. Flatten (task, group) into the batch dimension.
     ctx = ctx_n[:, None].expand(B, G, Nc, D).reshape(B * G, Nc, D, 1)
     cint = ctx_int[:, None].expand(B, G, Nc, D).reshape(B * G, Nc, D)
+    scale_f = scale[:, None].expand(B, G, D, 2).reshape(B * G, D, 2)
     tgt = qx_n.reshape(B * G, Nq_g, D, 1)
     graph_f = batch["graph"][:, None].expand(B, G, D, D).reshape(B * G, D, D)
     group_types = [
@@ -199,6 +205,7 @@ def prepare_mixed_batch(
         "intervention_index": T.reshape(B * G).to(device),
         "outcome_index": Y.reshape(B * G).to(device),
         "context_int_mask": cint.to(device),
+        "context_scale": scale_f.to(device=device, dtype=dtype),
         "causal_graphs": graph_f.float().to(device),
         "group_types": group_types,
         "meta": meta,
@@ -258,6 +265,7 @@ class MixedContextTrainer(CausalInferenceTrainer):
             intervention_index=batch["intervention_index"],
             outcome_index=batch["outcome_index"],
             context_int_mask=batch["context_int_mask"],
+            context_scale=batch["context_scale"],
         )
         # Every group has Nq_g rows, so the mean over the B * G elements is
         # the per-task average.

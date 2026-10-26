@@ -45,6 +45,7 @@ from CITNP.models.causaltransformercomponents import (
 )
 from CITNP.models.extra_node_encoder import ExtraNodeMixedCausalInfEncoder
 from CITNP.models.nncomponents import build_mlp
+from CITNP.models.scale_conditioning import ScaleConditioning, check_scale_conditioning
 from CITNP.utils.outputs import ModelOutput
 from CITNP.utils.utils import (
     reshape_back_node_attention,
@@ -85,6 +86,7 @@ class MixedCausalInfEncoder(CausalInfEncoder):
         dropout: Optional[float] = 0.0,
         sample_attn_mode: str = "MHSA",
         linear_attention: bool = False,
+        scale_conditioning: str = "none",
     ):
         super().__init__(
             d_model=d_model,
@@ -109,6 +111,11 @@ class MixedCausalInfEncoder(CausalInfEncoder):
         ][-1]
         nn.init.zeros_(last.weight)
         nn.init.zeros_(last.bias)
+        # Created last, so the random init of every other parameter is the same
+        # with and without scale conditioning.
+        self.scale_conditioning = check_scale_conditioning(scale_conditioning)
+        if self.scale_conditioning == "stats":
+            self.scale_embedding = ScaleConditioning(d_model, emb_depth)
 
     def encode(
         self,
@@ -119,6 +126,7 @@ class MixedCausalInfEncoder(CausalInfEncoder):
         target_train_data: Optional[Tensor] = None,
         variable_mask: Optional[Tensor] = None,
         context_int_mask: Optional[Tensor] = None,
+        context_scale: Optional[Tensor] = None,
     ):
         """
         Upstream CausalInfEncoder.encode, verbatim except for the context
@@ -129,6 +137,9 @@ class MixedCausalInfEncoder(CausalInfEncoder):
         - context_int_mask (torch.Tensor, optional): bool [batch_size,
             num_context, num_nodes], True where the context cell was set by an
             intervention. None behaves like an all-False mask (upstream).
+        - context_scale (torch.Tensor, optional): [batch_size, num_nodes, 2]
+            (log std, mean / std) of each variable; required (and only used)
+            when scale_conditioning is "stats".
         """
         context_embed = self.embed(
             data=context_data,
@@ -162,6 +173,10 @@ class MixedCausalInfEncoder(CausalInfEncoder):
         full_data = self.create_input(
             context_embed, target_embed, target_train_embed
         )
+        if self.scale_conditioning == "stats":
+            if context_scale is None:
+                raise ValueError("scale_conditioning=stats needs context_scale")
+            full_data = self.scale_embedding.add_to(full_data, context_scale)
         sample_mask, num_target = self.create_sample_mask(
             context_embed, target_embed, target_train_embed
         )
@@ -340,6 +355,9 @@ class _MixedContextMixin(_MixinBase):
 
     def __init__(self, config):
         super().__init__(config)  # type: ignore[call-arg]
+        self.scale_conditioning = check_scale_conditioning(
+            getattr(config, "scale_conditioning", "none")
+        )
         self.encoder = self.encoder_cls(
             d_model=self.d_model,
             emb_depth=self.emb_depth,
@@ -352,6 +370,7 @@ class _MixedContextMixin(_MixinBase):
             dtype=self.dtype,
             sample_attn_mode=self.sample_attn_mode,
             linear_attention=self.linear_attention,
+            scale_conditioning=self.scale_conditioning,
         )
 
     def forward(  # type: ignore[override]  # adds context_int_mask before variable_mask
@@ -362,6 +381,7 @@ class _MixedContextMixin(_MixinBase):
         outcome_index: torch.Tensor,
         context_int_mask: Optional[torch.Tensor] = None,
         variable_mask: Optional[torch.Tensor] = None,
+        context_scale: Optional[torch.Tensor] = None,
     ):
         """CausalInferenceModel.forward, plus context_int_mask for the encoder.
 
@@ -369,7 +389,13 @@ class _MixedContextMixin(_MixinBase):
         [B, Nq, D, 1], intervention_index / outcome_index [B] (long),
         context_int_mask [B, Nc, D] (bool). B is the flattened (task, group)
         batch; the model itself knows nothing about groups.
+
+        context_scale [B, D, 2] holds each variable's (log std, mean / std) before
+        standardisation. Required when scale_conditioning == "stats", ignored
+        when "none".
         """
+        if self.scale_conditioning == "stats" and context_scale is None:
+            raise ValueError("scale_conditioning=stats needs context_scale")
         masked_target_data = self._mask_target_data(
             target_data=target_data, intervention_index=intervention_index
         )
@@ -382,6 +408,7 @@ class _MixedContextMixin(_MixinBase):
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
             context_int_mask=context_int_mask,
+            context_scale=context_scale,
         )
         # shape outcome_encoding: (batch_size, num_target, d_model)
         outcome_encoding, _ = self._extract_outcome_representation(
