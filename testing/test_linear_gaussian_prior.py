@@ -199,3 +199,21 @@ def test_oracle_prior_argument_matches_legacy_kwargs():
         != node_posterior(x, mask, 2, pa).log_ml
     )
     assert LinGaussOracle(3, prior=iw).prior is iw
+
+
+def test_parity_grid_configs():
+    from pathlib import Path
+
+    from CITNP.datasets.create_mixed_regime_chunks import load_config
+    from CITNP.evaluation.tasks import empirical_graph_prior
+
+    cfgs = Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+    iw = load_config(cfgs / "oracle_d3_iw_motif.yaml")
+    nig = load_config(cfgs / "oracle_d3_nig_eta9_motif.yaml")
+    assert LinearGaussianPrior.from_config(iw).is_iw_compatible
+    p = LinearGaussianPrior.from_config(nig)
+    assert not p.is_iw_compatible and p.eta == 9.0 and p.root_shape == iw.alpha0
+    assert nig.motif_probs == iw.motif_probs
+    assert empirical_graph_prior(nig) == empirical_graph_prior(iw)  # same exact graph prior
+    for stem in ("oracle_d3_model_m_extra_node", "oracle_d3_model_m_extra_node_stats"):
+        assert (cfgs / f"{stem}.yaml").is_file()

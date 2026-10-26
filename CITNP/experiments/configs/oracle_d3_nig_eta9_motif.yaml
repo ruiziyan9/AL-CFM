@@ -1,0 +1,24 @@
+# D=3 per-node NIG prior that is NOT IW-compatible: the "identifiable through
+# scale" control for the information-parity grid (see MIXED_TRAINING_README.md).
+#
+# Same as oracle_d3_iw_motif.yaml (alpha0 = 1.5, same motif graph prior) except
+# eta = 9: w | s^2 ~ N(0, 9 s^2 I) instead of eta = 1 / (2 beta) = 1. The
+# per-node prior then differs from the one an inverse-Wishart prior induces, so
+# Markov-equivalent DAGs no longer have equal marginal likelihoods: the scale of
+# the data carries information about edge direction. A model that sees only the
+# standardised context cannot use it; one with scale_conditioning: stats can.
+# The exact oracle stays closed form (per-node NIG).
+function_generator: linear_nig
+alpha0: 1.5
+weight_scale: 9.0
+num_variables: [3]
+graph_type: [MOTIF3]
+motif_probs: {complete: 0.30, chain: 0.20, fork: 0.20, collider: 0.15, single: 0.10, empty: 0.05}
+graph_degrees: [1]      # required field, unused by MOTIF3
+normalise: false        # raw scale, so the prior stays conjugate
+k_max: 3
+n_ctx_range: [64, 256]
+n_qry: 48
+qry_mode: grouped
+qry_groups: [1, 2, 3]
+n_obs_min: 32

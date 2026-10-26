@@ -144,3 +144,44 @@ best validation loss, so the first validation after resuming may overwrite
 a NEW run from a checkpoint's model weights only (strict match, fresh optimiser,
 step 0, new warmup and cosine schedule, new run directory). The two flags are
 mutually exclusive.
+
+## Information-parity grid (2 x 2)
+
+Question: does a model that sees only the standardised context lose anything
+the exact oracle uses, and does `scale_conditioning: stats` recover it?
+`bmrc/submit_parity_grid.sh` submits four runs with the same seed, steps and
+model size (extra-node encoding by default):
+
+| Run | Data config | Model config |
+|---|---|---|
+| A | `oracle_d3_iw_motif.yaml` | `oracle_d3_model_m_extra_node.yaml` |
+| B | `oracle_d3_iw_motif.yaml` | `oracle_d3_model_m_extra_node_stats.yaml` |
+| C | `oracle_d3_nig_eta9_motif.yaml` | `oracle_d3_model_m_extra_node.yaml` |
+| D | `oracle_d3_nig_eta9_motif.yaml` | `oracle_d3_model_m_extra_node_stats.yaml` |
+
+The IW prior (`linear_iw`) is score-equivalent, so scale carries no information
+about edge orientation; `oracle_d3_nig_eta9_motif.yaml` (`linear_nig`,
+`weight_scale: 9`) is not, so orientation is partly identifiable through scale.
+Each data config has its own oracle bank
+(`$OUT/banks/<config>__<sha1>.pkl`, built with `LinearGaussianPrior.from_config`
+and the exact `motif_graph_prior`), and each run is scored on its own prior's
+bank.
+
+**Expected results**
+- **A ~ B:** under the IW prior scale carries no orientation information, so
+  stats conditioning should not help. In the `nT=0` bucket, the gap to the
+  oracle is larger for C than for D (the oracle uses scale, C's model cannot).
+- **If B clearly beats A,** something leaks scale or graph information that the
+  oracle does not use: recheck the score-equivalence test
+  (`test_score_equivalence.py`) and the graph-independence guard
+  (`test_motif_prior.py`).
+
+**Metrics**
+- Excess NLL over the oracle: `oracle_gap/*` in each run's `oracle_gap.csv`
+  (by `nT` bucket, `K` and `has_obs`), logged every `--oracle_every` steps.
+- Interval calibration: `calib/cover90` in the same file.
+- Per question class, PIT histograms and the `nT=0` divergence from the
+  oracle's predictive need the true graph and the full predictive. The bank does
+  not store them; compute these with `predict_mixture` / `mixture_cdf`
+  (`evaluation/model_api.py`) and the oracle's `predictive_components`, as
+  `evaluation/oracle_calibration.py` does for the oracle.
