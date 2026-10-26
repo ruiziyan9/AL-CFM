@@ -18,6 +18,14 @@ before every attention block of the encoder (see
 `LayerwiseMixedCausalInfEncoder`). Its new layers are zero-initialised too, so
 it starts out identical to the R1 model and R1 checkpoints load directly
 (`load_r1_checkpoint`).
+
+`ExtraNodeMixedContext{,MoG}Model` encode interventions differently: no per-cell
+flag, but one extra node position per row that carries the row's intervention
+set (see `ExtraNodeMixedCausalInfEncoder`). It has none of the R1 or
+layer-wise parameters, adds variable-index embeddings and a metadata-type
+embedding, and drops the extra position before the prediction head. Its new
+parameters are not zero-initialised, so it does not reproduce upstream at
+initialisation.
 """
 
 from os import PathLike
@@ -35,6 +43,7 @@ from CITNP.models.causaltransformercomponents import (
     CausalInfEncoder,
     CausalInfTransformerEncoder,
 )
+from CITNP.models.extra_node_encoder import ExtraNodeMixedCausalInfEncoder
 from CITNP.models.nncomponents import build_mlp
 from CITNP.utils.outputs import ModelOutput
 from CITNP.utils.utils import (
@@ -48,6 +57,11 @@ from CITNP.utils.utils import (
 NEW_PARAM_PREFIX = "encoder.context_intervened."
 # Parameters that R1 (embedding-only flag) checkpoints do not have.
 LAYERWISE_PARAM_PREFIXES = ("encoder.flag_code.", "encoder.encoder.inject_")
+# Parameters that upstream checkpoints do not have, for the extra-node model.
+EXTRA_NODE_PARAM_PREFIXES = (
+    "encoder.index_embedding.",
+    "encoder.int_meta_embedding",
+)
 
 
 class MixedCausalInfEncoder(CausalInfEncoder):
@@ -403,6 +417,20 @@ class LayerwiseMixedContextMoGModel(MixedContextMoGModel):
     encoder_cls = LayerwiseMixedCausalInfEncoder
 
 
+class ExtraNodeMixedContextModel(_MixedContextMixin, CausalInferenceModel):
+    """Gaussian-predictive model with the extra-node intervention encoding."""
+
+    encoder_cls = ExtraNodeMixedCausalInfEncoder
+
+
+class ExtraNodeMixedContextMoGModel(
+    _MixedContextMixin, MoGCausalInferenceModel
+):
+    """Mixture-of-Gaussians model with the extra-node intervention encoding."""
+
+    encoder_cls = ExtraNodeMixedCausalInfEncoder
+
+
 # ---------------------------------------------------------------------------
 # Intervention-encoding switch. The single place that maps a method name to a
 # model class: mixed_train.py and evaluation/model_api.py both resolve here.
@@ -412,6 +440,7 @@ DEFAULT_INTERVENTION_ENCODING = "r1"
 INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
     "r1": MixedContextMoGModel,
     "layerwise": LayerwiseMixedContextMoGModel,
+    "extra_node": ExtraNodeMixedContextMoGModel,
 }
 
 
@@ -492,12 +521,21 @@ def load_upstream_checkpoint(
     plus the layer-wise ones for Layerwise* models), which keep their
     zero-initialised last layers; unexpected keys are not allowed.
 
+    For ExtraNodeMixedContext* models the missing parameters are the extra-node
+    ones (`encoder.index_embedding.*`, `encoder.int_meta_embedding`). They are
+    NOT zero-initialised (small random values), so a warm-started extra-node
+    model does not reproduce upstream at step 0.
+
     Returns the `load_state_dict` result.
     """
     return _load_with_new_params(
         model,
         path_or_state_dict,
-        (NEW_PARAM_PREFIX, *LAYERWISE_PARAM_PREFIXES),
+        (
+            NEW_PARAM_PREFIX,
+            *LAYERWISE_PARAM_PREFIXES,
+            *EXTRA_NODE_PARAM_PREFIXES,
+        ),
     )
 
 
