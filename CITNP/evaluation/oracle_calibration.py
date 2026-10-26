@@ -125,14 +125,18 @@ def calibrate(
         qx = task.qry_x.astype(np.float64)
         qi = task.qry_int.astype(bool)
         graph = task.graph.astype(int)
-        orc = LinGaussOracle(
-            D, log_graph_prior=log_graph_prior, prior=prior
-        ).fit(ctx_x, ctx_int)
+        orc = LinGaussOracle(D, log_graph_prior=log_graph_prior, prior=prior).fit(
+            ctx_x, ctx_int
+        )
 
-        p_mec = np.bincount(dag_mec, weights=orc.graph_post, minlength=len(mec_ids))
+        p_mec = np.bincount(
+            dag_mec, weights=orc.graph_post, minlength=len(mec_ids)
+        )
         true_mec = mec_ids[mec_key(graph)]
         for m, p in enumerate(p_mec):
-            mec_rows.append(dict(task=i, mec=m, p=float(p), is_true=int(m == true_mec)))
+            mec_rows.append(
+                dict(task=i, mec=m, p=float(p), is_true=int(m == true_mec))
+            )
 
         for T in sorted({int(np.argmax(r)) for r in qi}):
             sel = qi[:, T]
@@ -150,9 +154,14 @@ def calibrate(
                 for k in range(len(y)):
                     rows.append(
                         dict(
-                            task=i, T=T, Y=Y, nT=n_T,
-                            nT_bucket=n_int_bucket(n_T), question_class=qc,
-                            pit=float(pit[k]), p_true_mec=float(p_mec[true_mec]),
+                            task=i,
+                            T=T,
+                            Y=Y,
+                            nT=n_T,
+                            nT_bucket=n_int_bucket(n_T),
+                            question_class=qc,
+                            pit=float(pit[k]),
+                            p_true_mec=float(p_mec[true_mec]),
                             nll=float(-lp[k]),
                         )  # fmt: skip
                     )
@@ -166,7 +175,9 @@ def plot_pit(df: pd.DataFrame, out: str, bins: int = 20) -> None:
 
     from CITNP.evaluation.plots import _save
 
-    fig, axes = plt.subplots(1, len(BUCKETS), figsize=(4 * len(BUCKETS), 3), sharey=True)
+    fig, axes = plt.subplots(
+        1, len(BUCKETS), figsize=(4 * len(BUCKETS), 3), sharey=True
+    )
     for ax, b in zip(axes, BUCKETS):
         v = df.loc[df.nT_bucket == b, "pit"].to_numpy()
         ax.hist(v, bins=bins, range=(0, 1), density=True, color="#3182BD")
