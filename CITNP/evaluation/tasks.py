@@ -12,6 +12,10 @@ import time
 
 import numpy as np
 
+from CITNP.datasets.linear_gaussian_prior import (
+    LinearGaussianPrior,
+    is_linear_gaussian,
+)
 from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, dag_key
 
 # --------------------------------------------------------------------------- #
@@ -222,10 +226,11 @@ def build_bank(
         make_key,
     )
 
-    if cfg.function_generator != "linearnonidentifiable" or cfg.normalise:
+    if not is_linear_gaussian(cfg.function_generator) or cfg.normalise:
         raise ValueError(
-            "oracle bank needs linearnonidentifiable with normalise: false"
+            "oracle bank needs a linear-Gaussian family with normalise: false"
         )
+    lg_prior = LinearGaussianPrior.from_config(cfg)
     prior = empirical_graph_prior(cfg, num_nodes=D)
     counts = {b: 0 for b in BUCKETS}
     items = []
@@ -255,9 +260,8 @@ def build_bank(
 
         orc = LinGaussOracle(
             D,
-            prior,
-            eta=getattr(cfg, "weight_scale", 1.0),
-            weight_mean=getattr(cfg, "weight_mean", 0.0),
+            log_graph_prior=prior,
+            prior=lg_prior,
         ).fit(ctx_x, ctx_int)
         K = int(task.meta["K"])
         has_obs = bool(task.meta["has_obs"])

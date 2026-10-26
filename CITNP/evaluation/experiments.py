@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from CITNP.datasets.linear_gaussian_prior import LinearGaussianPrior
 from CITNP.evaluation.metrics import (
     implied_slope,
     kl_mc,
@@ -147,9 +148,8 @@ def run_kshot(
 
             orc = LinGaussOracle(
                 len(scm.s2),
-                prior,
-                eta=getattr(data_cfg, "weight_scale", 1.0),
-                weight_mean=getattr(data_cfg, "weight_mean", 0.0),
+                log_graph_prior=prior,
+                prior=LinearGaussianPrior.from_config(data_cfg),
             ).fit(x, m)
             # all six queries share the context: one batch of six elements
             mod = predict_mixture(model, x, m, Ts, Ys, grid, device=dev)
@@ -281,9 +281,8 @@ def run_scm_suite(
                 y = xq[:, Y]
                 orc = LinGaussOracle(
                     num_nodes,
-                    prior,
-                    eta=getattr(data_cfg, "weight_scale", 1.0),
-                    weight_mean=getattr(data_cfg, "weight_mean", 0.0),
+                    log_graph_prior=prior,
+                    prior=LinearGaussianPrior.from_config(data_cfg),
                 ).fit(x, m)
                 r["truth"].append(-scm.do_logpdf(T, Y, t, y).mean())
                 r["oracle"].append(

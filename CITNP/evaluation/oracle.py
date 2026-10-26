@@ -2,12 +2,15 @@
 Reference answers: the exact Bayesian oracle and known-truth linear SCMs.
 
 Exact Bayesian oracle for small linear-Gaussian SCMs under the
-`linearnonidentifiable` prior with normalise=False.
+linear-Gaussian NIG priors (`linearnonidentifiable`, `linear_nig_legacy`,
+`linear_nig`, `linear_iw`) with normalise=False.
 
-Prior (matches functions_generator.LinearNonIdentifiable, per node j):
-    root:      x_j = e_j,              e_j ~ N(0, s2),  s2 ~ IG(2.5, 0.5)
-    non-root:  x_j = w_j^T x_pa + e_j, e_j ~ N(0, s2),  s2 ~ IG(3.0, 0.5),
-               w_j | s2 ~ N(0, eta * s2 * I), eta = weight_scale of the data config (default 1)
+Prior (a `LinearGaussianPrior`; matches functions_generator.LinearNIG and
+LinearNIGLegacy), per node j with p parents:
+    x_j = w_j^T x_pa + e_j, e_j ~ N(0, s2),  s2 ~ IG(prior.node_shape(p), ig_scale),
+               w_j | s2 ~ N(0, eta * s2 * I), eta = prior.eta
+Legacy prior: shape 2.5 for roots and 3.0 for every non-root, ig_scale 0.5;
+IW prior: shape alpha0 + p / 2.
 This is Normal-Inverse-Gamma conjugate, so every DAG's marginal likelihood is
 closed form. With weight_mean = m != 0 (signed-mean prior) the weight prior is
     w_j | s2 ~ sum_s 2^-p N(m * s, eta * s2 * I),  s in {+1, -1}^p,
@@ -32,9 +35,23 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.special import gammaln, logsumexp
 
+from CITNP.datasets.linear_gaussian_prior import LinearGaussianPrior
+
+# Deprecated: the legacy prior constants. The hyperparameters now live in
+# `LinearGaussianPrior`; these are kept (and re-exported by oracle_lingauss.py)
+# for backward compatibility only.
 ROOT_A, ROOT_B = 2.5, 0.5
 NODE_A, NODE_B = 3.0, 0.5
 ETA = 1.0
+
+
+def _resolve_prior(
+    prior: LinearGaussianPrior | None, eta: float, weight_mean: float
+) -> LinearGaussianPrior:
+    """`prior` if given, else the legacy prior with the given eta / weight_mean."""
+    if prior is not None:
+        return prior
+    return LinearGaussianPrior.legacy(eta=eta, weight_mean=weight_mean)
 
 
 # --------------------------------------------------------------------------- #
@@ -97,18 +114,25 @@ def node_posterior(
     parents: np.ndarray,
     eta: float = ETA,
     weight_mean: float = 0.0,
+    prior: LinearGaussianPrior | None = None,
 ) -> NodePosterior:
     """NIG posterior and log marginal likelihood for node j given its parents,
     using only rows where j was NOT intervened.
 
     With weight_mean = m != 0 the weight prior is the signed-mean mixture
     sum_s 2^-p N(m * s, eta * s2 * I) over sign patterns s in {+1, -1}^p: one
-    NIG component per pattern, so the posterior is a mixture of NIGs."""
+    NIG component per pattern, so the posterior is a mixture of NIGs.
+
+    `prior` gives the IG shape (`prior.node_shape(len(parents))`), IG scale, eta
+    and weight_mean; without it the legacy prior with `eta` / `weight_mean` is
+    used."""
+    prior = _resolve_prior(prior, eta, weight_mean)
+    eta, weight_mean = prior.eta, prior.weight_mean
     keep = ~int_mask[:, j]
     y = x[keep, j]
     n = y.shape[0]
     if len(parents) == 0:
-        a, b = ROOT_A, ROOT_B
+        a, b = prior.node_shape(0), prior.ig_scale
         a_n = a + n / 2
         b_n = b + 0.5 * float(y @ y)
         log_ml = (
@@ -120,7 +144,7 @@ def node_posterior(
         )
         return NodePosterior(True, a_n, b_n, None, None, float(log_ml))
 
-    a, b = NODE_A, NODE_B
+    a, b = prior.node_shape(len(parents)), prior.ig_scale
     X = x[keep][:, parents]
     p = X.shape[1]
     prec = X.T @ X + np.eye(p) / eta
@@ -183,6 +207,8 @@ class LinGaussOracle:
         eta: weight-prior scale; must equal the data config's weight_scale.
         weight_mean: signed weight-prior mean; must equal the data config's
             weight_mean (0 = the original zero-mean prior).
+        prior: `LinearGaussianPrior` of the data config (`LinearGaussianPrior.from_config`);
+            overrides eta and weight_mean when given.
     """
 
     def __init__(
@@ -191,10 +217,12 @@ class LinGaussOracle:
         log_graph_prior: dict | None = None,
         eta: float = ETA,
         weight_mean: float = 0.0,
+        prior: LinearGaussianPrior | None = None,
     ):
         self.d = d
-        self.eta = float(eta)
-        self.weight_mean = float(weight_mean)
+        self.prior = _resolve_prior(prior, eta, weight_mean)
+        self.eta = self.prior.eta
+        self.weight_mean = self.prior.weight_mean
         self.dags = all_dags(d)
         if log_graph_prior is None:
             lp = np.full(len(self.dags), -np.log(len(self.dags)))
@@ -220,8 +248,7 @@ class LinGaussOracle:
                         int_mask,
                         j,
                         np.array(pa, dtype=int),
-                        eta=self.eta,
-                        weight_mean=self.weight_mean,
+                        prior=self.prior,
                     )
                 posts.append(cache[key])
                 log_ml[g_i] += cache[key].log_ml
