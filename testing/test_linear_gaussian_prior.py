@@ -23,7 +23,7 @@ BASE = dict(
     graph_degrees={3: [1, 2, 3]},
     normalise=False,
     n_ctx_range=(64, 64),
-    n_qry=4,
+    n_qry=6,
     qry_mode="grouped",
 )
 
