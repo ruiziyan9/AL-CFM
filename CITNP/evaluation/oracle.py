@@ -89,6 +89,32 @@ def dag_key(adj: np.ndarray) -> tuple:
     return tuple(adj.flatten().tolist())
 
 
+def skeleton(adj: np.ndarray) -> np.ndarray:
+    """Undirected skeleton of a DAG: symmetric 0/1 matrix, 1 iff i and j are adjacent."""
+    a = np.asarray(adj) != 0
+    return (a | a.T).astype(int)
+
+
+def v_structures(adj: np.ndarray) -> set:
+    """Set of (a, c, b), a < b, with a -> c <- b and a, b not adjacent."""
+    a = np.asarray(adj) != 0
+    skel = skeleton(adj)
+    out = set()
+    for c in range(a.shape[0]):
+        pa = np.where(a[:, c])[0]
+        for i, p in enumerate(pa):
+            for q in pa[i + 1 :]:
+                if not skel[p, q]:
+                    out.add((int(p), int(c), int(q)))
+    return out
+
+
+def mec_key(adj: np.ndarray) -> tuple:
+    """Hashable identifier of the Markov equivalence class (MEC) of a DAG:
+    skeleton plus v-structures."""
+    return (dag_key(skeleton(adj)), tuple(sorted(v_structures(adj))))
+
+
 # --------------------------------------------------------------------------- #
 # Conjugate node model
 # --------------------------------------------------------------------------- #

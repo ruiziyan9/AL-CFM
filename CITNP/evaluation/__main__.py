@@ -5,6 +5,8 @@
     python -m CITNP.evaluation scm-suite --ckpt ... --model_config ... \
            --data_config ... --out suite.csv
     python -m CITNP.evaluation bank --data_config ... --out bank.pkl
+    python -m CITNP.evaluation calibrate --data_config ... --n_tasks 2000 \
+           [--n_mc 1000] [--compare_mc] --out calib.csv   # oracle SBC: PIT + MEC posterior
     python -m CITNP.evaluation plot-kshot kshot.csv     # all k-shot figures, no GPU
     python -m CITNP.evaluation plot-monitoring RUN_DIR [RUN_DIR ...] --out monitoring.png
     python -m CITNP.evaluation probe-flag --ckpt ... --model_config ... \
@@ -85,6 +87,17 @@ def _bank_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--per_bucket", type=int, default=150)
     p.add_argument("--n_mc", type=int, default=2000)
     p.add_argument("--seed", type=int, default=4242)
+
+
+def _calibrate_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--data_config", required=True)
+    p.add_argument("--n_tasks", type=int, default=2000)
+    p.add_argument("--n_mc", type=int, default=1000,
+                   help="oracle parameter draws per DAG")  # fmt: skip
+    p.add_argument("--compare_mc", action="store_true",
+                   help="also run with 2x draws and report mean |delta NLL|")  # fmt: skip
+    p.add_argument("--seed", type=int, default=7001)
+    p.add_argument("--out", default="calib.csv")
 
 
 def _plot_kshot_parser(p: argparse.ArgumentParser) -> None:
@@ -286,6 +299,10 @@ COMMANDS = {
         "fixed SCMs x context designs vs truth and oracle",
     ),
     "bank": (_bank_parser, "build the fixed oracle bank used during training"),
+    "calibrate": (
+        _calibrate_parser,
+        "oracle simulation-based calibration: PIT and MEC posterior",
+    ),
     "plot-kshot": (_plot_kshot_parser, "all k-shot figures from saved CSVs"),
     "plot-monitoring": (
         _plot_monitoring_parser,
@@ -314,6 +331,10 @@ def main(argv: list[str] | None = None) -> None:
         _run_suite(a)
     elif a.command == "bank":
         _run_bank(a)
+    elif a.command == "calibrate":
+        from CITNP.evaluation.oracle_calibration import run
+
+        run(a)
     elif a.command == "plot-kshot":
         _plot_kshot(a.csv)
     elif a.command == "probe-flag":

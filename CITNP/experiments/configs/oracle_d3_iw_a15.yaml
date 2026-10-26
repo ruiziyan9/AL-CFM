@@ -1,0 +1,24 @@
+# D=3 inverse-Wishart (IW) prior, alpha0 = 1.5; exact oracle
+# (CITNP/evaluation/oracle.py) is optimal for models trained on this.
+#
+# Sigma ~ IW(nu, 2 beta I), nu = 2 alpha0 + D - 1, beta = 0.5, means known to
+# be zero. For any DAG this induces, per node j with |pa_j| parents,
+#   s_j^2 ~ IG(alpha0 + |pa_j| / 2, beta),  w_j | s_j^2 ~ N(0, s_j^2 I)
+# (eta = 1 / (2 beta) = 1, no signed mean). The prior is score-equivalent:
+# Markov-equivalent DAGs have identical marginal likelihoods on observational
+# data, so observational data alone cannot orient edges (unlike the legacy
+# linearnonidentifiable prior, which is identifiable for colliders and complete
+# DAGs through the variance scale). Graph settings are those of oracle_d3.yaml;
+# the motif graph prior comes with oracle_d3_iw_motif.yaml.
+function_generator: linear_iw
+alpha0: 1.5
+num_variables: [3]
+graph_type: [ER]
+graph_degrees: {3: [1, 2, 3]}
+normalise: false        # raw scale, so the prior stays conjugate
+k_max: 3
+n_ctx_range: [64, 256]
+n_qry: 48
+qry_mode: grouped
+qry_groups: [1, 2, 3]
+n_obs_min: 32

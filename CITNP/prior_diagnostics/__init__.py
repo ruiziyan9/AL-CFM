@@ -10,7 +10,8 @@ Modules:
     population  relation fractions and effect sizes over many tasks
     summary     aggregate histograms of the design (D, K, regime sizes, ...)
     obs_vs_do   exact Y|T vs Y|do(T) by question class, and context usefulness
-    linear_gaussian  exact moments of linearnonidentifiable tasks
+    resample    fraction of task attempts rejected (non-finite / too large)
+    linear_gaussian  exact moments of linear-Gaussian NIG tasks
 """
 
 from CITNP.prior_diagnostics.examples import plot_graph, plot_task, save_examples

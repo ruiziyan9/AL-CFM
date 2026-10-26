@@ -5,6 +5,7 @@
     python -m CITNP.prior_diagnostics stats      --config CFG --out prior_stats.pdf [--png]
     python -m CITNP.prior_diagnostics summary    --config CFG --out prior.png
     python -m CITNP.prior_diagnostics obs-vs-do  --config CFG --out obs_vs_do.pdf [--png] [--num_variables 3]
+    python -m CITNP.prior_diagnostics resample-rate --data_config CFG --n_tasks 20000
 
 `python -m CITNP.prior_diagnostics <command> -h` lists each command's options.
 """
@@ -18,6 +19,7 @@ COMMANDS = {
     "stats": "CITNP.prior_diagnostics.population",
     "summary": "CITNP.prior_diagnostics.summary",
     "obs-vs-do": "CITNP.prior_diagnostics.obs_vs_do",
+    "resample-rate": "CITNP.prior_diagnostics.resample",
 }
 
 

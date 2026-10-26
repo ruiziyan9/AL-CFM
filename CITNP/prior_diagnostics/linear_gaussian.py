@@ -23,7 +23,12 @@ import numpy as np
 
 from CITNP.datasets.functions_generator import LINEAR_NIG_MECHANISMS
 
-__all__ = ["LinearGaussianSCM", "gauss_kl", "scm_from_debug"]
+__all__ = [
+    "LinearGaussianSCM",
+    "gauss_kl",
+    "population_covariance",
+    "scm_from_debug",
+]
 
 
 @dataclass
@@ -84,3 +89,35 @@ def scm_from_debug(debug: dict) -> LinearGaussianSCM:
         c[j] = -rec["loc"] / s
     p = np.asarray(debug["perm"])  # new index k holds old variable p[k]
     return LinearGaussianSCM(B[p][:, p], c[p], w[p])
+
+
+def population_covariance(graph: np.ndarray, mechanisms: dict) -> np.ndarray:
+    """Population covariance (I - B^T)^-1 diag(s2) (I - B^T)^-T of the SCM
+    defined by the sampled weights and noise variances, in raw units (no
+    reference standardisation, no intervention).
+
+    Args:
+    ----------
+    graph : np.ndarray
+        [D, D] DAG with graph[i, j] = 1 iff i -> j.
+
+    mechanisms : dict
+        node -> {"parents", "mechanism"} as in generate_task(...,
+        return_debug=True)["mechanisms"], or node -> mechanism object. Each
+        mechanism must have been called once (so its weights are drawn).
+    """
+    D = graph.shape[0]
+    B, s2 = np.zeros((D, D)), np.zeros(D)
+    for j in range(D):
+        rec = mechanisms[j]
+        f = rec["mechanism"] if isinstance(rec, dict) else rec
+        if not isinstance(f, LINEAR_NIG_MECHANISMS):
+            raise NotImplementedError(
+                f"needs a linear-Gaussian NIG family, got {type(f).__name__}"
+            )
+        pa = np.where(graph[:, j])[0]
+        if len(pa):
+            B[pa, j] = np.asarray(f.weight).ravel()
+        s2[j] = float(np.ravel(f.var1 if len(pa) else f.var2)[0])
+    A = np.linalg.inv(np.eye(D) - B.T)
+    return A @ np.diag(s2) @ A.T

@@ -117,6 +117,10 @@ CPU_ONLY_FAMILIES = {
     "sinusoid",
 }
 
+# Diagnostic counter of rejected task attempts by reason (see
+# prior_diagnostics.resample); read-only, never changes the generated tasks.
+RESAMPLE_COUNTS = {"nonfinite": 0, "too_large": 0}
+
 # Query row types, in the order used by `MixedRegimeConfig.qry_type_probs`.
 QRY_TYPES = ("seen", "unseen", "empty")
 
@@ -1203,9 +1207,11 @@ def generate_task(
         X = res[0]
         # The bound keeps values far below the float32 max, so the cast at the
         # end cannot overflow to inf.
-        ok = np.isfinite(X).all() and np.abs(X).max() <= cfg.max_abs_value
+        finite = bool(np.isfinite(X).all())
+        ok = finite and np.abs(X).max() <= cfg.max_abs_value
         if ok:
             break
+        RESAMPLE_COUNTS["nonfinite" if not finite else "too_large"] += 1
     else:
         raise RuntimeError(
             f"Task with key {key} still non-finite or exceeding max_abs_value="
