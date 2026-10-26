@@ -126,3 +126,16 @@ target) of variable column j, right after the row embeddings are assembled and
 before the transformer stack. It works with all three encodings; with
 `extra_node` the INT_META column gets nothing. With `none` no parameters are
 created, so existing checkpoints load strictly. Configs: `*_stats.yaml`.
+
+## Resuming a run
+
+`--resume_full <results/RUN/last_model.pt>` continues that run in its own
+results directory (any other existing run directory is still refused): strict
+model weights, optimiser and scheduler state, global step, epoch and best
+validation loss are restored, and the data stream continues from the next
+epoch. Use the same configs and `--epochs`. Only epoch-boundary checkpoints
+(`last_model.pt`) can be resumed; a mid-epoch `step_N.pt` is rejected.
+`bmrc/train.sh` adds this flag automatically when `last_model.pt` exists and the
+recorded config hashes match. Checkpoints written before this change lack the
+best validation loss, so the first validation after resuming may overwrite
+`best_model.pt`.

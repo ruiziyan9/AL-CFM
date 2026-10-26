@@ -18,6 +18,8 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --scale_conditioning {none,stats}: stats feeds each variable's standardisation
   (log std, mean / std) to the model (information parity with the oracle;
   default none: no new parameters).
+- --resume_full <last_model.pt>: continue this run (model, optimiser, step, epoch)
+  in its own results directory; same configs and --epochs required.
 - --init_from_upstream <ckpt>: warm start from an upstream MACE-TNP
   checkpoint (only the new intervened-flag embedding starts from zero).
 - --val_iterations / --test_iterations: fixed validation / test batches.
@@ -160,6 +162,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     extra.add_argument("--oracle_every", type=int, default=2500)
     extra.add_argument(
+        "--resume_full",
+        default=None,
+        help="checkpoint (e.g. last_model.pt) of THIS run to continue: model, "
+        "optimiser, step and epoch are restored and training goes on in the "
+        "same run directory. Needs an epoch-boundary checkpoint and the same "
+        "configs and --epochs",
+    )
+    extra.add_argument(
         "--resume_from",
         default=None,
         help="checkpoint of this model to start from (weights only; fresh optimiser)",
@@ -196,6 +206,34 @@ def apply_model_config(args: argparse.Namespace) -> None:
                 f"{k}={v!r} in {args.model_config}"
             )
         setattr(args, k, v)
+
+
+def restore_full_state(trainer, path) -> None:
+    """Continue a run from the checkpoint `path` (saved by CheckpointCallback):
+    strict model weights, optimiser and scheduler state, global step, epoch and
+    best validation loss. Only epoch-boundary checkpoints (last_model.pt) can be
+    resumed: a mid-epoch step_N.pt would repeat part of an epoch."""
+    state = torch.load(path, map_location="cpu")
+    step = int(state["global_step"])
+    if step % trainer.steps_per_epoch:
+        raise ValueError(
+            f"{path} was saved mid-epoch (step {step}, {trainer.steps_per_epoch} "
+            "steps per epoch); resume from an epoch-boundary checkpoint such as "
+            "last_model.pt"
+        )
+    trainer.model.load_state_dict(state["model_state_dict"])  # strict
+    # Optimiser state is cast to the parameters' device at load time, so move
+    # the model first.
+    trainer.model.to(trainer.device)
+    trainer.optimizer.load_state_dict(state["optimizer_state_dict"])
+    if trainer.scheduler is not None and state.get("scheduler_state_dict"):
+        trainer.scheduler.load_state_dict(state["scheduler_state_dict"])
+    trainer.global_step = step
+    trainer.current_epoch = step // trainer.steps_per_epoch
+    for cb in trainer.callbacks:
+        if isinstance(cb, CheckpointCallback) and "best_val_loss" in state:
+            cb.best_val_loss = float(state["best_val_loss"])
+    print(f"Resumed from {path}: step {step}, continuing at epoch {trainer.current_epoch}")
 
 
 def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
@@ -259,6 +297,10 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     if args.init_from_r1:
         load_r1_checkpoint(model, args.init_from_r1)
         print(f"Warm-started from R1 checkpoint {args.init_from_r1}")
+    if args.resume_from and args.resume_full:
+        raise ValueError("--resume_from (weights only) and --resume_full are exclusive")
+    if args.resume_full and not Path(args.resume_full).is_file():
+        raise FileNotFoundError(args.resume_full)
     if args.resume_from:
         state = torch.load(args.resume_from, map_location="cpu")
         model.load_state_dict(state.get("model_state_dict", state))  # strict
@@ -269,8 +311,11 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     )
     model_save_dir = results_path / "results" / f"{args.run_name}"
     model_save_dir.parent.mkdir(parents=True, exist_ok=True)
-    # Don't allow to override models
-    model_save_dir.mkdir(parents=False, exist_ok=False)
+    # Don't allow to override models; only --resume_full continues in place.
+    resuming_here = bool(args.resume_full) and (
+        Path(args.resume_full).resolve().parent == model_save_dir.resolve()
+    )
+    model_save_dir.mkdir(parents=False, exist_ok=resuming_here)
 
     resolved = {
         k: getattr(args, k)
@@ -354,6 +399,8 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         callbacks=callbacks,
         seed=args.seed,
     )
+    if args.resume_full:
+        restore_full_state(trainer, args.resume_full)
     return trainer, model_config
 
 

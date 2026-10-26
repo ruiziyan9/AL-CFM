@@ -201,6 +201,7 @@ class CheckpointCallback(Callback):
             ),
             "global_step": trainer.global_step,
             "epoch": trainer.current_epoch,
+            "best_val_loss": self.best_val_loss,
             # Add any other state you want to save (e.g., best_val_loss)
         }
         th.save(state, save_path)
