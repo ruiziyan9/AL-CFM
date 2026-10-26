@@ -29,7 +29,8 @@
 # The oracle bank is $OUT/banks/<data>__<sha1 of the data config>.pkl and is
 # built when missing, so editing a data config never reuses a stale bank.
 # Resume guard: the first launch of a RUN writes the sha1 of its data and
-# model configs to $OUT/results/$RUN/config_hashes.txt. If last_model.pt
+# model configs to $OUT/run_hashes/$RUN.txt (not inside results/$RUN:
+# mixed_train.py refuses to start in an existing run directory). If last_model.pt
 # exists the run resumes only when both hashes still match; otherwise the
 # script aborts. Mail options go on the sbatch command line.
 #SBATCH --job-name=alcfm_train
@@ -65,7 +66,7 @@ MODEL_HASH=$(hash10 "$MODEL_CFG")
 BANK=$OUT/banks/$(basename "$DATA_CFG" .yaml)__$DATA_HASH.pkl
 RUN_DIR=$OUT/results/$RUN
 CKPT=$RUN_DIR/last_model.pt
-HASHES=$RUN_DIR/config_hashes.txt
+HASHES=$OUT/run_hashes/$RUN.txt
 WANT_HASHES="data=$DATA_HASH
 model=$MODEL_HASH"
 
@@ -151,7 +152,7 @@ source "${COMMON_ENV:-${SLURM_SUBMIT_DIR:-.}/CITNP/experiments/bmrc/common_env.s
 nvidia-smi
 python -c "import torch; assert torch.cuda.is_available(); print('torch', torch.__version__, 'CUDA', torch.version.cuda, torch.cuda.get_device_name(0))"
 
-mkdir -p "$OUT/banks" "$RUN_DIR"
+mkdir -p "$OUT/banks" "$OUT/run_hashes"
 if [ ! -f "$BANK" ]; then
   # Build to a temporary name so a failed or concurrent build never leaves a
   # truncated bank under the final name.
