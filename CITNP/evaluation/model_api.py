@@ -201,14 +201,17 @@ def context_states(
     (T, Y), hence the arguments. zero_flags sets every intervened-cell flag to
     False, as in `predict_mixture`. Works for every mixed-context model class
     (the hooks sit on the upstream attention layers, which all share).
+    Internal node positions beyond the D variables (e.g. the extra-node
+    metadata column) are dropped.
     """
     stack = model.encoder.encoder
     Nc = int(np.asarray(ctx_x).shape[0])
+    D = int(np.asarray(ctx_x).shape[1])
     B = 1
     states: dict[str, torch.Tensor] = {}
 
-    def keep(name, x):  # x [B, Nc, D, d_model]
-        states[name] = x.detach().float().cpu()[0]
+    def keep(name, x):  # x [B, Nc, D', d_model]; D' = D + internal positions
+        states[name] = x.detach().float().cpu()[0, :, :D]
 
     def pre_embed(_mod, args):
         keep("embed", args[0][:, :Nc])
