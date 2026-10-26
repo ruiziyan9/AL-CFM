@@ -68,6 +68,7 @@ from CITNP.datasets.functions_generator import (
     SinusoidFunctionGenerator,
     UniformLinearFunctionGenerator,
 )
+from CITNP.datasets.motifs import MOTIF_CLASSES, motif_dags, validate_motif_probs
 from CITNP.datasets.linear_gaussian_prior import (
     LinearGaussianPrior,
     is_legacy_key,
@@ -307,6 +308,10 @@ class MixedRegimeConfig:
     # IG shape of root variances for linear_iw (default 2.5) and linear_nig
     # (default 2.5); non-roots get alpha0 + |pa| / 2. Unused by the legacy keys.
     alpha0: float | None = None
+    # Class probabilities of graph_type [MOTIF3] (D = 3 only): keys empty, single,
+    # chain, fork, collider, complete (see datasets/motifs.py); the graph is
+    # uniform within its class. Required for MOTIF3, invalid otherwise.
+    motif_probs: dict[str, float] | None = None
     # P(K = 0), i.e. observation-only contexts. None keeps the truncated
     # geometric over {0..k_cap}; otherwise K >= 1 follows its shape.
     p_k0: float | None = None
@@ -390,6 +395,15 @@ class MixedRegimeConfig:
             self.p_k0 = float(self.p_k0)
             if not 0.0 <= self.p_k0 < 1.0:
                 raise ValueError("p_k0 must be in [0, 1)")
+        is_motif = "MOTIF3" in self.graph_type
+        if is_motif and (
+            self.graph_type != ["MOTIF3"] or self.num_variables != [3]
+        ):
+            raise ValueError("MOTIF3 needs graph_type: [MOTIF3] and num_variables: [3]")
+        if is_motif != (self.motif_probs is not None):
+            raise ValueError("motif_probs is required for, and only for, MOTIF3")
+        if self.motif_probs is not None:
+            self.motif_probs = validate_motif_probs(self.motif_probs)
         if "ER_CC" in self.graph_type:
             degs = (
                 [v for vs in self.graph_degrees.values() for v in vs]
@@ -606,19 +620,39 @@ def _sample_expected_edges(cfg: MixedRegimeConfig, D: int) -> int:
     return int(np.random.choice(possible))
 
 
+_MOTIF_DAGS: dict | None = None
+
+
+def _motif_dags() -> dict:
+    """Cached class -> labelled DAGs lists of `motifs.motif_dags`."""
+    global _MOTIF_DAGS
+    if _MOTIF_DAGS is None:
+        _MOTIF_DAGS = motif_dags()
+    return _MOTIF_DAGS
+
+
 def sample_graph(cfg: MixedRegimeConfig, D: int) -> tuple[np.ndarray, dict]:
     """Sample a DAG with graph[i, j] = 1 iff i -> j.
 
     Uses the global numpy RNG and Python's `random` (via igraph), so call it
     after seeding. Index order is NOT guaranteed to be topological (e.g. "FC"),
     so always use `topological_order` on the result. "ER_CC" is "ER" redrawn
-    until some node has >= 2 children (a common cause).
+    until some node has >= 2 children (a common cause). With `motif_probs`
+    ("MOTIF3", D = 3) the class is drawn from `motif_probs` and the graph is
+    uniform within it.
 
     Returns:
     ----------
     (graph, info) where info = {"graph_type": str, "s0": int} records the graph
     type and the s0 actually passed to `generate_synthetic_dag` (after capping).
     """
+    if cfg.motif_probs is not None:
+        # MOTIF3: class from motif_probs, then a uniform labelled DAG in the class.
+        probs = [cfg.motif_probs[c] for c in MOTIF_CLASSES]
+        cls = MOTIF_CLASSES[int(np.random.choice(len(MOTIF_CLASSES), p=probs))]
+        dags = _motif_dags()[cls]
+        graph = dags[int(np.random.randint(len(dags)))]
+        return graph.copy(), {"graph_type": "MOTIF3", "s0": int(graph.sum())}
     s0 = _sample_expected_edges(cfg, D)
     graph_type = str(np.random.choice(cfg.graph_type))
     if graph_type in ("ER", "ER_CC"):

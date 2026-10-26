@@ -39,6 +39,7 @@ from CITNP.prior_diagnostics.stats import (
     path_lengths,
     query_pair_records,
     question_class,
+    question_class_table,
     relation,
 )
 
@@ -49,6 +50,7 @@ __all__ = [
     "context_role",
     "plot_obs_vs_do",
     "question_class",
+    "question_class_table",
     "scm_from_debug",
     "RELATIONS",
     "collect_effects",

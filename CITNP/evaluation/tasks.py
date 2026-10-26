@@ -184,11 +184,29 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 # --------------------------------------------------------------------------- #
 # Graph prior of the training generator (incl. its random variable permutation)
 # --------------------------------------------------------------------------- #
+def motif_graph_prior(cfg) -> dict:
+    """dag_key -> exact log prior of a MOTIF3 config: log(class probability /
+    class size) for each of the 25 labelled DAGs, -inf for classes with
+    probability 0."""
+    from CITNP.datasets.motifs import MOTIF_SIZES, motif_class
+    from CITNP.evaluation.oracle import all_dags
+
+    out = {}
+    for g in all_dags(3):
+        c = motif_class(g)
+        p = cfg.motif_probs[c] / MOTIF_SIZES[c]
+        out[dag_key(g)] = float(np.log(p)) if p > 0 else -np.inf
+    return out
+
+
 def empirical_graph_prior(
     cfg, n: int = 20000, seed: int = 0, num_nodes: int = 3
 ) -> dict:
     """dag_key -> log frequency over n graphs from the training generator.
-    Reseeds the global numpy and `random` RNGs (sample_graph uses them)."""
+    Reseeds the global numpy and `random` RNGs (sample_graph uses them).
+    MOTIF3 configs return the exact `motif_graph_prior` instead (no sampling)."""
+    if list(cfg.graph_type) == ["MOTIF3"]:
+        return motif_graph_prior(cfg)
     from CITNP.datasets.mixed_regime_generator import sample_graph
 
     np.random.seed(seed)

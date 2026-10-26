@@ -1,0 +1,29 @@
+# D=3 inverse-Wishart (IW) prior, alpha0 = 1.5, with an exact motif graph
+# prior; the exact oracle (CITNP/evaluation/oracle.py, graph prior
+# CITNP.evaluation.tasks.motif_graph_prior) is optimal for models trained on
+# this. IW: Sigma ~ IW(2 alpha0 + D - 1, 2 beta I), beta = 0.5, so the prior is
+# score-equivalent (see oracle_d3_iw_a15.yaml).
+#
+# Graph: class from motif_probs, then uniform among the labelled DAGs of that
+# class (empty 1, single 6, chain 6, fork 3, collider 3, complete 6).
+#
+# Question classes under uniform (T, Y) pairs, exact for these motif_probs
+# (derived by hand; confirm with question_class_table, see S3 hand-off):
+#   unconfounded effect  1/3   = 0.3333
+#   confounded effect    1/20  = 0.0500
+#   pure confounding     1/15  = 0.0667
+#   reverse              23/60 = 0.3833
+#   unrelated            1/6   = 0.1667
+function_generator: linear_iw
+alpha0: 1.5
+num_variables: [3]
+graph_type: [MOTIF3]
+motif_probs: {complete: 0.30, chain: 0.20, fork: 0.20, collider: 0.15, single: 0.10, empty: 0.05}
+graph_degrees: [1]      # required field, unused by MOTIF3
+normalise: false        # raw scale, so the prior stays conjugate
+k_max: 3
+n_ctx_range: [64, 256]
+n_qry: 48
+qry_mode: grouped
+qry_groups: [1, 2, 3]
+n_obs_min: 32

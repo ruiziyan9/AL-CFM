@@ -233,3 +233,29 @@ def context_role(graph: np.ndarray, t: int, y: int, c: int | None) -> str:
     if np.isfinite(dist[c, t]) and np.isfinite(path_lengths(_without(graph, t))[c, y]):
         return "do(confounder)"
     return "do(other)"
+
+
+def question_class_table(log_graph_prior: dict, D: int = 3) -> dict[str, float]:
+    """Exact fraction of questions in each of QUESTION_CLASSES under a graph prior.
+
+    Enumerates all labelled DAGs on D nodes weighted by exp(log_graph_prior[dag_key])
+    (missing keys have probability 0) and all D * (D - 1) ordered (T, Y) pairs
+    with uniform probability, and classifies each with `question_class`.
+
+    Args:
+    ----------
+    log_graph_prior : dict
+        dag_key -> log prior, e.g. `CITNP.evaluation.tasks.motif_graph_prior(cfg)`.
+
+    D : int
+        Number of nodes (default 3).
+    """
+    from CITNP.evaluation.oracle import all_dags, dag_key
+
+    table = {c: 0.0 for c in QUESTION_CLASSES}
+    pairs = [(t, y) for t in range(D) for y in range(D) if t != y]
+    for g in all_dags(D):
+        p = float(np.exp(log_graph_prior.get(dag_key(g), -np.inf)))
+        for t, y in pairs:
+            table[question_class(g, t, y)] += p / len(pairs)
+    return table

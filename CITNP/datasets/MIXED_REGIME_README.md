@@ -55,6 +55,7 @@ design; the model sees the same information through `ctx_int`.
 | `weight_scale` | 1.0 | edge-weight scale η of the linear-Gaussian families (`linear_iw` requires 1): w \| s² ~ N(0, η s²); the exact oracle must use the same η |
 | `weight_mean` | 0.0 | signed edge-weight mean m of the linear-Gaussian families (`linear_iw` requires 0): w \| s² ~ N(s m, η s²) with sign s = ±1 w.p. ½ per edge, so weights sit away from zero; 0 is the original prior. The exact oracle (`CITNP.evaluation.oracle.LinGaussOracle(weight_mean=m)`) stays exact by summing over the 2^p sign patterns of each node's p parents |
 | `alpha0` | None | root IG shape α₀ of `linear_iw` / `linear_nig` (default 2.5; non-roots get α₀ + \|pa\|/2); not allowed for the legacy keys |
+| `motif_probs` | None | class probabilities of `graph_type: [MOTIF3]` (D = 3): keys `empty`, `single`, `chain`, `fork`, `collider`, `complete`, non-negative, summing to 1; the graph is uniform within its class (labelled counts 1, 6, 6, 3, 3, 6). Required for MOTIF3 and invalid otherwise; the oracle uses the exact `evaluation.tasks.motif_graph_prior` |
 | `n_ref` | 256 | hidden reference rows |
 | `p_obs` | 0.85 | probability the context includes an observational regime |
 | `n_obs_min` | 10 | minimum observational rows; if > 0 the observational regime is always present (`p_obs` is then unused) |
@@ -115,6 +116,10 @@ The per-node prior is one frozen dataclass, `CITNP.datasets.linear_gaussian_prio
 | `linearnonidentifiable` | `LinearNIGLegacy` | deprecated alias of `linear_nig_legacy`; emits a `DeprecationWarning` once per process |
 
 Only the legacy keys patch `eta` / `weight_mean` onto the mechanisms after construction (so the goldens hold); the new keys receive the prior at construction.
+
+## Graph-independence rule
+
+Questions and designs must not depend on the true graph. `sample_design` takes only the config and D (never a graph), so which regimes the context contains, their sizes, the do-value distribution and the query treatments are independent of the DAG. A graph-dependent question or design (e.g. querying only true ancestors, or intervening on true roots) would leak information about the graph that the exact oracle does not model, so the oracle would no longer be Bayes-optimal and the model could exploit the leak. `testing/test_motif_prior.py` checks this.
 
 ## Batch contract (`collate_tasks`)
 
