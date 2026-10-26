@@ -51,7 +51,7 @@ class BaseInterventionDatasetGenerator(IterableDataset):
         normalise: Optional[bool] = True,
         show_progress: Optional[bool] = False,
         same_variablenum_per_batch: Optional[bool] = False,
-        intervention_range_multiplier: int = 4,
+        intervention_range_multiplier: float = 4,
     ):
         # Initialize parameters
         self.function_generator = function_generator
