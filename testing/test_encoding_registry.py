@@ -49,6 +49,7 @@ def test_every_encoding_resolves(name):
     [
         ("MixedContextMoGModel", "r1"),
         ("LayerwiseMixedContextMoGModel", "layerwise"),
+        ("ExtraNodeMixedContextMoGModel", "extra_node"),
         ("MixedContextModel", "MixedContextModel"),  # Gaussian head, unregistered
     ],
 )
