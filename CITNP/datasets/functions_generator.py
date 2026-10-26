@@ -16,6 +16,10 @@ import numpy as np
 import torch as th
 from scipy.stats import invgamma
 
+from CITNP.datasets.linear_gaussian_prior import (
+    LinearGaussianPrior,
+    warn_legacy_alias_once,
+)
 from CITNP.models.nncomponents import ResidualEncoderBlock
 from CITNP.utils.gplvm_utils import RBFKernel, SumExpGammaKernels
 from CITNP.utils.processing import normalise_variable
@@ -78,7 +82,7 @@ class LinearFixedStd:
                 return outputs
 
 
-class LinearNonIdentifiable:
+class LinearNIGLegacy:
     def __init__(
         self,
         num_parents: int,
@@ -125,6 +129,72 @@ class LinearNonIdentifiable:
                     loc=0, scale=np.sqrt(self.var1), size=(inputs.shape[0], 1)
                 )
                 return outputs
+
+
+# Deprecated name of LinearNIGLegacy.
+LinearNonIdentifiable = LinearNIGLegacy
+
+
+class LinearNIG:
+    """Linear-Gaussian mechanism with a per-node NIG prior from a
+    `LinearGaussianPrior`: s2 ~ IG(prior.node_shape(num_parents), prior.ig_scale),
+    w | s2 ~ N(sign * m, eta * s2 * I). Unlike `LinearNIGLegacy` it draws only
+    the one variance it needs, and the prior is fixed at construction."""
+
+    def __init__(
+        self,
+        num_parents: int,
+        prior: LinearGaussianPrior,
+    ):
+        self.num_parents = num_parents
+        self.prior = prior
+        self.var = invgamma.rvs(
+            a=prior.node_shape(num_parents), scale=prior.ig_scale, size=(1)
+        )
+        self.eta = prior.eta
+        self.weight_mean = prior.weight_mean
+        self.weight = None
+        self.sign = None  # +-1 per edge when weight_mean > 0, else None
+
+    # LinearNIGLegacy names (root / non-root variance); consumers read these.
+    @property
+    def var1(self) -> np.ndarray:
+        """Noise variance (non-root name)."""
+        return self.var
+
+    @property
+    def var2(self) -> np.ndarray:
+        """Noise variance (root name)."""
+        return self.var
+
+    def __call__(self, inputs: np.ndarray) -> np.ndarray:
+        """
+        Generate a linear model; weights are redrawn on every call.
+        """
+        with th.no_grad():
+            input_num = inputs.shape[-1]
+            if input_num == 0:
+                return np.random.normal(
+                    loc=0, scale=np.sqrt(self.var), size=(inputs.shape[0], 1)
+                )
+            weight = np.random.normal(
+                loc=0,
+                scale=np.sqrt(self.eta * self.var),
+                size=(inputs.shape[1], 1),
+            )
+            if self.weight_mean > 0.0:
+                sign = np.where(np.random.random(size=weight.shape) < 0.5, -1.0, 1.0)
+                weight = weight + self.weight_mean * sign
+                self.sign = sign
+            self.weight = weight
+            feature = np.dot(inputs, weight)
+            return feature + np.random.normal(
+                loc=0, scale=np.sqrt(self.var), size=(inputs.shape[0], 1)
+            )
+
+
+# Mechanism classes of the linear-Gaussian NIG families.
+LINEAR_NIG_MECHANISMS = (LinearNIGLegacy, LinearNIG)
 
 
 class SinFunction:
@@ -663,7 +733,7 @@ class DataGenerator(ABC):
                         variable_intvn, axis=0, mean=mean_obs, std=std_obs
                     )
             if return_functions:
-                if isinstance(function_dict[0], LinearNonIdentifiable):
+                if isinstance(function_dict[0], LINEAR_NIG_MECHANISMS):
                     if function_dict[i].weight is not None:
                         functions[i] = (
                             function_dict[i].weight[0][0],
@@ -943,8 +1013,10 @@ class LinearFixedStdFunctionGenerator(DataGenerator):
         return function_dict
 
 
-class LinearNonIdentifiableFunctionGenerator(DataGenerator):
-    """
+class LinearNIGLegacyFunctionGenerator(DataGenerator):
+    """Legacy NIG prior (registry key `linear_nig_legacy`): roots IG(2.5, 0.5),
+    every non-root IG(3.0, 0.5). Not score-equivalent for nodes with two or
+    more parents.
 
     Args:
     ----------
@@ -971,10 +1043,70 @@ class LinearNonIdentifiableFunctionGenerator(DataGenerator):
             parents_of_i = causal_graph[:, i]
             num_parents = int(np.sum(parents_of_i))
 
-            function = LinearNonIdentifiable(num_parents=num_parents)
+            function = LinearNIGLegacy(num_parents=num_parents)
             function_dict[i] = function
 
         return function_dict
+
+
+class LinearNonIdentifiableFunctionGenerator(LinearNIGLegacyFunctionGenerator):
+    """Deprecated alias (registry key `linearnonidentifiable`) of
+    `LinearNIGLegacyFunctionGenerator`; warns once per process."""
+
+    def __init__(self, *args, **kwargs):
+        warn_legacy_alias_once()
+        super().__init__(*args, **kwargs)
+
+
+class LinearNIGFunctionGenerator(DataGenerator):
+    """Per-node NIG prior with free hyperparameters (registry key `linear_nig`).
+    The prior is given at construction; the default is `LinearGaussianPrior.iw()`.
+
+    Args:
+    ----------
+    num_variables : int
+        Number of variables to generate.
+
+    prior : LinearGaussianPrior | None
+        Per-node prior (default: `LinearGaussianPrior.iw()`).
+    """
+
+    def __init__(
+        self,
+        num_variables: int,
+        intervention_range_multiplier: float,
+        prior: LinearGaussianPrior | None = None,
+    ):
+        super().__init__(num_variables, intervention_range_multiplier)
+        self.prior = LinearGaussianPrior.iw() if prior is None else prior
+
+    def generate_functions(
+        self,
+        causal_graph: np.ndarray,
+    ) -> dict:
+        """
+        Generate functions given a causal graph (one `LinearNIG` per node).
+        """
+        function_dict = {}
+        for i in range(self.number_of_variables):
+            num_parents = int(np.sum(causal_graph[:, i]))
+            function_dict[i] = LinearNIG(num_parents, self.prior)
+        return function_dict
+
+
+class LinearIWFunctionGenerator(LinearNIGFunctionGenerator):
+    """Inverse-Wishart family (registry key `linear_iw`): the prior must be
+    IW-compatible, hence score-equivalent."""
+
+    def __init__(
+        self,
+        num_variables: int,
+        intervention_range_multiplier: float,
+        prior: LinearGaussianPrior | None = None,
+    ):
+        super().__init__(num_variables, intervention_range_multiplier, prior)
+        if not self.prior.is_iw_compatible:
+            raise ValueError(f"linear_iw needs an IW-compatible prior, got {self.prior}")
 
 
 class NeuralGPLVMFunctionGenerator(DataGenerator):

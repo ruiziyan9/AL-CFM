@@ -40,6 +40,7 @@ import numpy as np
 from tqdm import trange
 
 from CITNP.datasets.create_mixed_regime_chunks import load_config
+from CITNP.datasets.linear_gaussian_prior import is_linear_gaussian
 from CITNP.datasets.mixed_regime_generator import (
     SOURCE_ADHOC,
     MixedRegimeConfig,
@@ -321,9 +322,10 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
-    if cfg.function_generator != "linearnonidentifiable":
+    if not is_linear_gaussian(cfg.function_generator):
         parser.error(
-            "obs-vs-do is exact only for function_generator: linearnonidentifiable"
+            "obs-vs-do is exact only for the linear-Gaussian families "
+            "(linearnonidentifiable, linear_nig_legacy, linear_nig, linear_iw)"
         )
     recs, examples = collect_obs_vs_do(
         cfg, args.num_tasks, args.base_seed, args.num_variables, args.example

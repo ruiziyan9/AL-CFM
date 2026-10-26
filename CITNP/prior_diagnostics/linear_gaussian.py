@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from CITNP.datasets.functions_generator import LinearNonIdentifiable
+from CITNP.datasets.functions_generator import LINEAR_NIG_MECHANISMS
 
 __all__ = ["LinearGaussianSCM", "gauss_kl", "scm_from_debug"]
 
@@ -71,9 +71,9 @@ def scm_from_debug(debug: dict) -> LinearGaussianSCM:
     B, c, w = np.zeros((D, D)), np.zeros(D), np.zeros(D)
     for j, rec in mech.items():
         f = rec["mechanism"]
-        if not isinstance(f, LinearNonIdentifiable):
+        if not isinstance(f, LINEAR_NIG_MECHANISMS):
             raise NotImplementedError(
-                f"exact moments need the linearnonidentifiable family, got {type(f).__name__}"
+                f"exact moments need a linear-Gaussian NIG family, got {type(f).__name__}"
             )
         s, pa = rec["scale"], rec["parents"]
         if pa:
