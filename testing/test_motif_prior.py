@@ -17,13 +17,22 @@ from CITNP.datasets.mixed_regime_generator import (
     sample_design,
     sample_graph,
 )
-from CITNP.datasets.motifs import MOTIF_CLASSES, MOTIF_SIZES, motif_class, motif_dags
+from CITNP.datasets.motifs import (
+    MOTIF_CLASSES,
+    MOTIF_SIZES,
+    motif_class,
+    motif_dags,
+)
 from CITNP.evaluation.oracle import LinGaussOracle, all_dags, dag_key, mec_key
 from CITNP.evaluation.tasks import empirical_graph_prior, motif_graph_prior
 from CITNP.prior_diagnostics.stats import QUESTION_CLASSES, question_class_table
 
-CONFIGS = Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
-PROBS = dict(complete=0.30, chain=0.20, fork=0.20, collider=0.15, single=0.10, empty=0.05)
+CONFIGS = (
+    Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+)
+PROBS = dict(
+    complete=0.30, chain=0.20, fork=0.20, collider=0.15, single=0.10, empty=0.05
+)
 BASE = dict(
     function_generator="linear_iw",
     alpha0=1.5,
@@ -52,7 +61,9 @@ def test_motif_validation():
     with pytest.raises(ValueError):
         MixedRegimeConfig(**{**BASE, "motif_probs": {**PROBS, "empty": 0.5}})
     with pytest.raises(ValueError):
-        MixedRegimeConfig(**{**BASE, "motif_probs": {**PROBS, "empty": -0.05, "chain": 0.30}})
+        MixedRegimeConfig(
+            **{**BASE, "motif_probs": {**PROBS, "empty": -0.05, "chain": 0.30}}
+        )
     with pytest.raises(ValueError):
         MixedRegimeConfig(**{**BASE, "motif_probs": {"star": 1.0}})
     with pytest.raises(ValueError):
@@ -98,9 +109,13 @@ def test_sample_graph_matches_closed_form():
 def _legacy_oracle_d3_prior():
     """Exact graph prior of oracle_d3.yaml (ER, s0 uniform in {1, 2, 3}): single
     1/3, complete 1/3, and the three 2-edge classes 1/9 each; uniform in class."""
-    probs = dict(single=1 / 3, chain=1 / 9, fork=1 / 9, collider=1 / 9, complete=1 / 3)
+    probs = dict(
+        single=1 / 3, chain=1 / 9, fork=1 / 9, collider=1 / 9, complete=1 / 3
+    )
     return {
-        dag_key(g): np.log(probs.get(motif_class(g), 0.0) / MOTIF_SIZES[motif_class(g)])
+        dag_key(g): np.log(
+            probs.get(motif_class(g), 0.0) / MOTIF_SIZES[motif_class(g)]
+        )
         if probs.get(motif_class(g), 0.0) > 0
         else -np.inf
         for g in all_dags(3)

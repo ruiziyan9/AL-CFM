@@ -399,7 +399,9 @@ class MixedRegimeConfig:
         if is_motif and (
             self.graph_type != ["MOTIF3"] or self.num_variables != [3]
         ):
-            raise ValueError("MOTIF3 needs graph_type: [MOTIF3] and num_variables: [3]")
+            raise ValueError(
+                "MOTIF3 needs graph_type: [MOTIF3] and num_variables: [3]"
+            )
         if is_motif != (self.motif_probs is not None):
             raise ValueError("motif_probs is required for, and only for, MOTIF3")
         if self.motif_probs is not None:

@@ -61,7 +61,11 @@ def motif_dags() -> dict[str, list[np.ndarray]]:
             adj[i, j] = b
         # acyclic iff some node order has every edge pointing forward
         if any(
-            all(adj[order[q], order[p]] == 0 for p in range(3) for q in range(p, 3))
+            all(
+                adj[order[q], order[p]] == 0
+                for p in range(3)
+                for q in range(p, 3)
+            )
             for order in itertools.permutations(range(3))
         ):
             out[motif_class(adj)].append(adj)

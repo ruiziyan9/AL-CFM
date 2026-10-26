@@ -97,7 +97,9 @@ def query_treatments(task: Task) -> list[int]:
     return [int(np.flatnonzero(r)[0]) for r in task.qry_int if r.any()]
 
 
-def _pair_records(task: Task, treatments: list[int], weights: list[float], source: str):
+def _pair_records(
+    task: Task, treatments: list[int], weights: list[float], source: str
+):
     dist = path_lengths(task.graph)
     D = len(dist)
     total = float(sum(weights)) or 1.0
@@ -230,7 +232,9 @@ def context_role(graph: np.ndarray, t: int, y: int, c: int | None) -> str:
     dist = path_lengths(graph)
     if np.isfinite(dist[t, c]) and np.isfinite(dist[c, y]):
         return "do(mediator)"
-    if np.isfinite(dist[c, t]) and np.isfinite(path_lengths(_without(graph, t))[c, y]):
+    if np.isfinite(dist[c, t]) and np.isfinite(
+        path_lengths(_without(graph, t))[c, y]
+    ):
         return "do(confounder)"
     return "do(other)"
 
