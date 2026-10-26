@@ -74,3 +74,38 @@ unseen group, `has_obs`, K (0, 1, 2+) and G.
 `encoder.context_intervened.*`, which keeps its zero-initialised last layer,
 so the warm-started model makes exactly the upstream predictions until the
 flag embedding is trained. Any other missing or unexpected key raises.
+
+## Alternative encoding: `extra_node`
+
+`--intervention_encoding extra_node` (or `intervention_encoding: extra_node` in
+the model YAML, e.g.
+[`configs/oracle_d3_model_m_extra_node.yaml`](configs/oracle_d3_model_m_extra_node.yaml))
+replaces R1's per-cell flag by one extra node position per row. For D
+variables the transformer runs on D + 1 node positions
+`[X_0, ..., X_{D-1}, META]`:
+
+```
+context cell     h_ij      = f_C,r_j(x_ij) + e_j
+context metadata h_i,META  = e_INT + sum_j m_ij e_j
+query cell       h_qj      = f_Q,r_j(x~_qj) + e_j
+query metadata   h_q,META  = f_Q,variable(0)        (no index embedding)
+```
+
+- `f_C,r_j` / `f_Q,r_j` are upstream's six role MLPs (role r_j from the
+  question's T and Y); `x~` is the query row with everything but the do-value
+  masked, as upstream.
+- `e_j` (`encoder.index_embedding`) are learned variable-index embeddings,
+  shared by variable and metadata tokens; `e_INT`
+  (`encoder.int_meta_embedding`) is a learned metadata-type embedding. Both
+  start at normal(0, 0.02).
+- `m_i` is the row's `context_int_mask`; `None` means observational, i.e. the
+  metadata token is `e_INT`.
+- The metadata position is dropped before the prediction head, so everything
+  downstream is unchanged. There are no R1 or layer-wise parameters.
+
+Flag ablation (`zero_flags=True` in `predict_mixture` / `context_states`)
+sets every `m_i` to zero, so every metadata token is `e_INT`.
+
+The extra-node parameters are not zero-initialised, so `--init_from_upstream`
+loads but does not reproduce upstream at step 0, and `--init_from_r1` is
+rejected. For the comparison with layerwise, train from scratch.

@@ -12,8 +12,8 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --model_config <yaml>: optional; overrides model arguments (d_model, nhead,
   num_layers_encoder, sample_attn_mode, dim_feedforward, emb_depth,
   num_mixture_components, ...).
-- --intervention_encoding {r1,layerwise}: how intervention information enters
-  the model (default r1). --model_class <name> is still accepted (legacy).
+- --intervention_encoding {r1,layerwise,extra_node}: how intervention
+  information enters the model (default r1). --model_class <name> is still accepted (legacy).
 - --init_from_upstream <ckpt>: warm start from an upstream MACE-TNP
   checkpoint (only the new intervened-flag embedding starts from zero).
 - --val_iterations / --test_iterations: fixed validation / test batches.
