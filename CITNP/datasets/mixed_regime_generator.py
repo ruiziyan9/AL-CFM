@@ -363,9 +363,8 @@ class MixedRegimeConfig:
         self.weight_mean = float(self.weight_mean)
         if not self.weight_mean >= 0:
             raise ValueError("weight_mean must be >= 0")
-        if (
-            self.weight_mean != 0.0
-            and not is_linear_gaussian(self.function_generator)
+        if self.weight_mean != 0.0 and not is_linear_gaussian(
+            self.function_generator
         ):
             raise ValueError(
                 "weight_mean is only supported for linear-Gaussian families"
@@ -373,9 +372,8 @@ class MixedRegimeConfig:
         self.weight_scale = float(self.weight_scale)
         if not self.weight_scale > 0:
             raise ValueError("weight_scale must be > 0")
-        if (
-            self.weight_scale != 1.0
-            and not is_linear_gaussian(self.function_generator)
+        if self.weight_scale != 1.0 and not is_linear_gaussian(
+            self.function_generator
         ):
             raise ValueError(
                 "weight_scale is only supported for linear-Gaussian families"
@@ -387,7 +385,9 @@ class MixedRegimeConfig:
             if is_legacy_key(self.function_generator) or not is_linear_gaussian(
                 self.function_generator
             ):
-                raise ValueError("alpha0 is only supported for linear_iw and linear_nig")
+                raise ValueError(
+                    "alpha0 is only supported for linear_iw and linear_nig"
+                )
         if is_linear_gaussian(self.function_generator):
             # Raises for an invalid combination (e.g. linear_iw with weight_scale != 1).
             LinearGaussianPrior.from_config(self)
@@ -411,7 +411,9 @@ class MixedRegimeConfig:
                 else self.graph_degrees
             )
             if min(degs) < 2 or min(self.num_variables) < 3:
-                raise ValueError("ER_CC needs >= 2 edges and D >= 3 (a common cause)")
+                raise ValueError(
+                    "ER_CC needs >= 2 edges and D >= 3 (a common cause)"
+                )
         # A task has at most R = min(k_max, D) + 1 regimes and reserves n_obs_min
         # observational rows; requiring n_ctx_range[0] >= max R + n_obs_min keeps
         # the n_ctx floor a no-op, so a fixed per-batch n_ctx gives equal sizes.
@@ -422,7 +424,6 @@ class MixedRegimeConfig:
                 f"min(k_max, max(num_variables)) + 1 + n_obs_min = "
                 f"{max_regimes + self.n_obs_min}"
             )
-
 
         if self.qry_mode not in ("per_row", "grouped"):
             raise ValueError(
@@ -523,10 +524,12 @@ class Design:
         for t in self.regime_targets + self.qry_targets:
             if any(j < 0 or j >= D for j in t):
                 raise ValueError(f"Target {t} out of range for D={D}")
-        if self.regime_do_values is not None and len(self.regime_do_values) != len(
-            self.regime_targets
-        ):
-            raise ValueError("regime_do_values and regime_targets differ in length")
+        if self.regime_do_values is not None and len(
+            self.regime_do_values
+        ) != len(self.regime_targets):
+            raise ValueError(
+                "regime_do_values and regime_targets differ in length"
+            )
 
 
 @dataclass
@@ -669,7 +672,9 @@ def sample_graph(cfg: MixedRegimeConfig, D: int) -> tuple[np.ndarray, dict]:
             if (np.asarray(graph) != 0).sum(axis=1).max() >= 2:
                 break
         else:
-            raise RuntimeError(f"ER_CC: no common cause in 1000 draws (D={D}, s0={s0})")
+            raise RuntimeError(
+                f"ER_CC: no common cause in 1000 draws (D={D}, s0={s0})"
+            )
     else:
         graph = generate_synthetic_dag(d=D, s0=s0, graph_type=graph_type)
     info = {"graph_type": graph_type, "s0": int(s0)}

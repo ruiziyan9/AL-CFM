@@ -61,7 +61,9 @@ class BaseInterventionDatasetGenerator(IterableDataset):
         self.graph_type = graph_type
         self.graph_degrees = graph_degrees
         self.max_num_variables = (
-            max(num_variables) if isinstance(num_variables, list) else num_variables
+            max(num_variables)
+            if isinstance(num_variables, list)
+            else num_variables
         )
         self.iterations_per_epoch = iterations_per_epoch
         self.return_functions = return_functions
@@ -114,7 +116,9 @@ class BaseInterventionDatasetGenerator(IterableDataset):
         permuted_data = [data[:, permutation_indices] for data in args]
         return permuted_data
 
-    def permute_causal_graph(self, *args, permutation_indices: np.ndarray) -> list:
+    def permute_causal_graph(
+        self, *args, permutation_indices: np.ndarray
+    ) -> list:
         """
         Permutes the causal graph.
         """
@@ -253,7 +257,9 @@ class BaseInterventionDatasetGenerator(IterableDataset):
             mask[:current_num_variables] = 1
 
             # Pad data if necessary
-            obs_data = self.pad_data(obs_data, current_num_variables, max_size=max_size)
+            obs_data = self.pad_data(
+                obs_data, current_num_variables, max_size=max_size
+            )
             intvn_data = self.pad_data(
                 intvn_data, current_num_variables, max_size=max_size
             )
@@ -445,7 +451,10 @@ class QueuedInterventionDatasetGenerator(BaseInterventionDatasetGenerator):
             # Divide iterations among DataLoader workers
             iterations = self.iterations_per_epoch // worker_info.num_workers
             # Handle remainder if needed
-            if worker_info.id < self.iterations_per_epoch % worker_info.num_workers:
+            if (
+                worker_info.id
+                < self.iterations_per_epoch % worker_info.num_workers
+            ):
                 iterations += 1
 
         # Generate data for assigned iterations
@@ -573,7 +582,10 @@ class InterventionDatasetGenerator(BaseInterventionDatasetGenerator):
             # Partition iterations among workers
             iterations = self.iterations_per_epoch // worker_info.num_workers
             # Handle remainder if needed
-            if worker_info.id < self.iterations_per_epoch % worker_info.num_workers:
+            if (
+                worker_info.id
+                < self.iterations_per_epoch % worker_info.num_workers
+            ):
                 iterations += 1
             worker_id = worker_info.id
             num_workers = worker_info.num_workers

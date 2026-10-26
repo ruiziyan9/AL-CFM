@@ -67,7 +67,9 @@ def resample_rate(
     nonfinite = mrg.RESAMPLE_COUNTS["nonfinite"] - before["nonfinite"]
     too_large = mrg.RESAMPLE_COUNTS["too_large"] - before["too_large"]
     rejected = nonfinite + too_large
-    attempts = n_tasks + rejected - n_failed  # each failed task ends on a rejection
+    attempts = (
+        n_tasks + rejected - n_failed
+    )  # each failed task ends on a rejection
     return {
         "n_tasks": n_tasks,
         "n_attempts": attempts,

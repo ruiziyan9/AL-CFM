@@ -83,7 +83,12 @@ def test_validation(kw):
 
 
 def test_is_linear_gaussian():
-    for k in ("linearnonidentifiable", "linear_nig_legacy", "linear_nig", "linear_iw"):
+    for k in (
+        "linearnonidentifiable",
+        "linear_nig_legacy",
+        "linear_nig",
+        "linear_iw",
+    ):
         assert is_linear_gaussian(k) and k in REGISTRY
     assert not is_linear_gaussian("linearfixedstd")
 
@@ -95,7 +100,9 @@ def test_from_config_mapping():
         weight_scale=4.0,
         weight_mean=0.5,
     )
-    assert LinearGaussianPrior.from_config(legacy) == LinearGaussianPrior.legacy(4.0, 0.5)
+    assert LinearGaussianPrior.from_config(legacy) == LinearGaussianPrior.legacy(
+        4.0, 0.5
+    )
     iw = MixedRegimeConfig(**BASE, function_generator="linear_iw", alpha0=1.5)
     assert LinearGaussianPrior.from_config(iw) == LinearGaussianPrior.iw(1.5)
     assert LinearGaussianPrior.from_config(
@@ -111,14 +118,18 @@ def test_from_config_mapping():
 
 def test_linear_iw_rejects_non_iw_weight_prior():
     with pytest.raises(ValueError):
-        MixedRegimeConfig(**BASE, function_generator="linear_iw", weight_scale=9.0)
+        MixedRegimeConfig(
+            **BASE, function_generator="linear_iw", weight_scale=9.0
+        )
     with pytest.raises(ValueError):
         MixedRegimeConfig(**BASE, function_generator="linear_iw", weight_mean=0.5)
 
 
 def test_alpha0_only_for_new_families():
     with pytest.raises(ValueError):
-        MixedRegimeConfig(**BASE, function_generator="linear_nig_legacy", alpha0=1.5)
+        MixedRegimeConfig(
+            **BASE, function_generator="linear_nig_legacy", alpha0=1.5
+        )
 
 
 def test_alias_warns_once_and_maps_to_legacy():
@@ -128,7 +139,9 @@ def test_alias_warns_once_and_maps_to_legacy():
         gen = REGISTRY["linearnonidentifiable"](
             num_variables=3, intervention_range_multiplier=1
         )
-    assert isinstance(gen.generate_functions(np.zeros((3, 3)))[0], LinearNIGLegacy)
+    assert isinstance(
+        gen.generate_functions(np.zeros((3, 3)))[0], LinearNIGLegacy
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # second use must not warn
         REGISTRY["linearnonidentifiable"](
@@ -181,7 +194,8 @@ def test_oracle_prior_argument_matches_legacy_kwargs():
         node_posterior(x, mask, 2, one, prior=iw).log_ml
         == node_posterior(x, mask, 2, one).log_ml
     )
-    assert node_posterior(x, mask, 2, pa, prior=iw).log_ml != node_posterior(
-        x, mask, 2, pa
-    ).log_ml
+    assert (
+        node_posterior(x, mask, 2, pa, prior=iw).log_ml
+        != node_posterior(x, mask, 2, pa).log_ml
+    )
     assert LinGaussOracle(3, prior=iw).prior is iw

@@ -86,7 +86,9 @@ def test_legacy_prior_negative_control():
     assert spread_complete > 1e-6
 
 
-@pytest.mark.parametrize("prior", [LinearGaussianPrior.iw(2.5), LinearGaussianPrior.legacy()])
+@pytest.mark.parametrize(
+    "prior", [LinearGaussianPrior.iw(2.5), LinearGaussianPrior.legacy()]
+)
 def test_interventional_rows_run(prior):
     """With interventional rows nothing is asserted about equality."""
     x, _ = _datasets()[0]

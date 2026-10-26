@@ -41,10 +41,14 @@ class UniformLinear:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                outputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
                 return outputs
             else:
-                weight = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[1], 1))
+                weight = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[1], 1)
+                )
                 weight = np.clip(weight, -1, 1)
                 feature = np.dot(inputs, weight)
                 outputs = feature + np.random.uniform(
@@ -183,7 +187,9 @@ class LinearNIG:
                 size=(inputs.shape[1], 1),
             )
             if self.weight_mean > 0.0:
-                sign = np.where(np.random.random(size=weight.shape) < 0.5, -1.0, 1.0)
+                sign = np.where(
+                    np.random.random(size=weight.shape) < 0.5, -1.0, 1.0
+                )
                 weight = weight + self.weight_mean * sign
                 self.sign = sign
             self.weight = weight
@@ -216,7 +222,9 @@ class SinFunction:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                outputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                outputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
                 return outputs
             else:
                 outputs = np.sin(
@@ -272,10 +280,14 @@ class GPFunctions:
                 .to(self.device)
                 .to(th.float64)
             )
-            covariance = covariance + 1e-4 * th.eye(inputs.shape[0], device=self.device)
+            covariance = covariance + 1e-4 * th.eye(
+                inputs.shape[0], device=self.device
+            )
             mean = th.zeros(inputs.shape[0], device=self.device)
             normal_dist = th.distributions.MultivariateNormal(mean, covariance)
-            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(mean)
+            output = normal_dist.sample() + noise_value.flatten() * th.randn_like(
+                mean
+            )
             final_output = output.detach().cpu().numpy().astype(np.float32)
             return final_output[:, None]
 
@@ -369,10 +381,14 @@ class NeuralNetFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                inputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
             else:
                 # If there are parents, append latent.
-                latent = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                latent = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
                 inputs = np.concatenate([inputs, latent], axis=-1)
             inputs = th.from_numpy(inputs).to(self.device).to(th.float32)
             outputs = self.model(inputs).detach()
@@ -424,7 +440,9 @@ class SimpleGPFunctions:
         inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
         covariance = self.kernel(inputs, inputs)
         noise_value = (
-            self.noise_dist.sample((inputs.shape[0],)).to(self.device).to(self.dtype)
+            self.noise_dist.sample((inputs.shape[0],))
+            .to(self.device)
+            .to(self.dtype)
         )
         covariance = covariance + 1e-4 * th.eye(
             inputs.shape[0], device=self.device, dtype=self.dtype
@@ -444,7 +462,9 @@ class SimpleGPFunctions:
             input_num = inputs.shape[-1]
             if input_num == 0:
                 # If there is no parent, we sample from a normal distribution.
-                inputs = np.random.normal(loc=0, scale=1.0, size=(inputs.shape[0], 1))
+                inputs = np.random.normal(
+                    loc=0, scale=1.0, size=(inputs.shape[0], 1)
+                )
 
             outputs = self.sample_gp(inputs)
         return outputs
@@ -469,7 +489,9 @@ class SimpleGPLVMFunctions:
 
         # num_kernels = 3
 
-        lengthscale_values = np.random.lognormal(-0.5, 1, size=(self.num_parents + 1))
+        lengthscale_values = np.random.lognormal(
+            -0.5, 1, size=(self.num_parents + 1)
+        )
         lengthscale_values = np.clip(lengthscale_values, 0.1, 5)
         self.noise_dist = th.distributions.Gamma(concentration=1, rate=5)
         # gamma_values = np.random.uniform(0.2, 1, size=(num_kernels,))
@@ -498,7 +520,9 @@ class SimpleGPLVMFunctions:
                 # Latent as the mean
                 mean = th.from_numpy(inputs[:, -1]).to(self.device).to(self.dtype)
             else:
-                mean = th.zeros(inputs.shape[0], device=self.device, dtype=self.dtype)
+                mean = th.zeros(
+                    inputs.shape[0], device=self.device, dtype=self.dtype
+                )
 
             inputs = th.from_numpy(inputs).to(self.device).to(self.dtype)
 
@@ -532,8 +556,12 @@ class SimpleGPLVMFunctions:
                     )
 
                     noise_sample = normal_dist.sample().to(self.dtype)
-                    output = noise_sample + noise_value.flatten() * th.randn_like(mean)
-                    final_output = output.detach().cpu().numpy().astype(np.float32)
+                    output = noise_sample + noise_value.flatten() * th.randn_like(
+                        mean
+                    )
+                    final_output = (
+                        output.detach().cpu().numpy().astype(np.float32)
+                    )
 
                     return final_output[:, None]
 
@@ -543,7 +571,7 @@ class SimpleGPLVMFunctions:
                     jitter *= 10  # Increase jitter by an order of magnitude
 
                     print(
-                        f"Attempt {attempt+1}/{max_attempts}: Matrix not PD with jitter={old_jitter}. "
+                        f"Attempt {attempt + 1}/{max_attempts}: Matrix not PD with jitter={old_jitter}. "
                         f"Increasing to {jitter}. Error: {str(e)}"
                     )
 
@@ -578,12 +606,17 @@ class SimpleGPLVMFunctions:
                                     + noise_value.flatten() * th.randn_like(mean)
                                 )
                                 final_output = (
-                                    output.detach().cpu().numpy().astype(np.float32)
+                                    output.detach()
+                                    .cpu()
+                                    .numpy()
+                                    .astype(np.float32)
                                 )
 
                                 return final_output[:, None]
                         except Exception as eigen_error:
-                            print(f"Eigenvalue correction failed: {str(eigen_error)}")
+                            print(
+                                f"Eigenvalue correction failed: {str(eigen_error)}"
+                            )
 
             # If all attempts fail, fall back to a diagonal approximation
             print(
@@ -635,7 +668,9 @@ class DataGenerator(ABC):
         self.number_of_variables = num_variables
         self.intervention_range_multiplier = intervention_range_multiplier
 
-    def _get_inputs(self, parents_of_i: np.ndarray, data: np.ndarray) -> np.ndarray:
+    def _get_inputs(
+        self, parents_of_i: np.ndarray, data: np.ndarray
+    ) -> np.ndarray:
         """
         Get the inputs for the variable i.
         """
@@ -712,7 +747,9 @@ class DataGenerator(ABC):
                     size=(sample_size, 1),
                 )
                 if normalise:
-                    variable_obs, mean_obs, std_obs = normalise_variable(variable_obs, axis=0, return_stats=True)
+                    variable_obs, mean_obs, std_obs = normalise_variable(
+                        variable_obs, axis=0, return_stats=True
+                    )
                     # variable_intvn = normalise_variable(variable_intvn, axis=0, mean=mean_obs, std=std_obs)
             else:
                 intvn_parents_of_i = parents_of_i
@@ -1106,7 +1143,9 @@ class LinearIWFunctionGenerator(LinearNIGFunctionGenerator):
     ):
         super().__init__(num_variables, intervention_range_multiplier, prior)
         if not self.prior.is_iw_compatible:
-            raise ValueError(f"linear_iw needs an IW-compatible prior, got {self.prior}")
+            raise ValueError(
+                f"linear_iw needs an IW-compatible prior, got {self.prior}"
+            )
 
 
 class NeuralGPLVMFunctionGenerator(DataGenerator):
