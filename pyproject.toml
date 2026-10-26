@@ -10,4 +10,9 @@ filterwarnings = [
     # pyparsing versions do not define.
     "ignore:.* deprecated - use .*:DeprecationWarning",
     "ignore::DeprecationWarning:pyparsing.*",
+    # Legacy generator key, deprecated in prior-S1.2.
+    "ignore:linearnonidentifiable is the legacy NIG prior.*:DeprecationWarning",
+]
+markers = [
+    "slow: long-running statistical tests (deselect with -m 'not slow')",
 ]
