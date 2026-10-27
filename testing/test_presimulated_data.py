@@ -314,24 +314,29 @@ def motif_class(graph: np.ndarray) -> str:
     return "chain"
 
 
-def features(shape, meta, graph) -> dict[str, list]:
-    num_variables, context_size = shape
-    return {
-        "D": [num_variables],
-        "context size (binned)": [context_size // 4],
-        "G": [meta["n_groups"]],
-        "K": [meta["K"]],
-        "has_obs": [meta["has_obs"]],
-        "query types": list(meta["group_types"]),
-        "graph class": [motif_class(graph)],
-    }
-
-
-def collect_features(items) -> dict[str, list]:
+def collect_features(items, group: int) -> dict[str, list]:
+    """Feature values per name. D, context size and G are shared by the `group`
+    consecutive tasks of a shape group (batch), so they are counted once per
+    group: only that many independent draws exist."""
     out: dict[str, list] = {}
-    for shape, meta, graph in items:
-        for name, values in features(shape, meta, graph).items():
+    for index, (shape, meta, graph) in enumerate(items):
+        num_variables, context_size = shape
+        per_group = {
+            "D": [num_variables],
+            "context size (binned)": [context_size // 4],
+            "G": [meta["n_groups"]],
+        }
+        per_task = {
+            "K": [meta["K"]],
+            "has_obs": [meta["has_obs"]],
+            "query types": list(meta["group_types"]),
+            "graph class": [motif_class(graph)],
+        }
+        for name, values in per_task.items():
             out.setdefault(name, []).extend(values)
+        if index % group == 0:
+            for name, values in per_group.items():
+                out.setdefault(name, []).extend(values)
     return out
 
 
@@ -357,7 +362,8 @@ def test_stream_and_chunk_tasks_have_the_same_distribution(tmp_path):
         ((t.ctx_x.shape[1], t.ctx_x.shape[0]), t.meta, t.graph)
         for t in load_chunk(str(tmp_path / "chunk_00000.pt"))
     ]
-    first, second = collect_features(stream_items), collect_features(chunk_items)
+    first = collect_features(stream_items, group)
+    second = collect_features(chunk_items, group)
     for name in first:
         a, b = Counter(first[name]), Counter(second[name])
         na, nb = len(first[name]), len(second[name])
