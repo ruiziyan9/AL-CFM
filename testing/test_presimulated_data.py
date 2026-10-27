@@ -9,11 +9,12 @@ import math
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 import torch
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 import CITNP.datasets.create_mixed_regime_chunks as writer
 import CITNP.datasets.mixed_regime_generator as generator
@@ -40,7 +41,7 @@ from CITNP.experiments.mixed_train import build_trainer, parse_args
 from CITNP.trainer.mixed_context_trainer import prepare_mixed_batch
 
 CONFIGS = Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
-TINY_PRIOR = dict(
+TINY_PRIOR: dict[str, Any] = dict(
     function_generator="linear_iw",
     alpha0=1.5,
     num_variables=[3],
