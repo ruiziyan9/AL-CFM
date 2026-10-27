@@ -40,7 +40,9 @@ from CITNP.datasets.mixed_regime_generator import (
 from CITNP.experiments.mixed_train import build_trainer, parse_args
 from CITNP.trainer.mixed_context_trainer import prepare_mixed_batch
 
-CONFIGS = Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+CONFIGS = (
+    Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+)
 TINY_PRIOR: dict[str, Any] = dict(
     function_generator="linear_iw",
     alpha0=1.5,
@@ -142,7 +144,9 @@ def old_inline_draw(cfg, key, *, draw_num_variables=True, draw_context_size=True
     if draw_context_size:
         lo, hi = cfg.n_ctx_range
         n_ctx = int(rng.integers(lo, hi + 1))
-    n_groups = int(rng.choice(cfg.qry_groups)) if cfg.qry_mode == "grouped" else None
+    n_groups = (
+        int(rng.choice(cfg.qry_groups)) if cfg.qry_mode == "grouped" else None
+    )
     return BatchShape(D, n_ctx, n_groups)
 
 
@@ -244,7 +248,9 @@ def assert_prepared_batches_equal(a, b):
                 a[key][1], b[key][1]
             )
         elif key == "meta":
-            assert [m["seed_key"] for m in a[key]] == [m["seed_key"] for m in b[key]]
+            assert [m["seed_key"] for m in a[key]] == [
+                m["seed_key"] for m in b[key]
+            ]
             assert [m["group_treatments"] for m in a[key]] == [
                 m["group_treatments"] for m in b[key]
             ]
@@ -276,7 +282,8 @@ def test_chunk_round_trip_gives_identical_model_inputs(tmp_path, normalise):
             )
         )
     direct_batches = [
-        collate_tasks(direct[i : i + BATCH_SIZE]) for i in range(0, num_tasks, BATCH_SIZE)
+        collate_tasks(direct[i : i + BATCH_SIZE])
+        for i in range(0, num_tasks, BATCH_SIZE)
     ]
     dataset = MixedRegimeChunkDataset(str(tmp_path), BATCH_SIZE, shuffle=False)
     chunk_batches = list(dataset)
@@ -287,7 +294,9 @@ def test_chunk_round_trip_gives_identical_model_inputs(tmp_path, normalise):
         for key in ("ctx_x", "ctx_int", "qry_x", "qry_int", "qry_group", "graph"):
             assert torch.equal(a[key], b[key]), key
         for training in (False, True):  # evaluation draw and training draw
-            kwargs = dict(training=training, seed=1, global_step=step, normalise=normalise)
+            kwargs = dict(
+                training=training, seed=1, global_step=step, normalise=normalise
+            )
             prepared_direct = prepare_mixed_batch(a, torch.float32, **kwargs)
             prepared_chunk = prepare_mixed_batch(b, torch.float32, **kwargs)
             assert_prepared_batches_equal(prepared_direct, prepared_chunk)
@@ -351,7 +360,9 @@ def test_stream_and_chunk_tasks_have_the_same_distribution(tmp_path):
     for batch in stream:
         shape = tuple(batch["ctx_x"].shape[2:0:-1])
         for b in range(group):
-            stream_items.append((shape, batch["meta"][b], batch["graph"][b].numpy()))
+            stream_items.append(
+                (shape, batch["meta"][b], batch["graph"][b].numpy())
+            )
 
     writer.write_config(
         cfg, tmp_path, count, count, 0, split="val", shape_group_size=group
@@ -372,7 +383,12 @@ def test_stream_and_chunk_tasks_have_the_same_distribution(tmp_path):
             pa, pb = a[value] / na, b[value] / nb
             pooled = (a[value] + b[value]) / (na + nb)
             standard_error = math.sqrt(pooled * (1 - pooled) * (1 / na + 1 / nb))
-            assert abs(pa - pb) <= 5 * standard_error + 1e-12, (name, value, pa, pb)
+            assert abs(pa - pb) <= 5 * standard_error + 1e-12, (
+                name,
+                value,
+                pa,
+                pb,
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -411,7 +427,8 @@ def test_repository_dataset_configs_load():
 )
 def test_dataset_config_rejects(tmp_path, tiny_prior_path, overrides, message):
     path = write_yaml(
-        tmp_path / "bad.yaml", dataset_config_content(tiny_prior_path, **overrides)
+        tmp_path / "bad.yaml",
+        dataset_config_content(tiny_prior_path, **overrides),
     )
     with pytest.raises((ValueError, FileNotFoundError), match=message):
         load_presimulated_dataset_config(path)
@@ -419,7 +436,9 @@ def test_dataset_config_rejects(tmp_path, tiny_prior_path, overrides, message):
 
 def test_dataset_config_rejects_per_row_prior(tmp_path):
     per_row = {k: v for k, v in TINY_PRIOR.items() if k != "qry_groups"}
-    prior = write_yaml(tmp_path / "per_row.yaml", {**per_row, "qry_mode": "per_row"})
+    prior = write_yaml(
+        tmp_path / "per_row.yaml", {**per_row, "qry_mode": "per_row"}
+    )
     path = write_yaml(tmp_path / "d.yaml", dataset_config_content(prior))
     with pytest.raises(ValueError, match="grouped"):
         load_presimulated_dataset_config(path)
@@ -431,7 +450,10 @@ def test_data_root_resolution(monkeypatch, tmp_path):
         resolve_data_root(None)
     monkeypatch.setenv("ALCFM_DATA_ROOT", str(tmp_path / "from_environment"))
     assert resolve_data_root(None) == (tmp_path / "from_environment").resolve()
-    assert resolve_data_root(str(tmp_path / "given")) == (tmp_path / "given").resolve()
+    assert (
+        resolve_data_root(str(tmp_path / "given"))
+        == (tmp_path / "given").resolve()
+    )
 
 
 def test_data_root_inside_the_repository_is_refused():
@@ -446,21 +468,34 @@ def test_data_root_inside_the_repository_is_refused():
 
 
 def test_writer_records_provenance(generated):
-    info = json.loads((generated / "tiny__v1" / "train" / "config.json").read_text())
+    info = json.loads(
+        (generated / "tiny__v1" / "train" / "config.json").read_text()
+    )
     assert info["dataset_name"] == "tiny__v1"
     assert info["prior_config_path"].endswith("tiny_prior.yaml")
-    assert info["prior_config_fingerprint"] == file_fingerprint(info["prior_config_path"])
+    assert info["prior_config_fingerprint"] == file_fingerprint(
+        info["prior_config_path"]
+    )
     assert isinstance(info["git_has_uncommitted_changes"], (bool, type(None)))
     assert info["generation_procedure"] == "generate_task_with_shape"
-    assert info["split"] == "train" and info["shape_group_size"] == TASKS_PER_SHAPE_GROUP
-    val = json.loads((generated / "tiny__v1" / "validation" / "config.json").read_text())
+    assert (
+        info["split"] == "train"
+        and info["shape_group_size"] == TASKS_PER_SHAPE_GROUP
+    )
+    val = json.loads(
+        (generated / "tiny__v1" / "validation" / "config.json").read_text()
+    )
     assert val["split"] == "val"  # "validation" is "val" inside the generator
     assert len(list((generated / "tiny__v1" / "train").glob("chunk_*.pt"))) == 4
 
 
-def test_writer_guard(monkeypatch, tmp_path, tiny_prior_path, dataset_config_path, data_root):
+def test_writer_guard(
+    monkeypatch, tmp_path, tiny_prior_path, dataset_config_path, data_root
+):
     generate_split(monkeypatch, dataset_config_path, data_root, "validation")
-    generate_split(monkeypatch, dataset_config_path, data_root, "validation")  # identical rerun
+    generate_split(
+        monkeypatch, dataset_config_path, data_root, "validation"
+    )  # identical rerun
 
     changed = write_yaml(
         tmp_path / "changed.yaml",
@@ -481,15 +516,33 @@ def test_writer_guard(monkeypatch, tmp_path, tiny_prior_path, dataset_config_pat
 
 def test_skip_existing_files(monkeypatch, dataset_config_path, data_root):
     directory = data_root / "tiny__v1" / "train"
-    generate_split(monkeypatch, dataset_config_path, data_root, "train", "--chunk_index", "1")
+    generate_split(
+        monkeypatch, dataset_config_path, data_root, "train", "--chunk_index", "1"
+    )
     existing = directory / "chunk_00001.pt"
     before = (existing.read_bytes(), existing.stat().st_mtime_ns)
-    generate_split(monkeypatch, dataset_config_path, data_root, "train", "--skip_existing_files")
+    generate_split(
+        monkeypatch,
+        dataset_config_path,
+        data_root,
+        "train",
+        "--skip_existing_files",
+    )
     assert (existing.read_bytes(), existing.stat().st_mtime_ns) == before
     assert len(list(directory.glob("chunk_*.pt"))) == 4
-    (directory / "chunk_00002.pt").write_bytes(b"damaged")  # does not load: rewritten
-    generate_split(monkeypatch, dataset_config_path, data_root, "train", "--skip_existing_files")
-    assert len(load_chunk(str(directory / "chunk_00002.pt"))) == TASKS_PER_CHUNK_FILE
+    (directory / "chunk_00002.pt").write_bytes(
+        b"damaged"
+    )  # does not load: rewritten
+    generate_split(
+        monkeypatch,
+        dataset_config_path,
+        data_root,
+        "train",
+        "--skip_existing_files",
+    )
+    assert (
+        len(load_chunk(str(directory / "chunk_00002.pt"))) == TASKS_PER_CHUNK_FILE
+    )
 
 
 def test_job_index_output_is_byte_identical_to_one_process(
@@ -502,7 +555,9 @@ def test_job_index_output_is_byte_identical_to_one_process(
             monkeypatch, dataset_config_path, split_over_jobs, "train",
             "--job_index", str(job_index), "--num_jobs", "3",
         )  # fmt: skip
-    names = sorted(p.name for p in (one / "tiny__v1" / "train").glob("chunk_*.pt"))
+    names = sorted(
+        p.name for p in (one / "tiny__v1" / "train").glob("chunk_*.pt")
+    )
     assert len(names) == 4
     for name in names:
         assert (one / "tiny__v1" / "train" / name).read_bytes() == (
@@ -510,9 +565,18 @@ def test_job_index_output_is_byte_identical_to_one_process(
         ).read_bytes()
 
 
-def test_dataset_mode_is_exclusive_with_direct_flags(monkeypatch, dataset_config_path, data_root):
+def test_dataset_mode_is_exclusive_with_direct_flags(
+    monkeypatch, dataset_config_path, data_root
+):
     with pytest.raises(SystemExit):
-        generate_split(monkeypatch, dataset_config_path, data_root, "train", "--num_tasks", "8")
+        generate_split(
+            monkeypatch,
+            dataset_config_path,
+            data_root,
+            "train",
+            "--num_tasks",
+            "8",
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -526,7 +590,9 @@ def collect_epochs(loader, epochs):
 
 @pytest.mark.parametrize("num_workers", [0, 2])
 def test_iterations_per_epoch_across_a_pass_boundary(generated, num_workers):
-    directory = str(generated / "tiny__v1" / "train")  # 64 tasks = 16 batches per pass
+    directory = str(
+        generated / "tiny__v1" / "train"
+    )  # 64 tasks = 16 batches per pass
     dataset = MixedRegimeChunkDataset(
         directory, BATCH_SIZE, shuffle=True, seed=0,
         iterations_per_epoch=6, num_workers=num_workers,
@@ -558,7 +624,9 @@ def test_iterations_per_epoch_none_keeps_one_pass_per_epoch(generated):
 def test_iterations_per_epoch_rejects_non_positive(generated):
     with pytest.raises(ValueError):
         MixedRegimeChunkDataset(
-            str(generated / "tiny__v1" / "train"), BATCH_SIZE, iterations_per_epoch=0
+            str(generated / "tiny__v1" / "train"),
+            BATCH_SIZE,
+            iterations_per_epoch=0,
         )
 
 
@@ -567,7 +635,9 @@ def test_iterations_per_epoch_rejects_non_positive(generated):
 # --------------------------------------------------------------------------- #
 
 
-def training_args(tmp_path, dataset_config_path, data_root, prior_path, *extra, epochs=2):
+def training_args(
+    tmp_path, dataset_config_path, data_root, prior_path, *extra, epochs=2
+):
     return parse_args(
         [
             "--data_config", str(prior_path),
@@ -587,7 +657,12 @@ def training_args(tmp_path, dataset_config_path, data_root, prior_path, *extra, 
 @pytest.mark.parametrize("encoding", ["r1", "layerwise", "extra_node"])
 @pytest.mark.parametrize("scale_conditioning", ["none", "stats"])
 def test_training_from_chunks_runs(
-    tmp_path, generated, dataset_config_path, tiny_prior_path, encoding, scale_conditioning
+    tmp_path,
+    generated,
+    dataset_config_path,
+    tiny_prior_path,
+    encoding,
+    scale_conditioning,
 ):
     args = training_args(
         tmp_path, dataset_config_path, generated, tiny_prior_path,
@@ -603,11 +678,15 @@ def test_training_from_chunks_runs(
     stats = trainer.test()
     assert math.isfinite(stats["test_loss_all_mean"])
     run_directory = tmp_path / "results_root" / "results" / "run"
-    record = yaml.safe_load((run_directory / "presimulated_data.yaml").read_text())
+    record = yaml.safe_load(
+        (run_directory / "presimulated_data.yaml").read_text()
+    )
     assert set(record["splits"]) == {"train", "validation", "test"}
 
 
-def test_prior_mismatch_raises(tmp_path, generated, dataset_config_path, tiny_prior_path):
+def test_prior_mismatch_raises(
+    tmp_path, generated, dataset_config_path, tiny_prior_path
+):
     other = write_yaml(tmp_path / "other.yaml", {**TINY_PRIOR, "n_qry": 24})
     args = training_args(tmp_path, dataset_config_path, generated, other)
     with pytest.raises(ValueError, match="differs from the prior"):
@@ -618,7 +697,9 @@ def test_prior_mismatch_raises(tmp_path, generated, dataset_config_path, tiny_pr
     stored = json.loads(stored_path.read_text())
     stored["config"]["n_qry"] = 24
     stored_path.write_text(json.dumps(stored))
-    args = training_args(tmp_path, dataset_config_path, generated, tiny_prior_path)
+    args = training_args(
+        tmp_path, dataset_config_path, generated, tiny_prior_path
+    )
     with pytest.raises(ValueError, match="different prior"):
         build_trainer(args, MixedRegimeConfig(**TINY_PRIOR))
 
@@ -627,7 +708,9 @@ def test_missing_evaluation_splits_fall_back_to_streaming(
     monkeypatch, tmp_path, dataset_config_path, tiny_prior_path, data_root
 ):
     generate_split(monkeypatch, dataset_config_path, data_root, "train")
-    args = training_args(tmp_path, dataset_config_path, data_root, tiny_prior_path)
+    args = training_args(
+        tmp_path, dataset_config_path, data_root, tiny_prior_path
+    )
     trainer, _ = build_trainer(args, MixedRegimeConfig(**TINY_PRIOR))
     assert isinstance(trainer.train_dataset, MixedRegimeChunkDataset)
     assert isinstance(trainer.validation_dataset, MixedRegimeTaskDataset)
@@ -638,15 +721,22 @@ def test_missing_evaluation_splits_fall_back_to_streaming(
 def test_missing_training_split_raises(
     tmp_path, dataset_config_path, tiny_prior_path, data_root
 ):
-    args = training_args(tmp_path, dataset_config_path, data_root, tiny_prior_path)
+    args = training_args(
+        tmp_path, dataset_config_path, data_root, tiny_prior_path
+    )
     with pytest.raises(FileNotFoundError, match="No simulated training data"):
         build_trainer(args, MixedRegimeConfig(**TINY_PRIOR))
 
 
-def test_resume_full_in_chunk_mode(tmp_path, generated, dataset_config_path, tiny_prior_path):
+def test_resume_full_in_chunk_mode(
+    tmp_path, generated, dataset_config_path, tiny_prior_path
+):
     cfg = MixedRegimeConfig(**TINY_PRIOR)
     trainer, _ = build_trainer(
-        training_args(tmp_path, dataset_config_path, generated, tiny_prior_path, epochs=1), cfg
+        training_args(
+            tmp_path, dataset_config_path, generated, tiny_prior_path, epochs=1
+        ),
+        cfg,
     )
     trainer.train()
     checkpoint = tmp_path / "results_root" / "results" / "run" / "last_model.pt"
