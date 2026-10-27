@@ -289,6 +289,15 @@ batch composition, and with it the mean of per-batch losses.
 in persistent workers; with non-persistent workers, pass it to
 `SetEpochCallback` too.
 
+With `iterations_per_epoch=N`, an epoch is exactly `N` batches (`len() == N`),
+split across DataLoader workers like `MixedRegimeTaskDataset`. Each worker reads
+an endless stream of passes over its files: pass `p` reshuffles file order and
+shuffle buffer with the seed `[seed, p, worker_id]`, buckets are not flushed
+between passes, and the stream continues where the last epoch stopped (persistent
+workers, `num_workers=0`). A fresh copy (non-persistent workers, or a restart
+with `--resume_full`) starts at pass `epoch` (`set_epoch`), which re-seeds the
+order rather than restoring the exact position.
+
 ## Generating chunks (Oxford ARC / SLURM)
 
 ```bash
@@ -314,6 +323,23 @@ process gives the same output as one chunk per array job.
 A full SLURM array script is in the docstring at the top of
 `create_mixed_regime_chunks.py` (`--array=0-99` for the numbers above, i.e.
 `num_tasks / chunk_size - 1`).
+
+**Dataset mode.** `--dataset_config <yaml> --split <train|validation|test>
+[--data_root DIR]` takes every setting from a dataset config
+(`CITNP/datasets/dataset_config.py`) and writes to
+`<data_root>/<dataset_name>/<split>` (the split `validation` is called `val`
+inside the generator and in `config.json`); it is exclusive with `--config`,
+`--num_tasks`, `--chunk_size`, `--out_dir`, `--base_seed` and
+`--shape_group_size`. `--job_index i --num_jobs n` writes chunk files `i, i + n,
+i + 2n, ...` (a fixed-size SLURM array covers any number of files), and
+`--skip_existing_files` skips files that exist and load. If the directory
+already has a `config.json`, its config, sizes, seed, split and shape-group size
+must equal the new ones, otherwise the writer raises (a different git commit only
+warns). `config.json` also records `dataset_name`, `prior_config_path`,
+`prior_config_fingerprint` (a short code computed from the file's contents; it
+changes if any byte changes), `git_has_uncommitted_changes` and
+`generation_procedure`. Chunk files are byte-identical however the files are
+split over jobs.
 
 **Device.** The writer runs on CPU by default: torch's CPU and CUDA random
 streams differ, so the same key would give different GP/NN tasks on GPU and CPU

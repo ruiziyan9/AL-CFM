@@ -44,7 +44,7 @@ import random
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import torch
@@ -1433,6 +1433,71 @@ def collate_tasks(tasks: list[Task], pad_D: int | None = None) -> dict[str, Any]
 
 
 # --------------------------------------------------------------------------- #
+# Batch shape
+# --------------------------------------------------------------------------- #
+
+
+class BatchShape(NamedTuple):
+    """Shape shared by all tasks of one batch (streaming) or shape group (chunks).
+
+    A field is None when it is left to the prior: per-task draw for
+    `num_variables` and `context_size`, and per-row mode (no question groups)
+    for `num_question_groups`.
+    """
+
+    num_variables: int | None
+    context_size: int | None
+    num_question_groups: int | None
+
+
+def draw_batch_shape(
+    cfg: MixedRegimeConfig,
+    rng: np.random.Generator,
+    *,
+    draw_num_variables: bool = True,
+    draw_context_size: bool = True,
+) -> BatchShape:
+    """Draw the shape of one batch (or shape group) from `rng`.
+
+    The draw order is fixed: D from cfg.num_variables, then the context size
+    n_ctx ~ U{cfg.n_ctx_range}, then (grouped qry_mode only) the number of
+    question groups G from cfg.qry_groups. G is drawn last, so per-row batches
+    consume the same draws as before grouped mode existed.
+
+    `draw_num_variables=False` / `draw_context_size=False` skip that draw and
+    leave the field None (the streaming dataset's same_variablenum_per_batch /
+    same_nctx_per_batch flags). Streaming and chunk writing both call this
+    function, so they sample batch shapes identically.
+    """
+    num_variables = None
+    context_size = None
+    num_question_groups = None
+    if draw_num_variables:
+        num_variables = int(rng.choice(cfg.num_variables))
+    if draw_context_size:
+        lo, hi = cfg.n_ctx_range
+        context_size = int(rng.integers(lo, hi + 1))
+    if cfg.qry_mode == "grouped":
+        num_question_groups = int(rng.choice(cfg.qry_groups))
+    return BatchShape(num_variables, context_size, num_question_groups)
+
+
+def generate_task_with_shape(
+    cfg: MixedRegimeConfig, key: tuple[int, ...], shape: BatchShape
+) -> Task:
+    """Generate one task of the given batch shape: the single generation call
+    used by both MixedRegimeTaskDataset (streaming) and the chunk writer, so
+    pre-simulated tasks come from exactly the procedure used on the fly."""
+    return generate_task(
+        cfg,
+        key,
+        num_variables=shape.num_variables,
+        n_ctx=shape.context_size,
+        n_groups=shape.num_question_groups,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Datasets
 # --------------------------------------------------------------------------- #
 
@@ -1553,17 +1618,14 @@ class MixedRegimeTaskDataset(IterableDataset):
             self._counter = self._batch_idx = 0
         done = 0  # batches yielded in this pass
         while iterations is None or done < iterations:
-            D = None
-            n_ctx = None
-            n_groups = None
-            grouped = self.cfg.qry_mode == "grouped"
+            shape = BatchShape(None, None, None)
             if (
                 self.same_variablenum_per_batch
                 or self.same_nctx_per_batch
-                or grouped
+                or self.cfg.qry_mode == "grouped"
             ):
                 # Separate key source for the batch shape so it does not reuse
-                # task streams. D is drawn first, then n_ctx.
+                # task streams.
                 shape_key = make_key(
                     SOURCE_STREAM_D,
                     self.split_id,
@@ -1572,15 +1634,12 @@ class MixedRegimeTaskDataset(IterableDataset):
                     worker_id,
                     self._batch_idx,
                 )
-                rng = np.random.default_rng(list(shape_key))
-                if self.same_variablenum_per_batch:
-                    D = int(rng.choice(self.cfg.num_variables))
-                if self.same_nctx_per_batch:
-                    lo, hi = self.cfg.n_ctx_range
-                    n_ctx = int(rng.integers(lo, hi + 1))
-                if grouped:
-                    # Drawn last, so per-row batches consume the same draws.
-                    n_groups = int(rng.choice(self.cfg.qry_groups))
+                shape = draw_batch_shape(
+                    self.cfg,
+                    np.random.default_rng(list(shape_key)),
+                    draw_num_variables=self.same_variablenum_per_batch,
+                    draw_context_size=self.same_nctx_per_batch,
+                )
             tasks = []
             for _ in range(self.batch_size):
                 key = make_key(
@@ -1591,15 +1650,7 @@ class MixedRegimeTaskDataset(IterableDataset):
                     worker_id,
                     self._counter,
                 )
-                tasks.append(
-                    generate_task(
-                        self.cfg,
-                        key,
-                        num_variables=D,
-                        n_ctx=n_ctx,
-                        n_groups=n_groups,
-                    )
-                )
+                tasks.append(generate_task_with_shape(self.cfg, key, shape))
                 self._counter += 1
             self._batch_idx += 1
             done += 1
@@ -1678,10 +1729,27 @@ class MixedRegimeChunkDataset(IterableDataset):
         same_variablenum_per_batch=False, where partial batches are counted per
         worker.
 
-    The internal epoch counter advances in __iter__. That works with
-    persistent workers (each worker's copy keeps counting) and with
-    num_workers=0. With non-persistent workers each epoch gets a fresh copy,
-    so call `set_epoch(epoch)` before each epoch (see SetEpochCallback).
+    iterations_per_epoch : int | None
+        None: one epoch is one pass over the chunk files (len() as above). An
+        integer makes an epoch exactly that many batches, like
+        MixedRegimeTaskDataset: len() == iterations_per_epoch, and each
+        DataLoader worker yields its share (the first workers take the
+        remainder) from an endless stream of passes over its files. Pass p
+        reshuffles the file order and the shuffle buffer with the seed
+        [seed, p, worker_id], which also changes which worker reads which
+        files. Buckets are not flushed between passes, so no batch is ever
+        partial. The stream lives on the object: with persistent workers and
+        with num_workers=0 an epoch continues where the last one stopped. A
+        fresh copy (non-persistent workers, or a run restarted with
+        --resume_full) starts at pass `self.epoch` (see set_epoch): this
+        re-seeds the data order rather than restoring the exact position.
+
+    Without iterations_per_epoch the internal epoch counter advances in
+    __iter__. That works with persistent workers (each worker's copy keeps
+    counting) and with num_workers=0. With non-persistent workers each epoch
+    gets a fresh copy, so call `set_epoch(epoch)` before each epoch (see
+    SetEpochCallback). With iterations_per_epoch the pass counter is kept
+    separately and set_epoch only sets where a fresh copy starts.
     """
 
     def __init__(
@@ -1695,7 +1763,10 @@ class MixedRegimeChunkDataset(IterableDataset):
         drop_last: bool = False,
         pad_D: int | None = None,
         num_workers: int = 0,
+        iterations_per_epoch: int | None = None,
     ):
+        if iterations_per_epoch is not None and iterations_per_epoch <= 0:
+            raise ValueError("iterations_per_epoch must be positive or None")
         self.chunk_dir = chunk_dir
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -1705,7 +1776,12 @@ class MixedRegimeChunkDataset(IterableDataset):
         self.drop_last = drop_last
         self.pad_D = pad_D
         self.num_workers = num_workers
+        self.iterations_per_epoch = iterations_per_epoch
         self.epoch = 0
+        # Endless stream of batches (iterations_per_epoch mode), created at the
+        # first iteration and kept for later epochs; see _endless_batches.
+        self._endless_stream = None
+        self._endless_stream_owner: tuple[int, int] | None = None
         if not list_chunks(chunk_dir):
             raise FileNotFoundError(f"No chunk_*.pt files in {chunk_dir}")
         # Sizes from config.json (None if absent); used by __len__.
@@ -1753,7 +1829,11 @@ class MixedRegimeChunkDataset(IterableDataset):
         count is per worker (see num_workers), using this epoch's assignment of
         chunk files to workers. It is the same for every epoch when num_tasks
         is a multiple of chunk_size.
+
+        With iterations_per_epoch set, that number.
         """
+        if self.iterations_per_epoch is not None:
+            return self.iterations_per_epoch
         if self._num_tasks is None or self._group is None:
             raise TypeError(
                 f"len() needs num_tasks and shape_group_size from "
@@ -1776,13 +1856,18 @@ class MixedRegimeChunkDataset(IterableDataset):
             )
         return self._num_tasks // self.batch_size
 
-    def _worker_paths(self, worker_id: int, num_workers: int) -> list[str]:
-        """Chunk files read by one worker this epoch (same order as __iter__)."""
+    def _worker_paths(
+        self, worker_id: int, num_workers: int, pass_index: int | None = None
+    ) -> list[str]:
+        """Chunk files read by one worker in one pass (same order as __iter__).
+
+        `pass_index` defaults to self.epoch."""
         paths = list_chunks(self.chunk_dir)
         # Chunk order must not depend on worker_id, so every worker shuffles
         # identically before taking its own slice.
         if self.shuffle:
-            perm = np.random.default_rng([self.seed, self.epoch]).permutation(
+            pass_index = self.epoch if pass_index is None else pass_index
+            perm = np.random.default_rng([self.seed, pass_index]).permutation(
                 len(paths)
             )
             paths = [paths[i] for i in perm]
@@ -1829,8 +1914,51 @@ class MixedRegimeChunkDataset(IterableDataset):
         rng.shuffle(buffer)  # type: ignore[arg-type]
         yield from buffer
 
+    def _endless_batches(self, worker_id: int, num_workers: int, first_pass: int):
+        """Batches of pass first_pass, first_pass + 1, ... without end.
+
+        Bucket contents stay across passes, so a batch is never cut at a pass
+        boundary."""
+        buckets: dict[tuple[int, ...], list[Task]] = defaultdict(list)
+        pass_index = first_pass
+        while True:
+            rng = np.random.default_rng([self.seed, pass_index, worker_id])
+            paths = self._worker_paths(worker_id, num_workers, pass_index)
+            yielded = 0
+            for t in self._task_stream(rng, paths):
+                key = _bucket_key(t) if self.same_variablenum_per_batch else (0, 0)
+                buckets[key].append(t)
+                if len(buckets[key]) == self.batch_size:
+                    yielded += 1
+                    yield collate_tasks(buckets.pop(key), pad_D=self.pad_D)
+            if yielded == 0 and not buckets:
+                raise RuntimeError(
+                    f"DataLoader worker {worker_id} of {num_workers} has no "
+                    f"tasks in {self.chunk_dir}: use fewer workers than chunk "
+                    "files"
+                )
+            pass_index += 1
+
+    def _iterate_fixed_length_epoch(self, worker_id: int, num_workers: int):
+        """This worker's share of iterations_per_epoch batches."""
+        assert self.iterations_per_epoch is not None
+        share = self.iterations_per_epoch // num_workers
+        if worker_id < self.iterations_per_epoch % num_workers:
+            share += 1
+        if self._endless_stream_owner != (worker_id, num_workers):
+            self._endless_stream = self._endless_batches(
+                worker_id, num_workers, first_pass=self.epoch
+            )
+            self._endless_stream_owner = (worker_id, num_workers)
+        assert self._endless_stream is not None
+        for _ in range(share):
+            yield next(self._endless_stream)
+
     def __iter__(self):
         worker_id, num_workers = _worker_info()
+        if self.iterations_per_epoch is not None:
+            yield from self._iterate_fixed_length_epoch(worker_id, num_workers)
+            return
         rng = np.random.default_rng([self.seed, self.epoch, worker_id])
         paths = self._worker_paths(worker_id, num_workers)
         self.epoch += 1

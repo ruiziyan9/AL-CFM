@@ -25,9 +25,15 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --init_from_upstream <ckpt>: warm start from an upstream MACE-TNP
   checkpoint (only the new intervened-flag embedding starts from zero).
 - --val_iterations / --test_iterations: fixed validation / test batches.
+- --dataset_config <yaml> [--data_root DIR]: train from pre-simulated chunk files
+  (see CITNP/datasets/dataset_config.py) instead of generating tasks on the fly.
+  The model receives the same inputs; --data_config must be the dataset's prior.
+  The data root defaults to the environment variable ALCFM_DATA_ROOT.
 """
 
 import argparse
+import dataclasses
+import json
 import math
 import sys
 from pathlib import Path
@@ -37,10 +43,20 @@ import yaml  # type: ignore[import-untyped]
 from torch.optim import Adam
 
 from CITNP.datasets.create_mixed_regime_chunks import load_config
+from CITNP.datasets.dataset_config import (
+    PresimulatedDatasetConfig,
+    file_fingerprint,
+    load_presimulated_dataset_config,
+    prior_config_path,
+    resolve_data_root,
+    split_directory,
+)
 from CITNP.datasets.epoch_callback import SetEpochCallback
 from CITNP.datasets.mixed_regime_generator import (
+    MixedRegimeChunkDataset,
     MixedRegimeConfig,
     MixedRegimeTaskDataset,
+    assert_disjoint_splits,
 )
 
 from CITNP.models.mixed_context_model import (
@@ -152,6 +168,18 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="feed the standardisation (log std, mean / std) to the model "
         "(default: none)",
     )
+    extra.add_argument(
+        "--dataset_config",
+        default=None,
+        help="pre-simulated dataset config (CITNP/experiments/configs/datasets/"
+        "*.yaml): train from its chunk files instead of generating on the fly",
+    )
+    extra.add_argument(
+        "--data_root",
+        default=None,
+        help="directory of simulated datasets (default: environment variable "
+        "ALCFM_DATA_ROOT)",
+    )
     extra.add_argument("--val_iterations", type=int, default=20)
     extra.add_argument("--test_iterations", type=int, default=20)
     extra.add_argument(
@@ -240,36 +268,169 @@ def restore_full_state(trainer, path) -> None:
     print(f"Resumed from {path}: step {step}, continuing at epoch {trainer.current_epoch}")
 
 
+def streaming_evaluation_dataset(
+    args: argparse.Namespace, data_cfg: MixedRegimeConfig, split: str
+) -> MixedRegimeTaskDataset:
+    """Validation ("val") or test dataset generated on the fly."""
+    iterations = args.val_iterations if split == "val" else args.test_iterations
+    return MixedRegimeTaskDataset(
+        data_cfg,
+        args.batch_size,
+        base_seed=args.seed,
+        split=split,
+        iterations_per_epoch=iterations,
+        fresh_each_epoch=False,
+    )
+
+
+def _json_round_trip(value):
+    return json.loads(json.dumps(value))
+
+
+def check_presimulated_data(
+    args: argparse.Namespace,
+    data_cfg: MixedRegimeConfig,
+    dataset_config: PresimulatedDatasetConfig,
+) -> dict[str, Path]:
+    """Directories of the dataset's splits that exist on disk, keyed by split
+    name ("train", "validation", "test"). Raises if the training split is
+    missing, if any directory was written for another prior than `data_cfg`,
+    if two directories share tasks, or if the shape groups do not split into
+    whole batches."""
+    if "train" not in dataset_config.splits:
+        raise ValueError(f"{args.dataset_config} has no train split")
+    # --data_config and the dataset's prior must be the same prior: the loaded
+    # configs are compared, so comments and formatting do not matter.
+    prior = load_config(prior_config_path(dataset_config))
+    if dataclasses.asdict(prior) != dataclasses.asdict(data_cfg):
+        raise ValueError(
+            f"--data_config {args.data_config} differs from the prior "
+            f"{dataset_config.prior_config} of {args.dataset_config}"
+        )
+    if dataset_config.tasks_per_shape_group % args.batch_size:
+        raise ValueError(
+            f"tasks_per_shape_group={dataset_config.tasks_per_shape_group} is "
+            f"not a multiple of --batch_size={args.batch_size}"
+        )
+    data_root = resolve_data_root(args.data_root)
+    expected_prior = _json_round_trip(dataclasses.asdict(data_cfg))
+    directories: dict[str, Path] = {}
+    for split in dataset_config.splits:
+        directory = split_directory(dataset_config, data_root, split)
+        stored_path = directory / "config.json"
+        if not stored_path.is_file():
+            if split == "train":
+                raise FileNotFoundError(
+                    f"No simulated training data: {stored_path} is missing "
+                    "(generate it with generate_presimulated_data.sh)"
+                )
+            continue  # evaluation split not generated: falls back to streaming
+        with open(stored_path) as f:
+            stored = json.load(f)
+        if stored["config"] != expected_prior:
+            raise ValueError(
+                f"{directory} was generated from a different prior than "
+                f"--data_config {args.data_config}"
+            )
+        directories[split] = directory
+    assert_disjoint_splits(*(str(d) for d in directories.values()))
+    return directories
+
+
+def build_chunk_datasets(
+    args: argparse.Namespace,
+    data_cfg: MixedRegimeConfig,
+    dataset_config: PresimulatedDatasetConfig,
+    directories: dict[str, Path],
+):
+    """(train, validation, test) datasets: chunk files where the split was
+    generated, otherwise (validation / test only) the streaming dataset."""
+    train_ds = MixedRegimeChunkDataset(
+        str(directories["train"]),
+        args.batch_size,
+        shuffle=True,
+        seed=args.seed,
+        iterations_per_epoch=args.iterations_per_epoch,
+        num_workers=args.num_workers,
+    )
+    unique_tasks = dataset_config.splits["train"].num_tasks
+    consumed = args.epochs * args.iterations_per_epoch * args.batch_size
+    print(
+        f"train: chunk files in {directories['train']}, "
+        f"{args.iterations_per_epoch} batches per epoch"
+    )
+    print(
+        f"Unique training tasks: {unique_tasks}; tasks this run consumes "
+        f"(epochs x iterations_per_epoch x batch_size): {consumed}; "
+        f"implied passes over the data: {consumed / unique_tasks:.2f}"
+    )
+    evaluation = {}
+    for split, generator_split in (("validation", "val"), ("test", "test")):
+        if split in directories:
+            ds = MixedRegimeChunkDataset(
+                str(directories[split]),
+                args.batch_size,
+                shuffle=False,
+                seed=args.seed,
+                num_workers=args.num_workers,
+            )
+            print(
+                f"{split}: chunk files in {directories[split]}, {len(ds)} "
+                "batches (--val_iterations / --test_iterations are ignored)"
+            )
+        else:
+            ds = streaming_evaluation_dataset(args, data_cfg, generator_split)
+            print(f"{split}: generated on the fly, {len(ds)} batches")
+        evaluation[split] = ds
+    return train_ds, evaluation["validation"], evaluation["test"]
+
+
+def record_presimulated_data(
+    args: argparse.Namespace, directories: dict[str, Path], model_save_dir: Path
+) -> None:
+    """Write dataset_config, split directories and the fingerprints of their
+    config.json files next to resolved_model_config.yaml."""
+    record = {
+        "dataset_config": str(args.dataset_config),
+        "dataset_config_fingerprint": file_fingerprint(args.dataset_config),
+        "splits": {
+            split: {
+                "directory": str(directory),
+                "config_json_fingerprint": file_fingerprint(directory / "config.json"),
+            }
+            for split, directory in directories.items()
+        },
+    }
+    with open(model_save_dir / "presimulated_data.yaml", "w") as f:
+        yaml.safe_dump(record, f, sort_keys=False)
+
+
 def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     """Datasets, model, configs and callbacks; returns (trainer, model_config)."""
     if data_cfg.qry_mode != "grouped":
         raise ValueError("mixed_train needs a data config with qry_mode: grouped")
     apply_model_config(args)
 
-    train_ds = MixedRegimeTaskDataset(
-        data_cfg,
-        args.batch_size,
-        base_seed=args.seed,
-        split="train",
-        iterations_per_epoch=args.iterations_per_epoch,
-    )
-    # Validation / test repeat the same tasks on every pass.
-    val_ds = MixedRegimeTaskDataset(
-        data_cfg,
-        args.batch_size,
-        base_seed=args.seed,
-        split="val",
-        iterations_per_epoch=args.val_iterations,
-        fresh_each_epoch=False,
-    )
-    test_ds = MixedRegimeTaskDataset(
-        data_cfg,
-        args.batch_size,
-        base_seed=args.seed,
-        split="test",
-        iterations_per_epoch=args.test_iterations,
-        fresh_each_epoch=False,
-    )
+    chunk_directories: dict[str, Path] = {}
+    if args.dataset_config:
+        dataset_config = load_presimulated_dataset_config(args.dataset_config)
+        chunk_directories = check_presimulated_data(args, data_cfg, dataset_config)
+        train_ds, val_ds, test_ds = build_chunk_datasets(
+            args, data_cfg, dataset_config, chunk_directories
+        )
+    else:
+        train_ds = MixedRegimeTaskDataset(
+            data_cfg,
+            args.batch_size,
+            base_seed=args.seed,
+            split="train",
+            iterations_per_epoch=args.iterations_per_epoch,
+        )
+        # Validation / test repeat the same tasks on every pass.
+        val_ds, test_ds = (
+            streaming_evaluation_dataset(args, data_cfg, split)
+            for split in ("val", "test")
+        )
 
     model_config = CausalInfModelConfig(
         d_model=args.d_model,
@@ -332,6 +493,9 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         resolved["intervention_encoding"] = encoding
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
         yaml.safe_dump(resolved, f, sort_keys=False)
+
+    if args.dataset_config:
+        record_presimulated_data(args, chunk_directories, model_save_dir)
 
     dataconfig, optimizerconfig, trainingconfig, loggingconfig = (
         convert_trainerdict_to_config(

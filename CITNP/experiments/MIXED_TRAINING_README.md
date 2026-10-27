@@ -127,6 +127,57 @@ before the transformer stack. It works with all three encodings; with
 `extra_node` the INT_META column gets nothing. With `none` no parameters are
 created, so existing checkpoints load strictly. Configs: `*_stats.yaml`.
 
+## Training from pre-simulated datasets
+
+Instead of generating tasks on the fly, a run can read tasks that were
+simulated once and stored as chunk files. **The model's inputs are identical to
+streaming**: both paths draw the batch shape with `draw_batch_shape` and
+generate each task with `generate_task_with_shape`, and the normalisation, the
+variance information of `scale_conditioning: stats` (`context_scale`), the
+outcome draws and the intervention encodings are computed from the loaded batch
+by the same `prepare_mixed_batch` code (`testing/test_presimulated_data.py`
+checks this tensor by tensor). Only the source of the tasks differs. Streaming
+stays the default.
+
+A dataset config in `CITNP/experiments/configs/datasets/` names the prior and
+the split sizes (see `CITNP/datasets/dataset_config.py`). Simulated data live
+outside the checkout, under `$DATA_ROOT` (default `$OUT/data`, exported to
+Python as `ALCFM_DATA_ROOT`):
+
+```bash
+export DATASET_CONFIG=CITNP/experiments/configs/datasets/oracle_d3_iw_motif__v1.yaml
+SPLIT=train      sbatch CITNP/experiments/bmrc/generate_presimulated_data.sh
+SPLIT=validation sbatch CITNP/experiments/bmrc/generate_presimulated_data.sh
+SPLIT=test       sbatch CITNP/experiments/bmrc/generate_presimulated_data.sh
+DATASET_CONFIG=$DATASET_CONFIG MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m_extra_node_stats.yaml \
+    sbatch CITNP/experiments/bmrc/train.sh
+```
+
+`generate_presimulated_data.sh` is a fixed-size CPU array (job `i` of `NUM_JOBS`
+writes chunk files `i, i + NUM_JOBS, ...`) and skips files that already exist,
+so resubmitting after a failure only fills the gaps. The writer refuses to add
+files to a directory whose `config.json` has other generation settings.
+
+`mixed_train.py --dataset_config <yaml> [--data_root DIR]` trains from the
+chunks (`--data_config` must be the dataset's prior; the run aborts if the
+chunks were written from another one). Training uses
+`MixedRegimeChunkDataset(iterations_per_epoch=...)`, so an epoch has the same
+number of batches as when streaming; each pass over the data reshuffles files
+and tasks. A validation or test split that is not in the dataset config or not
+generated falls back to streaming; for chunk splits `--val_iterations` and
+`--test_iterations` are ignored (one pass over the split). The run directory
+records the dataset config, the split directories and the fingerprints of their
+`config.json` files in `presimulated_data.yaml`, and `train.sh` refuses to
+resume if the training data changed. With `--resume_full` the data order is
+re-seeded from the resumed epoch rather than restored exactly.
+
+**Sizing.** The start prints the unique training tasks, the tasks the run
+consumes (`epochs x iterations_per_epoch x batch_size`) and the implied number of
+passes. `oracle_d3_iw_motif__v1` has 2,048,000 training tasks; the default
+500 epochs x 200 iterations x 256 tasks consume 25,600,000, i.e. 12.5 passes, so
+a task is seen about 12 times (streaming never repeats one). Check the bytes per
+task with `du -sh` on a small split before sizing a large one.
+
 ## Resuming a run
 
 `--resume_full <results/RUN/last_model.pt>` continues that run in its own
