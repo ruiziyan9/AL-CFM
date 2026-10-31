@@ -27,6 +27,7 @@ CFG = MixedRegimeConfig(
     alpha0=1.5,
     num_variables=[3, 4],
     graph_type=["ER"],
+    graph_degrees={3: [1, 2, 3], 4: [1, 2, 4]},
     normalise=False,
     k_max=2,
     n_ctx_range=(30, 40),
