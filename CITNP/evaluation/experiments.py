@@ -5,6 +5,8 @@ plain results (pandas DataFrames or a dict); writing files, printing summaries
 and plotting are left to the caller.
 """
 
+from functools import partial
+
 import numpy as np
 import pandas as pd
 import torch
@@ -48,6 +50,170 @@ from CITNP.evaluation.tasks import (
     random_confounder_scm,
     scm_suite,
 )
+
+
+# --------------------------------------------------------------------------- #
+# Shared pieces of the k-shot loops
+# --------------------------------------------------------------------------- #
+def _build_contexts(obs_x, obs_m, pools, k_list, perm_seed, designs=None):
+    """Nested k-shot contexts: obs rows + the first k rows of a pool, shuffled.
+
+    Args:
+    ----------
+    obs_x, obs_m : np.ndarray
+        Observational rows [n_obs, D] and their intervention mask.
+
+    pools : dict
+        design -> (x, mask, target node per row), as from `make_pools`.
+
+    k_list : list[int]
+        Sorted values of k; k = 0 gives one shared context labelled "obs".
+
+    perm_seed : list[int]
+        Seed prefix; context number c and size k are shuffled with
+        default_rng([*perm_seed, c, k]).
+
+    designs : list[str] | None
+        Pool keys in context order (default: the keys of `pools`).
+
+    Returns:
+    ----------
+    List of (design, k, x, m, intervened nodes), the "obs" context first.
+    """
+    designs = list(pools) if designs is None else designs
+    specs = [("obs", 0)] + [(d, k) for d in designs for k in k_list if k > 0]
+    out = []
+    for c_i, (design, k) in enumerate(specs):
+        nodes: frozenset[int]  # intervened nodes in this context
+        if k == 0:
+            x, m, nodes = obs_x, obs_m, frozenset()
+        else:
+            px, pm, seq = pools[design]
+            x = np.concatenate([obs_x, px[:k]])
+            m = np.concatenate([obs_m, pm[:k]])
+            nodes = frozenset(int(j) for j in seq[:k])
+        perm = np.random.default_rng([*perm_seed, c_i, k]).permutation(len(x))
+        out.append((design, k, x[perm], m[perm], nodes))
+    return out
+
+
+def _fit_context(
+    predict, x, m, data_cfg, graph_prior, D, Ts, Ys, grid, flag_ablation
+):
+    """Fit the oracle on one context and predict all queries in one batch.
+
+    Args:
+    ----------
+    predict : callable
+        (x, m, Ts, Ys, grid, zero_flags=False) -> (mu, sd, logw), each with
+        a leading query axis; e.g. `functools.partial(predict_mixture,
+        model, device=...)`.
+
+    flag_ablation : bool
+        Also predict with the intervention flags zeroed.
+
+    Returns:
+    ----------
+    (oracle, model prediction, flag-ablated prediction or None).
+    """
+    orc = LinGaussOracle(
+        D,
+        log_graph_prior=graph_prior,
+        prior=LinearGaussianPrior.from_config(data_cfg),
+    ).fit(x, m)
+    mod = predict(x, m, Ts, Ys, grid)
+    mod_nf = None
+    if flag_ablation:
+        mod_nf = predict(x, m, Ts, Ys, grid, zero_flags=True)
+    return orc, mod, mod_nf
+
+
+def _score_query(
+    orc, mod, mod_nf, qi, T, Y, truth, grid, g, qrng, *, n_y, n_mc,
+    min_graph_prob, oracle_seed, dev, naive=None,
+):  # fmt: skip
+    """KLs, slopes and variance ratio of one query against one context fit.
+
+    Args:
+    ----------
+    mod, mod_nf : tuple of Tensor
+        Batched predictions from `_fit_context`; `qi` indexes the query.
+
+    truth : tuple[float, float]
+        (slope, variance) of the true do-distribution.
+
+    g : torch.Tensor
+        `grid` as a float64 tensor on `dev`.
+
+    naive : float | None
+        Naive observational slope; if given, the naive-slope columns are
+        added.
+
+    Returns:
+    ----------
+    (row fields, per-t rows): dicts holding only the score columns; the
+    caller adds the identifying columns.
+    """
+    b, v = truth
+    y_true = torch.tensor(sample_truth(b, v, grid, n_y, qrng), device=dev)
+    lp_true = truth_logpdf(b, v, g, y_true)
+
+    # exact Bayes p_B
+    log_w, slope, var = orc.predictive_components(
+        T, Y, n_mc=n_mc, min_graph_prob=min_graph_prob, seed=oracle_seed
+    )
+    log_w, w, var = oracle_weights(log_w, var)
+    y_or = torch.tensor(sample_oracle(w, slope, var, grid, n_y, qrng), device=dev)
+    o_par = oracle_mixture_on_grid(log_w, slope, var, g)
+
+    m_par = tuple(p[qi] for p in mod)
+    lp_o_on_o = mix_logpdf(y_or, *o_par)
+    kl_om = kl_mc(lp_o_on_o, mix_logpdf(y_or, *m_par))
+    kl_tm = kl_mc(lp_true, mix_logpdf(y_true, *m_par))
+    kl_to = kl_mc(lp_true, mix_logpdf(y_true, *o_par))
+
+    # moments
+    s_bar, s_sd, mean_o, var_o = oracle_moments(w, slope, var, grid)
+    mean_m, var_m = mixture_moments(*(p.cpu().numpy() for p in m_par))
+    slope_m, icpt_m = implied_slope(grid, mean_m)
+
+    fields = {
+        "kl_truth_model": float(kl_tm.mean()),
+        "kl_truth_oracle": float(kl_to.mean()),
+        "kl_oracle_model": float(kl_om.mean()),
+    }
+    if mod_nf is not None:
+        nf_par = tuple(p[qi] for p in mod_nf)
+        kl_om_nf = kl_mc(lp_o_on_o, mix_logpdf(y_or, *nf_par))
+        fields["kl_oracle_model_noflag"] = float(kl_om_nf.mean())
+    fields["excess_kl_truth"] = float((kl_tm - kl_to).mean())
+    fields["slope_truth"] = float(b)
+    if naive is not None:
+        fields["slope_naive_obs"] = naive
+    fields.update({
+        "slope_oracle": s_bar, "slope_sd_oracle": s_sd,
+        "slope_model": float(slope_m), "intercept_model": float(icpt_m),
+        "slope_err_model_truth": float(slope_m - b),
+        "slope_err_oracle_truth": float(s_bar - b),
+    })  # fmt: skip
+    if naive is not None:
+        fields["slope_err_naive_truth"] = float(naive - b)
+    fields["var_ratio_model_oracle"] = variance_ratio(var_m, var_o)
+    rows_t = [
+        {
+            "t": float(tv),
+            "kl_truth_model": float(kl_tm[ti]),
+            "kl_truth_oracle": float(kl_to[ti]),
+            "kl_oracle_model": float(kl_om[ti]),
+            "mean_truth": float(b * tv), "sd_truth": float(np.sqrt(v)),
+            "mean_oracle": float(mean_o[ti]),
+            "sd_oracle": float(np.sqrt(var_o[ti])),
+            "mean_model": float(mean_m[ti]),
+            "sd_model": float(np.sqrt(max(var_m[ti], 0.0))),
+        }
+        for ti, tv in enumerate(grid)
+    ]  # fmt: skip
+    return fields, rows_t
 
 
 # --------------------------------------------------------------------------- #
@@ -98,6 +264,7 @@ def run_kshot(
     k_list = list(range(11)) if k_list is None else sorted(set(k_list))
     k_max = max(k_list)
     dev = device
+    predict = partial(predict_mixture, model, device=dev)
     lo, hi = data_cfg.n_ctx_range
     if not (lo <= n_obs and n_obs + k_max <= hi):
         print(f"WARNING: context sizes {n_obs}..{n_obs + k_max} "
@@ -120,7 +287,6 @@ def run_kshot(
     g = torch.tensor(grid, dtype=torch.float64, device=dev)
     Ts = np.array([T for T, _ in QUERIES])
     Ys = np.array([Y for _, Y in QUERIES])
-    contexts = [("obs", 0)] + [(d, k) for d in DESIGNS for k in k_list if k > 0]
 
     rows: list[dict] = []
     rows_t: list[dict] = []
@@ -134,61 +300,23 @@ def run_kshot(
         obs_x, obs_m = scm.sample(n_obs, None, None, rng)
         pools = make_pools(scm, k_max, do_scale, rng)
 
-        for c_i, (design, k) in enumerate(contexts):
-            nodes: frozenset[int]  # intervened nodes in this context
-            if k == 0:
-                x, m, nodes = obs_x, obs_m, frozenset()
-            else:
-                px, pm, seq = pools[design]
-                x = np.concatenate([obs_x, px[:k]])
-                m = np.concatenate([obs_m, pm[:k]])
-                nodes = frozenset(int(j) for j in seq[:k])
-            perm = np.random.default_rng([s, c_i, k]).permutation(len(x))
-            x, m = x[perm], m[perm]
-
-            orc = LinGaussOracle(
-                len(scm.s2),
-                log_graph_prior=prior,
-                prior=LinearGaussianPrior.from_config(data_cfg),
-            ).fit(x, m)
+        contexts = _build_contexts(
+            obs_x, obs_m, pools, k_list, [s], designs=DESIGNS
+        )
+        for c_i, (design, k, x, m, nodes) in enumerate(contexts):
             # all six queries share the context: one batch of six elements
-            mod = predict_mixture(model, x, m, Ts, Ys, grid, device=dev)
-            mod_nf = predict_mixture(
-                model, x, m, Ts, Ys, grid, device=dev, zero_flags=True
+            orc, mod, mod_nf = _fit_context(
+                predict, x, m, data_cfg, prior, len(scm.s2), Ts, Ys, grid, True
             )
             qrng = np.random.default_rng([s, c_i, k, 99])
 
             for qi, (T, Y) in enumerate(QUERIES):
-                # truth p*
-                b, v = truth[(T, Y)]
-                y_true = torch.tensor(
-                    sample_truth(b, v, grid, n_y, qrng), device=dev
-                )
-                lp_true = truth_logpdf(b, v, g, y_true)
-
-                # exact Bayes p_B
-                log_w, slope, var = orc.predictive_components(
-                    T, Y, n_mc=n_mc, min_graph_prob=min_graph_prob, seed=s
-                )
-                log_w, w, var = oracle_weights(log_w, var)
-                y_or = sample_oracle(w, slope, var, grid, n_y, qrng)
-                y_or = torch.tensor(y_or, device=dev)
-                o_par = oracle_mixture_on_grid(log_w, slope, var, g)
-
-                m_par = tuple(p[qi] for p in mod)
-                nf_par = tuple(p[qi] for p in mod_nf)
-
-                lp_o_on_o = mix_logpdf(y_or, *o_par)
-                kl_om = kl_mc(lp_o_on_o, mix_logpdf(y_or, *m_par))
-                kl_om_nf = kl_mc(lp_o_on_o, mix_logpdf(y_or, *nf_par))
-                kl_tm = kl_mc(lp_true, mix_logpdf(y_true, *m_par))
-                kl_to = kl_mc(lp_true, mix_logpdf(y_true, *o_par))
-
-                # moments
-                s_bar, s_sd, mean_o, var_o = oracle_moments(w, slope, var, grid)
-                mean_m, var_m = mixture_moments(*(p.cpu().numpy() for p in m_par))
-                slope_m, icpt_m = implied_slope(grid, mean_m)
-
+                b = truth[(T, Y)][0]
+                fields, t_rows = _score_query(
+                    orc, mod, mod_nf, qi, T, Y, truth[(T, Y)], grid, g, qrng,
+                    n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
+                    oracle_seed=s, dev=dev, naive=naive[(T, Y)],
+                )  # fmt: skip
                 q = qname(T, Y)
                 qtype = query_type(nodes, T, Y)
                 rows.append({
@@ -196,30 +324,12 @@ def run_kshot(
                     "query": q, "query_type": qtype,
                     "intervened_nodes": "".join(str(j) for j in sorted(nodes)),
                     "effect": "zero" if abs(b) < 1e-9 else "nonzero",
-                    "kl_truth_model": float(kl_tm.mean()),
-                    "kl_truth_oracle": float(kl_to.mean()),
-                    "kl_oracle_model": float(kl_om.mean()),
-                    "kl_oracle_model_noflag": float(kl_om_nf.mean()),
-                    "excess_kl_truth": float((kl_tm - kl_to).mean()),
-                    "slope_truth": float(b), "slope_naive_obs": naive[(T, Y)],
-                    "slope_oracle": s_bar, "slope_sd_oracle": s_sd,
-                    "slope_model": float(slope_m), "intercept_model": float(icpt_m),
-                    "slope_err_model_truth": float(slope_m - b),
-                    "slope_err_oracle_truth": float(s_bar - b),
-                    "slope_err_naive_truth": float(naive[(T, Y)] - b),
-                    "var_ratio_model_oracle": variance_ratio(var_m, var_o),
+                    **fields,
                 })  # fmt: skip
-                for ti, tv in enumerate(grid):
+                for tr in t_rows:
                     rows_t.append({
                         "seed": s, "design": design, "k": k, "query": q,
-                        "query_type": qtype, "t": float(tv),
-                        "kl_truth_model": float(kl_tm[ti]),
-                        "kl_truth_oracle": float(kl_to[ti]),
-                        "kl_oracle_model": float(kl_om[ti]),
-                        "mean_truth": float(b * tv), "sd_truth": float(np.sqrt(v)),
-                        "mean_oracle": float(mean_o[ti]), "sd_oracle": float(np.sqrt(var_o[ti])),
-                        "mean_model": float(mean_m[ti]),
-                        "sd_model": float(np.sqrt(max(var_m[ti], 0.0))),
+                        "query_type": qtype, **tr,
                     })  # fmt: skip
         if (s + 1) % 10 == 0:
             print(f"{s + 1}/{n_seeds} seeds done")

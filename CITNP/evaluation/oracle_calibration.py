@@ -33,7 +33,12 @@ from scipy.stats import norm
 
 from CITNP.datasets.linear_gaussian_prior import LinearGaussianPrior
 from CITNP.evaluation.oracle import LinGaussOracle, all_dags, mec_key
-from CITNP.evaluation.tasks import BUCKETS, empirical_graph_prior, n_int_bucket
+from CITNP.evaluation.tasks import (
+    BUCKETS,
+    empirical_graph_prior,
+    n_int_bucket,
+    require_exact_oracle,
+)
 
 __all__ = ["calibrate", "plot_pit", "plot_reliability", "summarise"]
 
@@ -107,6 +112,7 @@ def calibrate(
     )
     from CITNP.prior_diagnostics.stats import question_class
 
+    require_exact_oracle(cfg)
     prior = LinearGaussianPrior.from_config(cfg)
     if log_graph_prior is None:
         log_graph_prior = empirical_graph_prior(cfg, num_nodes=D)

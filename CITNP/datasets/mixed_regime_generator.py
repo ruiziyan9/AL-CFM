@@ -946,6 +946,57 @@ def _sample_do_values(do_dist: dict, size: int) -> np.ndarray:
     raise ValueError(f"Unknown do_dist kind {do_dist['kind']}")
 
 
+def sample_do_values(
+    do_dist: dict, size: int, rng: np.random.Generator
+) -> np.ndarray:
+    """Draw `size` iid do-values from `do_dist` with an explicit generator.
+
+    Same distributions as the generator's own `_sample_do_values` (which uses
+    the global numpy RNG and must not change); for the same state the draws
+    are identical to `rng.normal` / `rng.uniform` called directly.
+
+    Args:
+    ----------
+    do_dist : dict
+        {"kind": "normal", "scale": s} or {"kind": "uniform", "width": w}.
+
+    size : int
+        Number of values.
+
+    rng : np.random.Generator
+        Source of randomness.
+    """
+    if do_dist["kind"] == "normal":
+        return rng.normal(0.0, do_dist["scale"], size=size)
+    if do_dist["kind"] == "uniform":
+        w = do_dist["width"]
+        return rng.uniform(-w, w, size=size)
+    raise ValueError(f"Unknown do_dist kind {do_dist['kind']}")
+
+
+def do_dist_quantile(do_dist: dict, q: np.ndarray | float) -> np.ndarray:
+    """Inverse CDF of `do_dist` at probability level(s) `q` in (0, 1).
+
+    Args:
+    ----------
+    do_dist : dict
+        As in `sample_do_values`.
+
+    q : array-like or float
+        Probability levels.
+    """
+    from statistics import NormalDist
+
+    q = np.asarray(q, dtype=float)
+    if do_dist["kind"] == "normal":
+        z = np.array([NormalDist().inv_cdf(float(p)) for p in q.ravel()])
+        return (do_dist["scale"] * z).reshape(q.shape)
+    if do_dist["kind"] == "uniform":
+        w = do_dist["width"]
+        return -w + 2.0 * w * q
+    raise ValueError(f"Unknown do_dist kind {do_dist['kind']}")
+
+
 def _standardise(
     x: np.ndarray, mean: float, std: float, eps: float = 1e-6
 ) -> np.ndarray:

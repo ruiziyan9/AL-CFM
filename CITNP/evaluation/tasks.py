@@ -161,16 +161,39 @@ def make_context(
     return x[perm], m[perm]
 
 
-def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
-    """K-shot experiment pools, nested in k. For each design in DESIGNS:
-    (x [k_max, D], int_mask [k_max, D], target node per row)."""
-    pools = {}
-    for design, node in FIXED_NODE.items():
-        dv = rng.normal(0, do_scale, k_max)
+def node_pools(scm: LinearSCM, k_max: int, do_dist: dict, rng) -> dict:
+    """Interventional pools, nested in k: one per node j (every row is
+    do(X_j = v)) and a "random" pool (each row targets a uniformly random
+    node). Draw order: nodes 0..D-1 in order, then the random pool.
+
+    Args:
+    ----------
+    scm : LinearSCM
+        Ground-truth SCM.
+
+    k_max : int
+        Rows per pool.
+
+    do_dist : dict
+        Do-value distribution (see `sample_do_values`).
+
+    rng : np.random.Generator
+        Source of randomness.
+
+    Returns:
+    ----------
+    {0..D-1 and "random": (x [k_max, D], int_mask [k_max, D], target node
+    per row)}.
+    """
+    from CITNP.datasets.mixed_regime_generator import sample_do_values
+
+    pools: dict = {}
+    for node in range(len(scm.s2)):
+        dv = sample_do_values(do_dist, k_max, rng)
         x, m = scm.sample(k_max, node, dv, rng)
-        pools[design] = (x, m, np.full(k_max, node))
+        pools[node] = (x, m, np.full(k_max, node))
     seq = rng.integers(0, len(scm.s2), k_max)
-    dv = rng.normal(0, do_scale, k_max)
+    dv = sample_do_values(do_dist, k_max, rng)
     rx: list[np.ndarray] = []
     rm: list[np.ndarray] = []
     for i in range(k_max):
@@ -179,6 +202,17 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
         rm.append(mi)
     pools["random"] = (np.concatenate(rx), np.concatenate(rm), seq)
     return pools
+
+
+def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
+    """K-shot experiment pools, nested in k. For each design in DESIGNS:
+    (x [k_max, D], int_mask [k_max, D], target node per row). Thin wrapper
+    over `node_pools` with N(0, do_scale^2) do-values; same RNG draws as the
+    original implementation (`rng.normal(0, s, n)` == `sample_do_values`)."""
+    pools = node_pools(scm, k_max, {"kind": "normal", "scale": do_scale}, rng)
+    out = {design: pools[node] for design, node in FIXED_NODE.items()}
+    out["random"] = pools["random"]
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -233,6 +267,15 @@ def n_int_bucket(n: int) -> str:
     return BUCKETS[1] if n <= 10 else BUCKETS[2]
 
 
+def require_exact_oracle(cfg) -> None:
+    """Raise unless the exact oracle applies to `cfg`: a linear-Gaussian
+    family with normalise: false."""
+    if not is_linear_gaussian(cfg.function_generator) or cfg.normalise:
+        raise ValueError(
+            "oracle bank needs a linear-Gaussian family with normalise: false"
+        )
+
+
 def build_bank(
     cfg, per_bucket=150, D=3, base_seed=4242, n_mc=2000, max_tasks=100_000
 ) -> list[dict]:
@@ -244,10 +287,7 @@ def build_bank(
         make_key,
     )
 
-    if not is_linear_gaussian(cfg.function_generator) or cfg.normalise:
-        raise ValueError(
-            "oracle bank needs a linear-Gaussian family with normalise: false"
-        )
+    require_exact_oracle(cfg)
     lg_prior = LinearGaussianPrior.from_config(cfg)
     prior = empirical_graph_prior(cfg, num_nodes=D)
     counts = {b: 0 for b in BUCKETS}
