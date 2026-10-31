@@ -137,7 +137,7 @@ def _fit_context(
 
 def _score_query(
     orc, mod, mod_nf, qi, T, Y, truth, grid, g, qrng, *, n_y, n_mc,
-    min_graph_prob, oracle_seed, dev, naive=None,
+    min_graph_prob, oracle_seed, dev, naive=None, param_cache=None,
 ):  # fmt: skip
     """KLs, slopes and variance ratio of one query against one context fit.
 
@@ -156,6 +156,10 @@ def _score_query(
         Naive observational slope; if given, the naive-slope columns are
         added.
 
+    param_cache : dict | None
+        Oracle parameter cache of this context (see
+        `LinGaussOracle.predictive_components`).
+
     Returns:
     ----------
     (row fields, per-t rows): dicts holding only the score columns; the
@@ -167,7 +171,8 @@ def _score_query(
 
     # exact Bayes p_B
     log_w, slope, var = orc.predictive_components(
-        T, Y, n_mc=n_mc, min_graph_prob=min_graph_prob, seed=oracle_seed
+        T, Y, n_mc=n_mc, min_graph_prob=min_graph_prob, seed=oracle_seed,
+        param_cache=param_cache,
     )
     log_w, w, var = oracle_weights(log_w, var)
     y_or = torch.tensor(sample_oracle(w, slope, var, grid, n_y, qrng), device=dev)
@@ -514,11 +519,12 @@ def run_kshot_prior(
                 flag_ablation,
             )  # fmt: skip
             qrng = np.random.default_rng([base_seed, D, i, c_i, k, 99])
+            cache: dict = {}  # oracle draws shared by this context's pairs
             for qi, (T, Y) in enumerate(pairs):
                 fields, t_rows = _score_query(
                     orc, mod, mod_nf, qi, T, Y, truth[qi], grid, g, qrng,
                     n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
-                    oracle_seed=i, dev=device,
+                    oracle_seed=i, dev=device, param_cache=cache,
                 )  # fmt: skip
                 design = "obs" if key == "obs" else design_of[qi][key]
                 acc.setdefault((qi, design, k), []).append(

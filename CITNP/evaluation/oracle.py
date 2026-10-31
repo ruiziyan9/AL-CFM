@@ -331,10 +331,17 @@ class LinGaussOracle:
         n_mc: int = 2000,
         min_graph_prob: float = 1e-6,
         seed: int = 0,
+        param_cache: dict | None = None,
     ):
         """Mixture representation of p(X_Y | do(X_T = t), data):
         returns (log_w [M], slope [M], var [M]) with component mean = slope * t.
         (Zero-mean priors and linear SEM => interventional mean is linear in t.)
+
+        param_cache: optional dict, to be used for ONE fitted context (create a
+        new one after every `fit`). The parameters drawn for each DAG depend on
+        (seed, n_mc, min_graph_prob) but not on (T, Y), because one generator
+        is consumed DAG by DAG, so queries sharing these values reuse them and
+        return exactly what the uncached call returns. None: no caching.
         """
         rng = np.random.default_rng(seed)
         log_ws: list[np.ndarray] = []
@@ -343,7 +350,13 @@ class LinGaussOracle:
         for g_i, lp in enumerate(self.log_post):
             if np.exp(lp) < min_graph_prob:
                 continue
-            B, s2 = self._sample_params(g_i, n_mc, rng)
+            ck = (seed, n_mc, min_graph_prob, g_i)
+            if param_cache is not None and ck in param_cache:
+                B, s2 = (a.copy() for a in param_cache[ck])
+            else:
+                B, s2 = self._sample_params(g_i, n_mc, rng)
+                if param_cache is not None:
+                    param_cache[ck] = (B.copy(), s2.copy())
             B[:, :, T] = 0.0  # cut edges into T
             s2 = s2.copy()
             s2[:, T] = 0.0  # T is fixed

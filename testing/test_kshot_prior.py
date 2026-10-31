@@ -263,3 +263,34 @@ def test_d4_smoke():
 def test_rejects_large_d():
     with pytest.raises(ValueError):
         run(4, 1, [0, 1], normal_predictor, max_oracle_nodes=3)
+
+
+# --------------------------------------------------------------------------- #
+# oracle parameter cache
+# --------------------------------------------------------------------------- #
+def test_oracle_param_cache_matches_uncached():
+    D = 3
+    scm, _, do_dist, _ = tasks.prior_scm(CFG, 1, SEED, D)
+    rng = np.random.default_rng(0)
+    x, m = scm.sample(30, None, None, rng)
+    px, pm, _ = tasks.node_pools(scm, 4, do_dist, rng)[0]
+    x, m = np.concatenate([x, px]), np.concatenate([m, pm])
+    orc = LinGaussOracle(
+        D,
+        log_graph_prior=uniform_prior(D),
+        prior=LinearGaussianPrior.from_config(CFG),
+    ).fit(x, m)
+    cache: dict = {}
+    for _ in range(2):  # second pass: every DAG served from the cache
+        for T in range(D):
+            for Y in range(D):
+                if T == Y:
+                    continue
+                kw = dict(n_mc=40, min_graph_prob=1e-4, seed=3)
+                plain = orc.predictive_components(T, Y, **kw)
+                cached = orc.predictive_components(
+                    T, Y, param_cache=cache, **kw
+                )
+                for a, b in zip(plain, cached):
+                    assert np.array_equal(a, b)
+    assert len(cache) > 0
