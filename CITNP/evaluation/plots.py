@@ -9,6 +9,14 @@ K-shot figures, from <prefix>.csv and <prefix>_by_t.csv written by `kshot`:
     <prefix>_varratio.png   model / oracle predictive variance (1 = matches oracle)
     <prefix>_qtype.png      KL to truth split by query type
     <prefix>_by_t.png       KL to truth against |do-value t|, for a few k
+K-shot figures on tasks drawn from the training prior, from the CSV part(s)
+written by `kshot-prior` (ONLY these show a true oracle lower bound; per D):
+    <prefix>_D{D}_main.png         (a) KL to truth, model solid / oracle dashed,
+                                   (b) excess KL(truth) with a line at 0,
+                                   (c) KL(oracle || model); curves = mean +/- s.e.
+                                   over tasks, pairs averaged within a task first
+    <prefix>_D{D}_by_relation.png  excess KL by question class (the bound need
+                                   not hold within a class)
 Training monitoring, from oracle_gap.csv / train_stats.csv in run directories:
     plot_monitoring(run_dirs, out)
 Flag probe, from <prefix>.csv written by `probe-flag`:
@@ -20,6 +28,7 @@ over seeds (queries averaged within a seed first), bands are +/- one standard
 error over seeds. k = 0 (observational only) is shared by all designs.
 """
 
+import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -44,9 +53,10 @@ def with_k0(df: pd.DataFrame, design: str) -> pd.DataFrame:
     return pd.concat([df[df.k == 0], df[df.design == design]])
 
 
-def seed_curve(d: pd.DataFrame, col, agg="mean"):
-    """Mean and standard error over seeds of `col` against k."""
-    per_seed = d.groupby(["seed", "k"])[col].agg(agg)
+def seed_curve(d: pd.DataFrame, col, agg="mean", unit="seed"):
+    """Mean and standard error over seeds (or, with unit="task", over tasks)
+    of `col` against k."""
+    per_seed = d.groupby([unit, "k"])[col].agg(agg)
     g = per_seed.groupby("k")
     return g.mean(), g.sem()
 
@@ -331,6 +341,112 @@ def plot_kshot_all(csv_path: str) -> None:
     else:
         print(f"no {prefix}_by_t.csv, skipping the |t| figure")
     print("wrote " + ", ".join(f"{prefix}{s}.png" for s in written))
+
+
+# --------------------------------------------------------------------------- #
+# K-shot on tasks drawn from the training prior
+# --------------------------------------------------------------------------- #
+PRIOR_COLORS = {
+    "random": "C0",
+    "do(T)": "C1",
+    "do(Y)": "C3",
+    "do(other)": "C2",
+}
+_ID_COLS = ["D", "task", "T", "Y", "design", "k"]
+
+
+def _prior_curve(df: pd.DataFrame, design: str, cols: list[str]):
+    """Mean and s.e. over tasks of cols vs k, with k = 0 prepended; pairs are
+    averaged within a task first."""
+    return seed_curve(with_k0(df, design), cols, unit="task")
+
+
+def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
+    """One figure <prefix>_D{D}_main.png per D, from kshot-prior rows.
+
+    (a) KL(truth || model) solid and KL(truth || oracle) dashed per design;
+    (b) excess KL(truth) = KL(truth || model) - KL(truth || oracle), +/- s.e.
+    over tasks (>= 0 in expectation: the oracle is a lower bound);
+    (c) KL(oracle || model), which equals (b) in expectation.
+    """
+    for D, dd in df.groupby("D"):
+        ks = sorted(dd.k.unique())
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        for d in PRIOR_COLORS:
+            c = PRIOR_COLORS[d]
+            mu, se = _prior_curve(
+                dd, d, ["kl_truth_model", "kl_truth_oracle", "excess_kl_truth",
+                        "kl_oracle_model"]
+            )  # fmt: skip
+            band(axes[0], mu["kl_truth_model"], se["kl_truth_model"], c,
+                 label=f"model, {d}")  # fmt: skip
+            axes[0].plot(mu.index, mu["kl_truth_oracle"], "--", color=c,
+                         label=f"oracle, {d}")  # fmt: skip
+            band(axes[1], mu["excess_kl_truth"], se["excess_kl_truth"], c,
+                 label=d)  # fmt: skip
+            band(axes[2], mu["kl_oracle_model"], se["kl_oracle_model"], c,
+                 label=d)  # fmt: skip
+        titles = [
+            f"D={D}: KL(truth || ·)",
+            f"D={D}: excess KL(truth) = KL(truth||model) - KL(truth||oracle)",
+            f"D={D}: KL(oracle || model)",
+        ]
+        for ax, title in zip(axes, titles):
+            ax.axhline(0, color="k", lw=0.5)
+            finish(ax, ks, title)
+        axes[0].set_ylabel("KL, nats per query point")
+        axes[0].legend(fontsize=7, ncol=2)
+        axes[1].legend(fontsize=7)
+        _save(fig, f"{prefix}_D{D}_main.png")
+
+
+def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
+    """One figure <prefix>_D{D}_by_relation.png per D: excess KL(truth) by
+    design, one panel per question class. The lower bound holds on average
+    over the whole prior, not within a class, so a facet may dip below 0."""
+    for D, dd in df.groupby("D"):
+        rels = sorted(dd["relation"].unique())
+        ks = sorted(dd.k.unique())
+        fig, axes = plt.subplots(
+            1, len(rels), figsize=(4.5 * len(rels), 4.5), sharey=True,
+            squeeze=False,
+        )  # fmt: skip
+        for ax, rel in zip(axes[0], rels):
+            sub = dd[dd["relation"] == rel]
+            for d, c in PRIOR_COLORS.items():
+                mu, se = _prior_curve(sub, d, ["excess_kl_truth"])
+                band(ax, mu["excess_kl_truth"], se["excess_kl_truth"], c,
+                     label=d)  # fmt: skip
+            ax.axhline(0, color="k", lw=0.5)
+            finish(ax, ks, rel)
+        axes[0][0].set_ylabel("excess KL(truth), nats per query point")
+        axes[0][0].legend(fontsize=7)
+        fig.suptitle(
+            f"D={D}: excess KL by question class (the bound >= 0 need not "
+            "hold within a class)"
+        )
+        _save(fig, f"{prefix}_D{D}_by_relation.png")
+
+
+def plot_kshot_prior_all(
+    csv_paths: list[str], prefix: str | None = None
+) -> None:
+    """Every kshot-prior figure from one or more CSV parts (array jobs over
+    task_offset), concatenated. Raises if a (D, task, T, Y, design, k) row
+    appears twice, i.e. parts overlap."""
+    df = pd.concat([pd.read_csv(p) for p in csv_paths], ignore_index=True)
+    if df.duplicated(_ID_COLS).any():
+        raise ValueError("overlapping parts: duplicate rows")
+    if prefix is None:
+        prefix = re.sub(r"_part\d+$", "", csv_paths[0].removesuffix(".csv"))
+    plot_kshot_prior_main(df, prefix)
+    plot_kshot_prior_by_relation(df, prefix)
+    written = [
+        f"{prefix}_D{D}{s}.png"
+        for D in sorted(df["D"].unique())
+        for s in ("_main", "_by_relation")
+    ]
+    print("wrote " + ", ".join(written))
 
 
 # --------------------------------------------------------------------------- #

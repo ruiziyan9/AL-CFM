@@ -141,3 +141,38 @@ def test_plot_kshot_prior_refuses_mixed_data_configs(tmp_path):
         paths.append(str(csv))
     with pytest.raises(SystemExit):
         main(["plot-kshot-prior", *paths])
+
+
+def test_plot_kshot_prior_writes_figures(tmp_path):
+    import itertools
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from CITNP.evaluation.__main__ import main
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for task, (T, Y) in itertools.product(range(3), [(0, 1), (1, 2)]):
+        for design, k in [("obs", 0)] + [
+            (d, k) for d in ("random", "do(T)", "do(Y)", "do(other)")
+            for k in (1, 3)
+        ]:  # fmt: skip
+            om = float(rng.uniform(0.0, 0.2))
+            to = float(rng.uniform(0.1, 0.5))
+            rows.append({
+                "D": 3, "task": task, "T": T, "Y": Y,
+                "relation": "reverse" if task else "unrelated",
+                "design": design, "k": k, "kl_truth_oracle": to,
+                "kl_truth_model": to + om, "kl_oracle_model": om,
+                "excess_kl_truth": om,
+            })  # fmt: skip
+    csv = tmp_path / "kp_part0.csv"
+    pd.DataFrame(rows).to_csv(csv, index=False)
+    (tmp_path / "kp_part0_meta.json").write_text(
+        json.dumps({"data_config": {"sha256": "a" * 64}})
+    )
+    main(["plot-kshot-prior", str(csv)])
+    for s in ("main", "by_relation"):
+        assert (tmp_path / f"kp_D3_{s}.png").stat().st_size > 0
