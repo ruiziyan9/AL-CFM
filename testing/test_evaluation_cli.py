@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from golden_spec import GOLDEN
+from golden_spec import DATA_CFG, GOLDEN, REPO, TINY_CFG
 
 KSHOT_FIGURES = [
     "main",
@@ -81,3 +81,63 @@ def test_oracle_lingauss_reexports():
         )
     assert old.LinGaussOracle is oracle.LinGaussOracle
     assert old.make_context is tasks.make_context
+
+
+# --------------------------------------------------------------------------- #
+# kshot-prior
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(
+    not (GOLDEN / "tiny_model.pt").exists(), reason="golden files not recorded"
+)
+def test_kshot_prior_smoke(tmp_path):
+    import json
+
+    import pandas as pd
+
+    from CITNP.evaluation.__main__ import main
+
+    out = tmp_path / "kp.csv"
+    main([
+        "kshot-prior", "--ckpt", str(GOLDEN / "tiny_model.pt"),
+        "--model_config", str(REPO / TINY_CFG),
+        "--data_config", str(REPO / DATA_CFG),
+        "--n_tasks", "2", "--k_list", "0,1", "--n_mc", "50", "--n_y", "16",
+        "--device", "cpu", "--out", str(out),
+    ])  # fmt: skip
+    df = pd.read_csv(out)
+    assert (tmp_path / "kp_by_t.csv").stat().st_size > 0
+    assert set(df["design"]) == {"obs", "random", "do(T)", "do(Y)", "do(other)"}
+    assert set(df["k"]) == {0, 1} and set(df["task"]) == {0, 1}
+    assert df["kl_oracle_model"].notna().all()
+    meta = json.loads((tmp_path / "kp_meta.json").read_text())
+    assert len(meta["data_config"]["sha256"]) == 64
+    assert meta["num_variables"] == [3] and meta["k_list"] == [0, 1]
+    assert sum(v["n_tasks"] for v in meta["do_dist_summary"].values()) == 2
+
+
+def test_kshot_prior_rejects_foreign_num_variables(tmp_path):
+    from CITNP.evaluation.__main__ import main
+
+    with pytest.raises(SystemExit):
+        main([
+            "kshot-prior", "--ckpt", "x", "--model_config", "y",
+            "--data_config", str(REPO / DATA_CFG), "--num_variables", "5",
+            "--out", str(tmp_path / "kp.csv"),
+        ])  # fmt: skip
+
+
+def test_plot_kshot_prior_refuses_mixed_data_configs(tmp_path):
+    import json
+
+    from CITNP.evaluation.__main__ import main
+
+    paths = []
+    for i, h in enumerate(["a" * 64, "b" * 64]):
+        csv = tmp_path / f"p_part{i}.csv"
+        csv.write_text("D\n3\n")
+        (tmp_path / f"p_part{i}_meta.json").write_text(
+            json.dumps({"data_config": {"sha256": h}})
+        )
+        paths.append(str(csv))
+    with pytest.raises(SystemExit):
+        main(["plot-kshot-prior", *paths])
