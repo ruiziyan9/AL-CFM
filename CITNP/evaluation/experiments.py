@@ -39,15 +39,22 @@ from CITNP.evaluation.oracle import LinGaussOracle
 from CITNP.evaluation.probes import fit_linear_probe
 from CITNP.evaluation.tasks import (
     DESIGNS,
+    PRIOR_DESIGNS,
     QUERIES,
+    check_context_size,
     confounder_scm,
     context_designs,
+    default_n_obs,
     empirical_graph_prior,
     make_context,
     make_pools,
+    node_pools,
+    pair_design_pools,
+    prior_scm,
     qname,
     query_type,
     random_confounder_scm,
+    require_exact_oracle,
     scm_suite,
 )
 
@@ -333,6 +340,222 @@ def run_kshot(
                     })  # fmt: skip
         if (s + 1) % 10 == 0:
             print(f"{s + 1}/{n_seeds} seeds done")
+
+    return pd.DataFrame(rows), pd.DataFrame(rows_t)
+
+
+# --------------------------------------------------------------------------- #
+# K-shot evaluation on tasks drawn from the training prior
+# --------------------------------------------------------------------------- #
+_PRIOR_FIELDS = [
+    "kl_truth_model", "kl_truth_oracle", "kl_oracle_model",
+    "kl_oracle_model_noflag", "excess_kl_truth", "slope_truth",
+    "slope_oracle", "slope_model", "var_ratio_model_oracle",
+]  # fmt: skip
+
+
+def _mean_dicts(ds: list[dict]) -> dict:
+    """Key-wise mean of dicts with identical numeric keys."""
+    return {k: float(np.mean([d[k] for d in ds])) for k in ds[0]}
+
+
+def run_kshot_prior(
+    predict_or_model,
+    data_cfg,
+    *,
+    D: int,
+    device: str,
+    k_list: list[int],
+    n_tasks: int = 500,
+    task_offset: int = 0,
+    base_seed: int = 9101,
+    n_obs: int | None = None,
+    grid_eps: float = 0.02,
+    n_t: int = 13,
+    n_y: int = 64,
+    n_mc: int = 2000,
+    min_graph_prob: float = 1e-4,
+    flag_ablation: bool = False,
+    max_oracle_nodes: int = 4,
+    log_graph_prior: dict | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """K-shot evaluation on tasks drawn from the TRAINING PRIOR: the only
+    evaluation in which the exact oracle is a true lower bound.
+
+    Bayes optimality holds in expectation over the prior. With a context
+    protocol that does not depend on the SCM, at every (design, k):
+        E[KL(truth||model)] - E[KL(truth||oracle)] = E[KL(oracle||model)] >= 0
+    (KL in nats per query point, expectations over tasks). Unlike `run_kshot`
+    (one fixed SCM, where the model can beat the oracle), this gives a lower
+    bound and an identity check.
+
+    Everything about the prior comes from `data_cfg` (graph, variable
+    permutation, weights, noise: `generate_task`; do-value distribution of
+    pools and queries: the task's own `meta["do_dist"]`; oracle graph and
+    parameter priors: `empirical_graph_prior`, `LinearGaussianPrior`; default
+    n_obs: `n_ctx_range`, `n_obs_min`). Task i depends only on (D, i).
+
+    Per task: n_obs observational rows and, from rng [base_seed, D, i, 7],
+    pools of k_max interventional rows (one per node, one random-target),
+    drawn once. Context (pool, k) = obs rows + pool[:k], shuffled; nested in
+    k; shared by all query pairs. All D (D - 1) ordered pairs (T, Y) are
+    scored with pair-relative designs random / do(T) / do(Y) / do(other);
+    do(other) averages over the other D - 2 nodes' pools (n_other). k = 0 is
+    design "obs". The oracle is fitted and the model run once per context.
+    KLs use a per-task do-value grid at quantiles of the task's do_dist.
+
+    Args:
+    ----------
+    predict_or_model : torch.nn.Module | callable
+        A loaded model, or a predictor (x, m, Ts, Ys, grid, zero_flags=False)
+        -> (mu, sd, logw) such as `functools.partial(predict_mixture, model,
+        device=...)`.
+
+    data_cfg : MixedRegimeConfig
+        Training data config (linear-Gaussian, normalise: false).
+
+    D : int
+        Number of variables (one value per call).
+
+    k_list : list[int]
+        Numbers of interventional rows; k = 0 is always included.
+
+    task_offset, n_tasks : int
+        Tasks task_offset .. task_offset + n_tasks - 1.
+
+    base_seed : int
+        Task stream seed (default differs from the bank and calibrate).
+
+    n_obs : int | None
+        Observational rows (default `default_n_obs(data_cfg)`).
+
+    grid_eps, n_t : float, int
+        Do-value grid: quantiles linspace(grid_eps, 1 - grid_eps, n_t).
+
+    n_y, n_mc : int
+        Monte Carlo y samples per do-value; oracle draws per DAG.
+
+    flag_ablation : bool
+        Also score the model with intervention flags zeroed.
+
+    max_oracle_nodes : int
+        Largest D for which exact DAG enumeration is attempted.
+
+    log_graph_prior : dict | None
+        dag_key -> log prior of the oracle (default: `empirical_graph_prior`
+        of `data_cfg`; tests pass a cheap one).
+
+    Returns:
+    ----------
+    (one row per task, pair, design, k; one row per task, pair, design, k and
+    grid point).
+    """
+    from CITNP.datasets.mixed_regime_generator import do_dist_quantile
+    from CITNP.prior_diagnostics.stats import question_class
+
+    if D > max_oracle_nodes:
+        raise ValueError(
+            f"D={D} > max_oracle_nodes={max_oracle_nodes}: exact DAG "
+            "enumeration is infeasible"
+        )
+    if D not in list(data_cfg.num_variables):
+        raise ValueError(f"D={D} not in data_cfg.num_variables")
+    require_exact_oracle(data_cfg)
+    if isinstance(predict_or_model, torch.nn.Module):
+        predict = partial(predict_mixture, predict_or_model, device=device)
+    else:
+        predict = predict_or_model
+    ks = sorted(set(k_list) | {0})
+    k_pos = [k for k in ks if k > 0]
+    n_obs = default_n_obs(data_cfg) if n_obs is None else n_obs
+    check_context_size(data_cfg, n_obs, ks[-1])
+
+    graph_prior = log_graph_prior
+    if graph_prior is None:
+        graph_prior = empirical_graph_prior(data_cfg, num_nodes=D)
+    pairs = [(T, Y) for T in range(D) for Y in range(D) if T != Y]
+    Ts = np.array([T for T, _ in pairs])
+    Ys = np.array([Y for _, Y in pairs])
+    q_levels = np.linspace(grid_eps, 1.0 - grid_eps, n_t)
+    pool_keys: list = list(range(D)) + ["random"]
+    fields_out = [
+        f for f in _PRIOR_FIELDS if flag_ablation or not f.endswith("noflag")
+    ]
+
+    rows: list[dict] = []
+    rows_t: list[dict] = []
+    for i in range(task_offset, task_offset + n_tasks):
+        scm, graph, do_dist, attempts = prior_scm(data_cfg, i, base_seed, D)
+        grid = do_dist_quantile(do_dist, q_levels)
+        g = torch.tensor(grid, dtype=torch.float64, device=device)
+        truth = [scm.do_dist(T, Y) for T, Y in pairs]
+        rel = [question_class(graph, T, Y) for T, Y in pairs]
+
+        rng = np.random.default_rng([base_seed, D, i, 7])
+        obs_x, obs_m = scm.sample(n_obs, None, None, rng)
+        pools = node_pools(scm, ks[-1], do_dist, rng) if k_pos else {}
+        contexts = _build_contexts(
+            obs_x, obs_m, pools, k_pos, [base_seed, D, i], designs=pool_keys
+        )
+
+        # pool key -> design, per pair
+        design_of = []
+        for T, Y in pairs:
+            inv = {}
+            for design, p in pair_design_pools(T, Y, D).items():
+                for j in p if isinstance(p, list) else [p]:
+                    inv[j] = design
+            design_of.append(inv)
+
+        acc: dict = {}  # (pair index, design, k) -> [(fields, t rows, nodes)]
+        for c_i, (key, k, x, m, nodes) in enumerate(contexts):
+            orc, mod, mod_nf = _fit_context(
+                predict, x, m, data_cfg, graph_prior, D, Ts, Ys, grid,
+                flag_ablation,
+            )  # fmt: skip
+            qrng = np.random.default_rng([base_seed, D, i, c_i, k, 99])
+            for qi, (T, Y) in enumerate(pairs):
+                fields, t_rows = _score_query(
+                    orc, mod, mod_nf, qi, T, Y, truth[qi], grid, g, qrng,
+                    n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
+                    oracle_seed=i, dev=device,
+                )  # fmt: skip
+                design = "obs" if key == "obs" else design_of[qi][key]
+                acc.setdefault((qi, design, k), []).append(
+                    (fields, t_rows, nodes)
+                )
+
+        scale = do_dist.get("scale", do_dist.get("width"))
+        for qi, (T, Y) in enumerate(pairs):
+            for design in ["obs"] + PRIOR_DESIGNS:
+                for k in [0] if design == "obs" else k_pos:
+                    items = acc.get((qi, design, k))
+                    if items is None:
+                        continue
+                    nodes = frozenset().union(*(n for _, _, n in items))
+                    ident = {
+                        "D": D, "task": i, "T": T, "Y": Y,
+                        "relation": rel[qi], "design": design, "k": k,
+                    }  # fmt: skip
+                    f = _mean_dicts([
+                        {n: it[0][n] for n in fields_out} for it in items
+                    ])  # fmt: skip
+                    rows.append({
+                        **ident,
+                        "n_other": len(items) if design == "do(other)" else 0,
+                        "intervened_nodes": "".join(map(str, sorted(nodes))),
+                        **f,
+                        "do_kind": do_dist["kind"],
+                        "do_scale_or_width": scale,
+                        "resample_attempts": attempts,
+                    })  # fmt: skip
+                    for ti in range(n_t):
+                        tr = _mean_dicts([it[1][ti] for it in items])
+                        rows_t.append({
+                            **ident, "q": float(q_levels[ti]), **tr
+                        })  # fmt: skip
+        if (i - task_offset + 1) % 10 == 0:
+            print(f"D={D}: {i - task_offset + 1}/{n_tasks} tasks done")
 
     return pd.DataFrame(rows), pd.DataFrame(rows_t)
 

@@ -216,6 +216,91 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Tasks drawn from the training prior (kshot-prior)
+# --------------------------------------------------------------------------- #
+PRIOR_DESIGNS = ["random", "do(T)", "do(Y)", "do(other)"]
+
+
+def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
+    """SCM, graph and do-value distribution of task `i` of the training prior.
+
+    Calls the training generator with key make_key(SOURCE_ADHOC, 0,
+    base_seed, i) and keeps only the SCM, graph and do_dist; the generator's
+    own context and query rows are discarded. Depends only on (cfg,
+    base_seed, D, i).
+
+    Args:
+    ----------
+    cfg : MixedRegimeConfig
+        Data config (linear-Gaussian family, normalise: false).
+
+    i : int
+        Task index.
+
+    base_seed : int
+        Seed of the task stream (distinct from the bank and calibrate seeds).
+
+    D : int
+        Number of variables.
+
+    Returns:
+    ----------
+    (LinearSCM, graph [D, D] int in the task's variable order, do_dist dict,
+    number of resample attempts the generator needed).
+    """
+    from CITNP.datasets.mixed_regime_generator import (
+        SOURCE_ADHOC,
+        generate_task,
+        make_key,
+    )
+    from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
+
+    require_exact_oracle(cfg)
+    task, debug = generate_task(
+        cfg,
+        make_key(SOURCE_ADHOC, 0, base_seed, i),
+        num_variables=D,
+        return_debug=True,
+    )
+    lg = scm_from_debug(debug)
+    if not np.allclose(lg.c, 0.0):
+        raise ValueError("prior_scm needs zero intercepts (normalise: false)")
+    return (
+        LinearSCM(lg.B, lg.omega),
+        task.graph.astype(int),
+        dict(task.meta["do_dist"]),
+        int(task.meta["resample_attempts"]),
+    )
+
+
+def pair_design_pools(T: int, Y: int, D: int) -> dict:
+    """Pool(s) used by each design for the query pair (T, Y): "random" -> the
+    random pool, "do(T)" -> pool T, "do(Y)" -> pool Y, "do(other)" -> the list
+    of the remaining D - 2 nodes' pools."""
+    return {
+        "random": "random",
+        "do(T)": T,
+        "do(Y)": Y,
+        "do(other)": [j for j in range(D) if j not in (T, Y)],
+    }
+
+
+def default_n_obs(cfg) -> int:
+    """Smallest observational context the training prior can produce:
+    max(n_ctx_range[0], n_obs_min)."""
+    return max(int(cfg.n_ctx_range[0]), int(getattr(cfg, "n_obs_min", 0)))
+
+
+def check_context_size(cfg, n_obs: int, k_max: int) -> None:
+    """Raise if n_obs + k_max rows exceed the training n_ctx_range."""
+    if n_obs + k_max > cfg.n_ctx_range[1]:
+        raise ValueError(
+            f"n_obs + k_max = {n_obs + k_max} exceeds the training "
+            f"n_ctx_range {tuple(cfg.n_ctx_range)}"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Graph prior of the training generator (incl. its random variable permutation)
 # --------------------------------------------------------------------------- #
 def motif_graph_prior(cfg) -> dict:
