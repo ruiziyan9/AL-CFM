@@ -172,7 +172,11 @@ def _score_query(
 
     # exact Bayes p_B
     log_w, slope, var = orc.predictive_components(
-        T, Y, n_mc=n_mc, min_graph_prob=min_graph_prob, seed=oracle_seed,
+        T,
+        Y,
+        n_mc=n_mc,
+        min_graph_prob=min_graph_prob,
+        seed=oracle_seed,
         param_cache=param_cache,
     )
     log_w, w, var = oracle_weights(log_w, var)

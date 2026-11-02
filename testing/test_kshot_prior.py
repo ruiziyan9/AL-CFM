@@ -324,9 +324,7 @@ def test_oracle_param_cache_matches_uncached():
                     continue
                 kw = dict(n_mc=40, min_graph_prob=1e-4, seed=3)
                 plain = orc.predictive_components(T, Y, **kw)
-                cached = orc.predictive_components(
-                    T, Y, param_cache=cache, **kw
-                )
+                cached = orc.predictive_components(T, Y, param_cache=cache, **kw)
                 for a, b in zip(plain, cached):
                     assert np.array_equal(a, b)
     assert len(cache) > 0
