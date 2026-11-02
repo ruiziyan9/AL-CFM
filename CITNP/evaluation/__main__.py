@@ -480,9 +480,7 @@ def _run_plot_kshot_prior(
     matplotlib.use("Agg")
     from CITNP.evaluation.plots import plot_kshot_prior_all
 
-    prefix = a.prefix or re.sub(
-        r"_part\d+$", "", a.csvs[0].removesuffix(".csv")
-    )
+    prefix = a.prefix or re.sub(r"_part\d+$", "", a.csvs[0].removesuffix(".csv"))
     plot_kshot_prior_all(a.csvs, prefix)
 
 
