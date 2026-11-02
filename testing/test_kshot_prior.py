@@ -20,7 +20,12 @@ from CITNP.datasets.mixed_regime_generator import (
 )
 from CITNP.evaluation import tasks
 from CITNP.evaluation.experiments import _build_contexts, run_kshot_prior
-from CITNP.evaluation.metrics import oracle_mixture_on_grid, oracle_weights
+from CITNP.evaluation.metrics import (
+    mix_logpdf,
+    oracle_mixture_on_grid,
+    oracle_moments,
+    oracle_weights,
+)
 from CITNP.evaluation.oracle import LinGaussOracle, all_dags, dag_key
 from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
 
@@ -303,28 +308,90 @@ def test_default_graph_prior_covers_true_graphs_d3():
 # --------------------------------------------------------------------------- #
 # oracle parameter cache
 # --------------------------------------------------------------------------- #
-def test_oracle_param_cache_matches_uncached():
-    D = 3
+def fitted_oracle(D: int = 3) -> LinGaussOracle:
+    """Oracle fitted on a fixed context: 30 obs rows + 4 rows of do(X0) from
+    prior task 1. Uses the uniform graph prior: these tests compare the
+    oracle with itself, so any graph prior will do."""
     scm, _, do_dist, _ = tasks.prior_scm(CFG, 1, SEED, D)
     rng = np.random.default_rng(0)
     x, m = scm.sample(30, None, None, rng)
     px, pm, _ = tasks.node_pools(scm, 4, do_dist, rng)[0]
     x, m = np.concatenate([x, px]), np.concatenate([m, pm])
-    # cached vs uncached on the same oracle: any graph prior will do
-    orc = LinGaussOracle(
+    return LinGaussOracle(
         D,
         log_graph_prior=uniform_prior(D),
         prior=LinearGaussianPrior.from_config(CFG),
     ).fit(x, m)
-    cache: dict = {}
-    for _ in range(2):  # second pass: every DAG served from the cache
-        for T in range(D):
-            for Y in range(D):
-                if T == Y:
-                    continue
-                kw = dict(n_mc=40, min_graph_prob=1e-4, seed=3)
-                plain = orc.predictive_components(T, Y, **kw)
-                cached = orc.predictive_components(T, Y, param_cache=cache, **kw)
-                for a, b in zip(plain, cached):
-                    assert np.array_equal(a, b)
-    assert len(cache) > 0
+
+
+def test_oracle_param_cache_matches_uncached():
+    D = 3
+    orc = fitted_oracle(D)
+    cache: dict = {}  # shared by both budgets: their keys must not clash
+    for _ in range(2):  # second pass: every draw served from the cache
+        for budget in ("per_dag", "total"):
+            kw = dict(n_mc=40, min_graph_prob=1e-4, seed=3, budget=budget)
+            for T in range(D):
+                for Y in range(D):
+                    if T == Y:
+                        continue
+                    plain = orc.predictive_components(T, Y, **kw)
+                    cached = orc.predictive_components(
+                        T, Y, param_cache=cache, **kw
+                    )
+                    for a, b in zip(plain, cached):
+                        assert np.array_equal(a, b)
+    assert (3, 40, 1e-4, "total") in cache
+    assert any(isinstance(k[3], int) for k in cache)
+
+
+# --------------------------------------------------------------------------- #
+# oracle MC budget "total"
+# --------------------------------------------------------------------------- #
+def test_total_budget_components():
+    orc = fitted_oracle()
+    n_mc, min_p = 500, 0.02
+    log_w, slope, var = orc.predictive_components(
+        0, 2, n_mc=n_mc, min_graph_prob=min_p, seed=1, budget="total"
+    )
+    assert len(log_w) == len(slope) == len(var) == n_mc
+    assert np.exp(log_w).sum() == pytest.approx(1.0)
+    draws = orc._draw_total(n_mc, min_p, 1)
+    assert sum(len(B) for _, B, _ in draws) == n_mc
+    assert all(len(B) > 0 for _, B, _ in draws)
+    post = orc.graph_post
+    assert all(post[g] >= min_p for g, _, _ in draws)
+    assert (post < min_p).any()  # the threshold drops some DAGs here
+
+
+def test_total_and_per_dag_budgets_agree():
+    orc = fitted_oracle()
+    t = np.array([-1.5, 0.0, 1.5])
+    out = {}
+    for budget, n_mc in (("per_dag", 4000), ("total", 20000)):
+        log_w, slope, var = orc.predictive_components(
+            0, 2, n_mc=n_mc, min_graph_prob=1e-4, seed=2, budget=budget
+        )
+        _, w, var = oracle_weights(log_w, var)
+        out[budget] = oracle_moments(w, slope, var, t)
+    s_pd, _, mean_pd, var_pd = out["per_dag"]
+    s_tot, _, mean_tot, var_tot = out["total"]
+    assert s_tot == pytest.approx(s_pd, rel=0.05, abs=0.05)
+    np.testing.assert_allclose(mean_tot, mean_pd, rtol=0.05, atol=0.08)
+    np.testing.assert_allclose(var_tot, var_pd, rtol=0.1)
+
+
+@pytest.mark.parametrize("chunk", [1, 128, 300, 1000, 5000])
+def test_mix_logpdf_chunked_matches_unchunked(chunk):
+    g = torch.Generator().manual_seed(0)
+    n_t, n_y, K = 5, 7, 1000
+
+    def randn(*shape):
+        return torch.randn(*shape, generator=g, dtype=torch.float64)
+
+    mu, sd = randn(n_t, K), randn(n_t, K).exp()
+    logw = torch.log_softmax(randn(n_t, K), dim=-1)
+    y = 2 * randn(n_t, n_y)
+    torch.testing.assert_close(
+        mix_logpdf(y, mu, sd, logw, chunk=chunk), mix_logpdf(y, mu, sd, logw)
+    )

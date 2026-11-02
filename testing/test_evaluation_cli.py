@@ -154,6 +154,7 @@ def _part_meta(**over):
         "k_list": [0, 1, 3],
         "n_obs": 30,
         "graph_prior_samples": {"3": 20000, "4": 500000},
+        "oracle_budget": "total",
     }
     meta.update(over)
     return meta
@@ -170,9 +171,11 @@ def test_meta_mismatches_reports_ckpt_and_k_list():
 
     diff = _meta_mismatches({
         "p0": _part_meta(),
-        "p1": _part_meta(ckpt="other.pt", k_list=[0, 1]),
+        "p1": _part_meta(
+            ckpt="other.pt", k_list=[0, 1], oracle_budget="per_dag"
+        ),
     })  # fmt: skip
-    assert set(diff) == {"ckpt", "k_list"}
+    assert set(diff) == {"ckpt", "k_list", "oracle_budget"}
     assert diff["ckpt"] == {"p0": "model.pt", "p1": "other.pt"}
     assert diff["k_list"] == {"p0": [0, 1, 3], "p1": [0, 1]}
 

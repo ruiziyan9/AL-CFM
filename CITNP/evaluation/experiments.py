@@ -136,9 +136,15 @@ def _fit_context(
     return orc, mod, mod_nf
 
 
+# Component block size of `mix_logpdf` in `_score_query` (bounds memory for
+# large oracle mixtures; mixtures with <= this many components are unchunked).
+_MIX_CHUNK = 8192
+
+
 def _score_query(
     orc, mod, mod_nf, qi, T, Y, truth, grid, g, qrng, *, n_y, n_mc,
     min_graph_prob, oracle_seed, dev, naive=None, param_cache=None,
+    oracle_budget="per_dag",
 ):  # fmt: skip
     """KLs, slopes and variance ratio of one query against one context fit.
 
@@ -161,6 +167,9 @@ def _score_query(
         Oracle parameter cache of this context (see
         `LinGaussOracle.predictive_components`).
 
+    oracle_budget : str
+        "per_dag" or "total" (see `LinGaussOracle.predictive_components`).
+
     Returns:
     ----------
     (row fields, per-t rows): dicts holding only the score columns; the
@@ -178,16 +187,18 @@ def _score_query(
         min_graph_prob=min_graph_prob,
         seed=oracle_seed,
         param_cache=param_cache,
+        budget=oracle_budget,
     )
     log_w, w, var = oracle_weights(log_w, var)
     y_or = torch.tensor(sample_oracle(w, slope, var, grid, n_y, qrng), device=dev)
     o_par = oracle_mixture_on_grid(log_w, slope, var, g)
 
     m_par = tuple(p[qi] for p in mod)
-    lp_o_on_o = mix_logpdf(y_or, *o_par)
-    kl_om = kl_mc(lp_o_on_o, mix_logpdf(y_or, *m_par))
-    kl_tm = kl_mc(lp_true, mix_logpdf(y_true, *m_par))
-    kl_to = kl_mc(lp_true, mix_logpdf(y_true, *o_par))
+    mlp = partial(mix_logpdf, chunk=_MIX_CHUNK)
+    lp_o_on_o = mlp(y_or, *o_par)
+    kl_om = kl_mc(lp_o_on_o, mlp(y_or, *m_par))
+    kl_tm = kl_mc(lp_true, mlp(y_true, *m_par))
+    kl_to = kl_mc(lp_true, mlp(y_true, *o_par))
 
     # moments
     s_bar, s_sd, mean_o, var_o = oracle_moments(w, slope, var, grid)
@@ -201,7 +212,7 @@ def _score_query(
     }
     if mod_nf is not None:
         nf_par = tuple(p[qi] for p in mod_nf)
-        kl_om_nf = kl_mc(lp_o_on_o, mix_logpdf(y_or, *nf_par))
+        kl_om_nf = kl_mc(lp_o_on_o, mlp(y_or, *nf_par))
         fields["kl_oracle_model_noflag"] = float(kl_om_nf.mean())
     fields["excess_kl_truth"] = float((kl_tm - kl_to).mean())
     fields["slope_truth"] = float(b)
@@ -389,6 +400,7 @@ def run_kshot_prior(
     max_oracle_nodes: int = 4,
     log_graph_prior: dict | None = None,
     graph_prior_samples: int | None = None,
+    oracle_budget: str = "total",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """K-shot evaluation on tasks drawn from the TRAINING PRIOR: the only
     evaluation in which the exact oracle is a true lower bound.
@@ -464,6 +476,11 @@ def run_kshot_prior(
         Graphs sampled by the default `empirical_graph_prior` (ignored when
         `log_graph_prior` is given; default `resolve_graph_prior_samples(D)`:
         20000 for D = 3, 500000 for D >= 4).
+
+    oracle_budget : str
+        How the oracle spends its n_mc parameter draws (see
+        `LinGaussOracle.predictive_components`): "total" (default; n_mc
+        mixture components per query) or "per_dag" (n_mc per retained DAG).
 
     Returns:
     ----------
@@ -545,6 +562,7 @@ def run_kshot_prior(
                     orc, mod, mod_nf, qi, T, Y, truth[qi], grid, g, qrng,
                     n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
                     oracle_seed=i, dev=device, param_cache=cache,
+                    oracle_budget=oracle_budget,
                 )  # fmt: skip
                 design = "obs" if key == "obs" else design_of[qi][key]
                 acc.setdefault((qi, design, k), []).append(

@@ -18,6 +18,8 @@
 #   TASKS_PER_JOB  default 50
 #   K_LIST         default 0,1,3,5,10
 #   N_MC           default 2000
+#   ORACLE_BUDGET  total (default: N_MC oracle draws per query in total) or
+#                  per_dag (N_MC per retained DAG); --oracle_budget
 #   NUM_VARIABLES  optional comma-separated D values (default: all in DATA_CFG)
 #   DEVICE         default cpu. For a GPU add to the sbatch command line
 #                  --account=gpu_cebam.prj --partition=gpu_a100_80gb
@@ -27,6 +29,10 @@
 #                  in an interactive `srun --pty bash` session:
 #                  ARRAY_ID=1 bash CITNP/experiments/bmrc/eval_kshot_prior.sh
 #   DRY_RUN=1      print the resolved command and exit (plain `bash` works)
+#
+# Threads: common_env.sh pins OMP/MKL to 1 thread; this script then sets
+# OMP_NUM_THREADS and MKL_NUM_THREADS to SLURM_CPUS_PER_TASK (1 outside
+# Slurm), and kshot-prior calls torch.set_num_threads(OMP_NUM_THREADS).
 #
 # Adjust --array and --time to the number of tasks and the pilot's wall time.
 #SBATCH --job-name=alcfm_kshot_prior
@@ -45,6 +51,7 @@ OUT_PREFIX=${OUT_PREFIX:?set OUT_PREFIX}
 TASKS_PER_JOB=${TASKS_PER_JOB:-50}
 K_LIST=${K_LIST:-0,1,3,5,10}
 N_MC=${N_MC:-2000}
+ORACLE_BUDGET=${ORACLE_BUDGET:-total}
 NUM_VARIABLES=${NUM_VARIABLES:-}
 DEVICE=${DEVICE:-cpu}
 EXTRA_ARGS=${EXTRA_ARGS:-}
@@ -59,7 +66,8 @@ if [ -n "$NUM_VARIABLES" ]; then NV=(--num_variables "$NUM_VARIABLES"); fi
 CMD=(python -u -m CITNP.evaluation kshot-prior
   --ckpt "$CKPT" --model_config "$MODEL_CFG" --data_config "$DATA_CFG"
   --n_tasks "$TASKS_PER_JOB" --task_offset "$OFFSET"
-  --k_list "$K_LIST" --n_mc "$N_MC" --device "$DEVICE"
+  --k_list "$K_LIST" --n_mc "$N_MC" --oracle_budget "$ORACLE_BUDGET"
+  --device "$DEVICE"
   ${NV[@]+"${NV[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
   --out "$PART.csv")
 
@@ -70,6 +78,8 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 source "${COMMON_ENV:-${SLURM_SUBMIT_DIR:-.}/CITNP/experiments/bmrc/common_env.sh}"
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1} \
+  MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 mkdir -p "$(dirname "$OUT_PREFIX")"
 echo "=== kshot-prior part $ARRAY_ID: tasks $OFFSET..$((OFFSET + TASKS_PER_JOB - 1))"
 start=$(date +%s)

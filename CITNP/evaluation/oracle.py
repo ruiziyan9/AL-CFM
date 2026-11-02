@@ -332,17 +332,37 @@ class LinGaussOracle:
         min_graph_prob: float = 1e-6,
         seed: int = 0,
         param_cache: dict | None = None,
+        budget: str = "per_dag",
     ):
         """Mixture representation of p(X_Y | do(X_T = t), data):
         returns (log_w [M], slope [M], var [M]) with component mean = slope * t.
         (Zero-mean priors and linear SEM => interventional mean is linear in t.)
 
+        Only DAGs with posterior >= min_graph_prob are used.
+
+        budget: how the n_mc parameter draws are spent.
+            "per_dag": n_mc draws for EVERY retained DAG g, weights
+                post(g) / n_mc; M = (#retained DAGs) * n_mc.
+            "total": n_mc draws in total. Counts n_g ~ Multinomial(n_mc,
+                posterior renormalised over the retained DAGs), n_g draws
+                for DAG g (DAGs with n_g = 0 are skipped), every component
+                weighted 1 / n_mc. Same posterior predictive (unbiased MC
+                estimate) with M = n_mc instead of ~(#DAGs) * n_mc
+                components.
+
         param_cache: optional dict, to be used for ONE fitted context (create a
-        new one after every `fit`). The parameters drawn for each DAG depend on
-        (seed, n_mc, min_graph_prob) but not on (T, Y), because one generator
-        is consumed DAG by DAG, so queries sharing these values reuse them and
-        return exactly what the uncached call returns. None: no caching.
+        new one after every `fit`). The parameters drawn depend on (seed, n_mc,
+        min_graph_prob, budget) but not on (T, Y), because one generator is
+        consumed DAG by DAG ("total": allocation first, then DAG by DAG), so
+        queries sharing these values reuse them and return exactly what the
+        uncached call returns. None: no caching.
         """
+        if budget == "total":
+            return self._predictive_total(
+                T, Y, n_mc, min_graph_prob, seed, param_cache
+            )
+        if budget != "per_dag":
+            raise ValueError(f"unknown budget {budget!r}")
         rng = np.random.default_rng(seed)
         log_ws: list[np.ndarray] = []
         slopes: list[np.ndarray] = []
@@ -352,24 +372,62 @@ class LinGaussOracle:
                 continue
             ck = (seed, n_mc, min_graph_prob, g_i)
             if param_cache is not None and ck in param_cache:
-                B, s2 = (a.copy() for a in param_cache[ck])
+                B, s2 = param_cache[ck]
             else:
                 B, s2 = self._sample_params(g_i, n_mc, rng)
                 if param_cache is not None:
-                    param_cache[ck] = (B.copy(), s2.copy())
-            B[:, :, T] = 0.0  # cut edges into T
-            s2 = s2.copy()
-            s2[:, T] = 0.0  # T is fixed
-            # x = (I - B^T)^{-1} (e + t u_T)
-            A = np.linalg.inv(np.eye(self.d)[None] - np.transpose(B, (0, 2, 1)))
-            slopes.append(A[:, Y, T])
-            vars_.append(np.einsum("mk,mk->m", A[:, Y, :] ** 2, s2))
+                    param_cache[ck] = (B, s2)
+            slope, var = self._do_line(B, s2, T, Y)
+            slopes.append(slope)
+            vars_.append(var)
             log_ws.append(np.full(n_mc, lp - np.log(n_mc)))
         return (
             np.concatenate(log_ws),
             np.concatenate(slopes),
             np.concatenate(vars_),
         )
+
+    def _do_line(self, B: np.ndarray, s2: np.ndarray, T: int, Y: int):
+        """Slope [m] and variance [m] of X_Y | do(X_T = t) for each parameter
+        draw (B [m, d, d], s2 [m, d]); the inputs are not modified."""
+        B = B.copy()
+        B[:, :, T] = 0.0  # cut edges into T
+        s2 = s2.copy()
+        s2[:, T] = 0.0  # T is fixed
+        # x = (I - B^T)^{-1} (e + t u_T)
+        A = np.linalg.inv(np.eye(self.d)[None] - np.transpose(B, (0, 2, 1)))
+        return A[:, Y, T], np.einsum("mk,mk->m", A[:, Y, :] ** 2, s2)
+
+    def _draw_total(self, n_mc: int, min_graph_prob: float, seed: int):
+        """Parameter draws of budget "total": [(g_i, B [n_g, d, d],
+        s2 [n_g, d])] for the DAGs with n_g > 0, n_g ~ Multinomial(n_mc,
+        posterior renormalised over DAGs with posterior >= min_graph_prob)."""
+        rng = np.random.default_rng(seed)
+        keep = np.flatnonzero(np.exp(self.log_post) >= min_graph_prob)
+        lp = self.log_post[keep]
+        p = np.exp(lp - logsumexp(lp))
+        counts = rng.multinomial(n_mc, p / p.sum())
+        out = []
+        for g_i, n_g in zip(keep, counts):
+            if n_g == 0:
+                continue
+            B, s2 = self._sample_params(int(g_i), int(n_g), rng)
+            out.append((int(g_i), B, s2))
+        return out
+
+    def _predictive_total(self, T, Y, n_mc, min_graph_prob, seed, param_cache):
+        """`predictive_components` with budget "total"."""
+        ck = (seed, n_mc, min_graph_prob, "total")
+        if param_cache is not None and ck in param_cache:
+            draws = param_cache[ck]
+        else:
+            draws = self._draw_total(n_mc, min_graph_prob, seed)
+            if param_cache is not None:
+                param_cache[ck] = draws
+        lines = [self._do_line(B, s2, T, Y) for _, B, s2 in draws]
+        slope = np.concatenate([s for s, _ in lines])
+        var = np.concatenate([v for _, v in lines])
+        return np.full(len(slope), -np.log(n_mc)), slope, var
 
     def logpdf(
         self, T: int, Y: int, t: np.ndarray, y: np.ndarray, **kw

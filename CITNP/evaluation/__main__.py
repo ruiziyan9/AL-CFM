@@ -122,6 +122,10 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                    help="graphs sampled for the oracle's graph prior "
                         "(default: 20000 for D = 3, 500000 "
                         "for D >= 4)")  # fmt: skip
+    p.add_argument("--oracle_budget", choices=["per_dag", "total"],
+                   default="total",
+                   help="oracle MC draws: n_mc in total (default) or n_mc "
+                        "per retained DAG")  # fmt: skip
 
 
 def _plot_kshot_prior_parser(p: argparse.ArgumentParser) -> None:
@@ -309,12 +313,19 @@ def _run_kshot_prior(
     a: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
     import json
+    import os
     import time
 
     import pandas as pd
+    import torch
 
     if not (a.ckpt and a.model_config and a.data_config):
         parser.error("--ckpt, --model_config and --data_config are required")
+
+    # intra-op threads follow OMP_NUM_THREADS (eval_kshot_prior.sh sets it to
+    # the Slurm CPU count; common_env.sh alone pins it to 1)
+    n_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
+    torch.set_num_threads(n_threads)
 
     from CITNP.datasets.create_mixed_regime_chunks import (
         _git_commit,
@@ -353,7 +364,7 @@ def _run_kshot_prior(
             n_t=a.n_t, n_y=a.n_y, n_mc=a.n_mc,
             min_graph_prob=a.min_graph_prob, flag_ablation=a.flag_ablation,
             max_oracle_nodes=a.max_oracle_nodes,
-            graph_prior_samples=n_graphs[D],
+            graph_prior_samples=n_graphs[D], oracle_budget=a.oracle_budget,
         )  # fmt: skip
         dfs.append(df)
         dfs_t.append(df_t)
@@ -383,6 +394,8 @@ def _run_kshot_prior(
         "k_list": k_list,
         "n_obs": n_obs,
         "graph_prior_samples": {str(D): n for D, n in n_graphs.items()},
+        "oracle_budget": a.oracle_budget,
+        "torch_threads": n_threads,
         "do_dist_summary": do_summary,
         "seconds": time.time() - t0,
     }  # fmt: skip
@@ -405,6 +418,7 @@ _MERGE_FIELDS = {
     "n_obs": ("n_obs",),
     "grid_eps": ("args", "grid_eps"),
     "graph_prior_samples": ("graph_prior_samples",),
+    "oracle_budget": ("oracle_budget",),
 }
 
 

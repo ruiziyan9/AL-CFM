@@ -27,14 +27,33 @@ def naive_slope(S: np.ndarray, T: int, Y: int) -> float:
 # Densities and samples on a grid of do-values t [n_t], n_y samples per t
 # --------------------------------------------------------------------------- #
 def mix_logpdf(
-    y: torch.Tensor, mu: torch.Tensor, sd: torch.Tensor, logw: torch.Tensor
+    y: torch.Tensor,
+    mu: torch.Tensor,
+    sd: torch.Tensor,
+    logw: torch.Tensor,
+    chunk: int | None = None,
 ):
     """log density of y [n_t, n_y] under per-t Gaussian mixtures
-    mu, sd, logw [n_t, K]  ->  [n_t, n_y]."""
-    lp = torch.distributions.Normal(mu[:, None, :], sd[:, None, :]).log_prob(
-        y[:, :, None]
-    )
-    return torch.logsumexp(lp + logw[:, None, :], dim=-1)
+    mu, sd, logw [n_t, K]  ->  [n_t, n_y].
+
+    chunk: if set and K > chunk, the logsumexp runs over blocks of `chunk`
+    components, combined with logaddexp, so memory is O(n_t n_y chunk)
+    instead of O(n_t n_y K). Equal to the unchunked value up to float
+    rounding; K <= chunk takes the unchunked path (bit-identical)."""
+    K = mu.shape[-1]
+    if chunk is None or K <= chunk:
+        lp = torch.distributions.Normal(mu[:, None, :], sd[:, None, :]).log_prob(
+            y[:, :, None]
+        )
+        return torch.logsumexp(lp + logw[:, None, :], dim=-1)
+    out = None
+    for s in range(0, K, chunk):
+        sl = slice(s, s + chunk)
+        dist = torch.distributions.Normal(mu[:, None, sl], sd[:, None, sl])
+        lp = dist.log_prob(y[:, :, None])
+        part = torch.logsumexp(lp + logw[:, None, sl], dim=-1)
+        out = part if out is None else torch.logaddexp(out, part)
+    return out
 
 
 def sample_truth(
