@@ -224,10 +224,12 @@ PRIOR_DESIGNS = ["random", "do(T)", "do(Y)", "do(other)"]
 def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     """SCM, graph and do-value distribution of task `i` of the training prior.
 
-    Calls the training generator with key make_key(SOURCE_ADHOC, 0,
+    Calls the training generator with key make_key(SOURCE_ADHOC, D,
     base_seed, i) and keeps only the SCM, graph and do_dist; the generator's
     own context and query rows are discarded. Depends only on (cfg,
-    base_seed, D, i).
+    base_seed, D, i): D sits in the key's split slot, so tasks with the same
+    i but different D use unrelated random streams. Other SOURCE_ADHOC
+    callers use split 0 and D >= 1, so these keys collide with none of them.
 
     Args:
     ----------
@@ -258,7 +260,7 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     require_exact_oracle(cfg)
     task, debug = generate_task(
         cfg,
-        make_key(SOURCE_ADHOC, 0, base_seed, i),
+        make_key(SOURCE_ADHOC, D, base_seed, i),
         num_variables=D,
         return_debug=True,
     )
@@ -337,6 +339,16 @@ def empirical_graph_prior(
         g = g[np.ix_(p, p)].astype(int)
         counts[dag_key(g)] = counts.get(dag_key(g), 0) + 1
     return {k: np.log(v / n) for k, v in counts.items()}
+
+
+def resolve_graph_prior_samples(D: int, n: int | None = None) -> int:
+    """Graphs sampled by `empirical_graph_prior` for the kshot-prior oracle:
+    `n` if given, else 20000 for D <= 3 (all 25 DAGs are seen) and 500000
+    for D >= 4 (543 DAGs; 20000 can miss ~1% of the prior mass, and the
+    oracle gives unseen DAGs log prior -inf)."""
+    if n is not None:
+        return int(n)
+    return 20000 if D <= 3 else 500000
 
 
 # --------------------------------------------------------------------------- #

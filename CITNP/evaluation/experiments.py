@@ -35,7 +35,7 @@ from CITNP.evaluation.model_api import (
     predict_mixture,
     probe_points,
 )
-from CITNP.evaluation.oracle import LinGaussOracle
+from CITNP.evaluation.oracle import LinGaussOracle, dag_key
 from CITNP.evaluation.probes import fit_linear_probe
 from CITNP.evaluation.tasks import (
     DESIGNS,
@@ -55,6 +55,7 @@ from CITNP.evaluation.tasks import (
     query_type,
     random_confounder_scm,
     require_exact_oracle,
+    resolve_graph_prior_samples,
     scm_suite,
 )
 
@@ -383,6 +384,7 @@ def run_kshot_prior(
     flag_ablation: bool = False,
     max_oracle_nodes: int = 4,
     log_graph_prior: dict | None = None,
+    graph_prior_samples: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """K-shot evaluation on tasks drawn from the TRAINING PRIOR: the only
     evaluation in which the exact oracle is a true lower bound.
@@ -448,7 +450,16 @@ def run_kshot_prior(
 
     log_graph_prior : dict | None
         dag_key -> log prior of the oracle (default: `empirical_graph_prior`
-        of `data_cfg`; tests pass a cheap one).
+        of `data_cfg`; tests pass a cheap one). The identity and the bound
+        need the generator's graph distribution: a DAG missing here gets log
+        prior -inf, so a task whose true graph is missing inflates
+        KL(truth||oracle). Rows report `log_prior_true_graph` and
+        `true_graph_in_prior` to make such gaps visible.
+
+    graph_prior_samples : int | None
+        Graphs sampled by the default `empirical_graph_prior` (ignored when
+        `log_graph_prior` is given; default `resolve_graph_prior_samples(D)`:
+        20000 for D = 3, 500000 for D >= 4).
 
     Returns:
     ----------
@@ -477,7 +488,11 @@ def run_kshot_prior(
 
     graph_prior = log_graph_prior
     if graph_prior is None:
-        graph_prior = empirical_graph_prior(data_cfg, num_nodes=D)
+        graph_prior = empirical_graph_prior(
+            data_cfg,
+            n=resolve_graph_prior_samples(D, graph_prior_samples),
+            num_nodes=D,
+        )
     pairs = [(T, Y) for T in range(D) for Y in range(D) if T != Y]
     Ts = np.array([T for T, _ in pairs])
     Ys = np.array([Y for _, Y in pairs])
@@ -495,6 +510,7 @@ def run_kshot_prior(
         g = torch.tensor(grid, dtype=torch.float64, device=device)
         truth = [scm.do_dist(T, Y) for T, Y in pairs]
         rel = [question_class(graph, T, Y) for T, Y in pairs]
+        log_prior_true = float(graph_prior.get(dag_key(graph), -np.inf))
 
         rng = np.random.default_rng([base_seed, D, i, 7])
         obs_x, obs_m = scm.sample(n_obs, None, None, rng)
@@ -554,6 +570,10 @@ def run_kshot_prior(
                         "do_kind": do_dist["kind"],
                         "do_scale_or_width": scale,
                         "resample_attempts": attempts,
+                        "log_prior_true_graph": log_prior_true,
+                        "true_graph_in_prior": bool(
+                            np.isfinite(log_prior_true)
+                        ),
                     })  # fmt: skip
                     for ti in range(n_t):
                         tr = _mean_dicts([it[1][ti] for it in items])

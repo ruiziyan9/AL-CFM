@@ -12,7 +12,7 @@
            [--n_mc 1000] [--compare_mc] --out calib.csv   # oracle SBC: PIT + MEC posterior
     python -m CITNP.evaluation plot-kshot kshot.csv     # all k-shot figures, no GPU
     python -m CITNP.evaluation plot-kshot-prior part0.csv [part1.csv ...] \
-           [--prefix P]            # merges array-job parts (same data config)
+           [--prefix P]            # merges array-job parts (same settings)
     python -m CITNP.evaluation plot-monitoring RUN_DIR [RUN_DIR ...] --out monitoring.png
     python -m CITNP.evaluation probe-flag --ckpt ... --model_config ... \
            --bank bank.pkl --out probe.csv               # + probe.png
@@ -23,7 +23,8 @@ the training prior, so E[KL(truth||model)] - E[KL(truth||oracle)] =
 E[KL(oracle||model)] >= 0. Its prior comes from the data config (graph,
 variable permutation, weights, noise, do-value distribution, D, default
 n_obs, oracle priors); the CLI only sets the protocol (k_list, n_tasks,
-task_offset, base_seed, n_y, n_mc, grid_eps).
+task_offset, base_seed, n_y, n_mc, grid_eps) and how many graphs estimate
+the oracle's graph prior (graph_prior_samples).
 
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
 and `probe-flag` compute,
@@ -117,6 +118,10 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                    help="also score the model with intervention flags zeroed")  # fmt: skip
     p.add_argument("--max_oracle_nodes", type=int, default=4,
                    help="largest D for exact DAG enumeration")  # fmt: skip
+    p.add_argument("--graph_prior_samples", type=int, default=None,
+                   help="graphs sampled for the oracle's graph prior "
+                        "(default: 20000 for D = 3, 500000 "
+                        "for D >= 4)")  # fmt: skip
 
 
 def _plot_kshot_prior_parser(p: argparse.ArgumentParser) -> None:
@@ -261,9 +266,12 @@ def _sha256(path: str) -> str:
 
 
 def _print_prior_summary(df) -> None:
-    """Per D: design x k means (pairs averaged within a task first, then mean
-    and s.e. over tasks) and the identity check: mean excess KL(truth) vs
-    mean KL(oracle||model)."""
+    """Per D: how well the oracle's prior matches the task stream (true graph
+    missing from the oracle's graph prior; generator max-abs resampling,
+    which slightly truncates the prior relative to the oracle), design x k
+    means (pairs averaged within a task first, then mean and s.e. over
+    tasks) and the identity check: mean excess KL(truth) vs mean
+    KL(oracle||model)."""
     import pandas as pd
 
     cols = [
@@ -274,6 +282,14 @@ def _print_prior_summary(df) -> None:
     ]
     with pd.option_context("display.width", 220, "display.max_rows", 500):
         for D, dd in df.groupby("D"):
+            per_t = dd.drop_duplicates("task")
+            missing = float((~per_t["true_graph_in_prior"]).mean())
+            resampled = float((per_t["resample_attempts"] > 0).mean())
+            print(
+                f"\n=== D={D}: {len(per_t)} tasks; true graph missing from "
+                f"the oracle's graph prior: {missing:.2%}; resampled by the "
+                f"generator (resample_attempts > 0): {resampled:.2%}"
+            )
             per_task = dd.groupby(["task", "design", "k"])[cols].mean()
             g = per_task.groupby(["design", "k"])
             mean, se = g.mean(), g.sem()
@@ -306,7 +322,10 @@ def _run_kshot_prior(
     )
     from CITNP.evaluation.experiments import run_kshot_prior
     from CITNP.evaluation.model_api import load_model
-    from CITNP.evaluation.tasks import default_n_obs
+    from CITNP.evaluation.tasks import (
+        default_n_obs,
+        resolve_graph_prior_samples,
+    )
 
     device = a.device or _default_device()
     data_cfg = load_config(a.data_config)
@@ -319,6 +338,10 @@ def _run_kshot_prior(
     k_list = sorted({int(k) for k in (a.k_list or "0,1,3,5,10").split(",")})
     n_obs = a.n_obs if a.n_obs is not None else default_n_obs(data_cfg)
 
+    n_graphs = {
+        D: resolve_graph_prior_samples(D, a.graph_prior_samples) for D in Ds
+    }
+
     t0 = time.time()
     dfs, dfs_t = [], []
     for D in Ds:
@@ -330,6 +353,7 @@ def _run_kshot_prior(
             n_t=a.n_t, n_y=a.n_y, n_mc=a.n_mc,
             min_graph_prob=a.min_graph_prob, flag_ablation=a.flag_ablation,
             max_oracle_nodes=a.max_oracle_nodes,
+            graph_prior_samples=n_graphs[D],
         )  # fmt: skip
         dfs.append(df)
         dfs_t.append(df_t)
@@ -358,6 +382,7 @@ def _run_kshot_prior(
         "num_variables": Ds,
         "k_list": k_list,
         "n_obs": n_obs,
+        "graph_prior_samples": {str(D): n for D, n in n_graphs.items()},
         "do_dist_summary": do_summary,
         "seconds": time.time() - t0,
     }  # fmt: skip
@@ -368,22 +393,73 @@ def _run_kshot_prior(
     _print_prior_summary(df)
 
 
+# Settings that must agree across kshot-prior parts before they are merged:
+# label -> key path in <out>_meta.json (missing keys read as None).
+_MERGE_FIELDS = {
+    "data_config sha256": ("data_config", "sha256"),
+    "ckpt": ("ckpt",),
+    "model_config sha256": ("model_config", "sha256"),
+    "base_seed": ("args", "base_seed"),
+    "k_list": ("k_list",),
+    "n_mc": ("args", "n_mc"),
+    "n_obs": ("n_obs",),
+    "grid_eps": ("args", "grid_eps"),
+    "graph_prior_samples": ("graph_prior_samples",),
+}
+
+
+def _meta_mismatches(metas: dict) -> dict:
+    """Fields of `_MERGE_FIELDS` on which the parts' metas disagree.
+
+    Args:
+    ----------
+    metas : dict
+        part name -> parsed <out>_meta.json.
+
+    Returns:
+    ----------
+    {field label: {part name: value}} for each differing field; empty if all
+    parts agree.
+    """
+    import json
+
+    out = {}
+    for field, keys in _MERGE_FIELDS.items():
+        vals = {}
+        for part, meta in metas.items():
+            v = meta
+            for key in keys:
+                v = v.get(key) if isinstance(v, dict) else None
+            vals[part] = v
+        if len({json.dumps(v, sort_keys=True) for v in vals.values()}) > 1:
+            out[field] = vals
+    return out
+
+
 def _run_plot_kshot_prior(
     a: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> None:
     import json
     import re
 
-    hashes = {}
+    metas = {}
     for path in a.csvs:
         meta_path = path.removesuffix(".csv") + "_meta.json"
         try:
             with open(meta_path) as f:
-                hashes[path] = json.load(f)["data_config"]["sha256"]
+                metas[path] = json.load(f)
         except FileNotFoundError:
             parser.error(f"missing {meta_path}")
-    if len(set(hashes.values())) > 1:
-        parser.error(f"parts have different data configs: {hashes}")
+    diff = _meta_mismatches(metas)
+    if diff:
+        lines = [
+            f"  {field}: "
+            + ", ".join(f"{part}={v!r}" for part, v in vals.items())
+            for field, vals in diff.items()
+        ]
+        parser.error(
+            "parts were run with different settings:\n" + "\n".join(lines)
+        )
 
     import matplotlib
 
@@ -511,7 +587,7 @@ COMMANDS = {
     "plot-kshot": (_plot_kshot_parser, "all k-shot figures from saved CSVs"),
     "plot-kshot-prior": (
         _plot_kshot_prior_parser,
-        "figures from kshot-prior CSV parts (same data config only)",
+        "figures from kshot-prior CSV parts (same settings only)",
     ),
     "plot-monitoring": (
         _plot_monitoring_parser,

@@ -143,6 +143,59 @@ def test_plot_kshot_prior_refuses_mixed_data_configs(tmp_path):
         main(["plot-kshot-prior", *paths])
 
 
+def _part_meta(**over):
+    """A kshot-prior <out>_meta.json as written by the CLI (fields checked
+    before merging), with overrides."""
+    meta = {
+        "data_config": {"path": "d.yaml", "sha256": "a" * 64},
+        "model_config": {"path": "m.yaml", "sha256": "b" * 64},
+        "ckpt": "model.pt",
+        "args": {"base_seed": 9101, "n_mc": 2000, "grid_eps": 0.02},
+        "k_list": [0, 1, 3],
+        "n_obs": 30,
+        "graph_prior_samples": {"3": 20000, "4": 500000},
+    }
+    meta.update(over)
+    return meta
+
+
+def test_meta_mismatches_accepts_identical_parts():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    assert _meta_mismatches({"p0": _part_meta(), "p1": _part_meta()}) == {}
+
+
+def test_meta_mismatches_reports_ckpt_and_k_list():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    diff = _meta_mismatches({
+        "p0": _part_meta(),
+        "p1": _part_meta(ckpt="other.pt", k_list=[0, 1]),
+    })  # fmt: skip
+    assert set(diff) == {"ckpt", "k_list"}
+    assert diff["ckpt"] == {"p0": "model.pt", "p1": "other.pt"}
+    assert diff["k_list"] == {"p0": [0, 1, 3], "p1": [0, 1]}
+
+
+def test_plot_kshot_prior_refuses_mismatched_ckpt(tmp_path, capsys):
+    import json
+
+    from CITNP.evaluation.__main__ import main
+
+    paths = []
+    for i, ckpt in enumerate(["a.pt", "b.pt"]):
+        csv = tmp_path / f"p_part{i}.csv"
+        csv.write_text("D\n3\n")
+        (tmp_path / f"p_part{i}_meta.json").write_text(
+            json.dumps(_part_meta(ckpt=ckpt))
+        )
+        paths.append(str(csv))
+    with pytest.raises(SystemExit):
+        main(["plot-kshot-prior", *paths])
+    err = capsys.readouterr().err
+    assert "ckpt" in err and "a.pt" in err and "b.pt" in err
+
+
 def test_plot_kshot_prior_writes_figures(tmp_path):
     import itertools
     import json

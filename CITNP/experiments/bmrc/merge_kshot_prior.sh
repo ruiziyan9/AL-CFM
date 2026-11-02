@@ -1,7 +1,8 @@
 #!/bin/bash
 # Merge the parts written by eval_kshot_prior.sh and draw the figures
-# (plot-kshot-prior refuses parts whose data-config hashes differ). Submit
-# after the array, or run it in an interactive session:
+# (plot-kshot-prior refuses parts whose data/model configs, checkpoint or
+# protocol settings differ; see _meta_mismatches). Submit after the array,
+# or run it in an interactive session:
 #
 #   REPO=$PWD OUT_PREFIX=... \
 #       sbatch --dependency=afterok:<array job id> \

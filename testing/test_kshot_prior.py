@@ -2,6 +2,8 @@
 designs, and the identity E[excess] = E[KL(oracle||model)] with injected
 predictors (CPU, no checkpoint)."""
 
+import functools
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -39,8 +41,16 @@ SEED = 9101
 
 
 def uniform_prior(D: int) -> dict:
+    """Not the generator's graph distribution: only for tests that do not
+    need the exact oracle of CFG."""
     dags = all_dags(D)
     return {dag_key(g): -np.log(len(dags)) for g in dags}
+
+
+@functools.lru_cache(maxsize=None)
+def empirical_prior(D: int) -> dict:
+    """The generator's graph distribution, as the exact oracle needs it."""
+    return tasks.empirical_graph_prior(CFG, num_nodes=D)
 
 
 def normal_predictor(x, m, Ts, Ys, grid, zero_flags=False):
@@ -81,6 +91,10 @@ def make_oracle_predictor(D: int, log_graph_prior: dict, n_mc: int):
 
 
 def run(D, n_tasks, k_list, predict, n_mc=50, **kw):
+    """run_kshot_prior on CFG; the oracle uses `empirical_prior(D)` unless
+    `log_graph_prior` is passed (None: run_kshot_prior's own default)."""
+    if "log_graph_prior" not in kw:
+        kw["log_graph_prior"] = empirical_prior(D)
     return run_kshot_prior(
         predict,
         CFG,
@@ -92,7 +106,6 @@ def run(D, n_tasks, k_list, predict, n_mc=50, **kw):
         n_y=32,
         n_t=5,
         n_mc=n_mc,
-        log_graph_prior=uniform_prior(D),
         **kw,
     )
 
@@ -114,7 +127,7 @@ def test_prior_scm_matches_generator(D):
         scm, graph, do_dist, attempts = tasks.prior_scm(CFG, i, SEED, D)
         task, debug = generate_task(
             CFG,
-            make_key(SOURCE_ADHOC, 0, SEED, i),
+            make_key(SOURCE_ADHOC, D, SEED, i),
             num_variables=D,
             return_debug=True,
         )
@@ -186,7 +199,8 @@ def test_one_fit_per_context_shared_by_pairs():
         calls.append((x.copy(), len(Ts)))
         return normal_predictor(x, m, Ts, Ys, grid)
 
-    df, _ = run(D, 2, [0, 2, 4], spy)
+    # counts calls only: any graph prior will do
+    df, _ = run(D, 2, [0, 2, 4], spy, log_graph_prior=uniform_prior(D))
     # per task: obs + (D + 1) pools x 2 positive k
     assert len(calls) == 2 * (1 + (D + 1) * 2)
     assert all(n == D * (D - 1) for _, n in calls)
@@ -223,12 +237,14 @@ def test_check_context_size():
 @pytest.mark.slow
 def test_oracle_as_model_has_no_excess():
     D = 3
+    # oracle vs itself: equal whatever the (shared) graph prior
     df, _ = run(
         D,
         40,
         [0, 3],
         make_oracle_predictor(D, uniform_prior(D), 200),
         n_mc=200,
+        log_graph_prior=uniform_prior(D),
     )
     assert df["kl_oracle_model"].mean() < 0.05
     assert abs(df["excess_kl_truth"].mean()) < 0.05
@@ -250,7 +266,10 @@ def test_normal_predictor_obeys_identity():
 # 7. D = 4 smoke
 # --------------------------------------------------------------------------- #
 def test_d4_smoke():
-    df, df_t = run(4, 2, [0, 2], normal_predictor)
+    # smoke test: the uniform prior keeps it cheap (no D = 4 graph sampling)
+    df, df_t = run(
+        4, 2, [0, 2], normal_predictor, log_graph_prior=uniform_prior(4)
+    )
     other = df[df["design"] == "do(other)"]
     assert len(other) > 0 and (other["n_other"] == 2).all()
     assert (df[df["design"] != "do(other)"]["n_other"] == 0).all()
@@ -258,11 +277,27 @@ def test_d4_smoke():
     assert set(df["D"]) == {4}
     assert {"q", "t"} <= set(df_t.columns)
     assert df["kl_oracle_model"].notna().all()
+    # the uniform prior covers all 543 DAGs on 4 nodes
+    assert df["true_graph_in_prior"].all()
+    assert np.allclose(df["log_prior_true_graph"], -np.log(543))
 
 
 def test_rejects_large_d():
     with pytest.raises(ValueError):
-        run(4, 1, [0, 1], normal_predictor, max_oracle_nodes=3)
+        run(
+            4, 1, [0, 1], normal_predictor, max_oracle_nodes=3,
+            log_graph_prior=uniform_prior(4),
+        )  # fmt: skip
+
+
+def test_default_graph_prior_covers_true_graphs_d3():
+    # log_graph_prior=None: run_kshot_prior's own default (20000 graphs)
+    df, _ = run(3, 3, [0, 1], normal_predictor, log_graph_prior=None)
+    assert {"log_prior_true_graph", "true_graph_in_prior"} <= set(df.columns)
+    assert df["true_graph_in_prior"].all()
+    assert np.isfinite(df["log_prior_true_graph"]).all()
+    per_task = df.groupby("task")["log_prior_true_graph"].nunique()
+    assert (per_task == 1).all()
 
 
 # --------------------------------------------------------------------------- #
@@ -275,6 +310,7 @@ def test_oracle_param_cache_matches_uncached():
     x, m = scm.sample(30, None, None, rng)
     px, pm, _ = tasks.node_pools(scm, 4, do_dist, rng)[0]
     x, m = np.concatenate([x, px]), np.concatenate([m, pm])
+    # cached vs uncached on the same oracle: any graph prior will do
     orc = LinGaussOracle(
         D,
         log_graph_prior=uniform_prior(D),
