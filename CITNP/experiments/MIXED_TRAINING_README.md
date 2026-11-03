@@ -110,6 +110,13 @@ The extra-node parameters are not zero-initialised, so `--init_from_upstream`
 loads but does not reproduce upstream at step 0, and `--init_from_r1` is
 rejected. For the comparison with layerwise, train from scratch.
 
+## Alternative encoding: `reg_axis`
+
+`--intervention_encoding reg_axis` processes each experimental regime
+separately, pools it into memory tokens and lets regimes and queries interact
+through those memories; see
+[`CITNP/models/regime_axis/README.md`](../models/regime_axis/README.md).
+
 ## Scale conditioning (information parity with the oracle)
 
 Per-task standardisation removes each variable's scale from the context, but
