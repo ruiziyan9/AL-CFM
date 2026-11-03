@@ -1,0 +1,12 @@
+# Smoke-test model config, regime-axis encoding
+d_model: 64
+nhead: 4
+num_layers_encoder: 4
+sample_attn_mode: MHCA        # ignored by reg_axis
+dim_feedforward: 128
+emb_depth: 2
+num_mixture_components: 3
+intervention_encoding: reg_axis
+reg_axis_num_memory_tokens: 4
+reg_axis_target_flag: injected
+reg_axis_count_feature: true

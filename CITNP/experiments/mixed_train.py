@@ -12,9 +12,11 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --model_config <yaml>: optional; overrides model arguments (d_model, nhead,
   num_layers_encoder, sample_attn_mode, dim_feedforward, emb_depth,
   num_mixture_components, ...).
-- --intervention_encoding {r1,layerwise,extra_node}: how intervention
-  information enters the model (default r1). --model_class <name> is still
-  accepted (legacy).
+- --intervention_encoding {r1,layerwise,extra_node,reg_axis}: how
+  intervention information enters the model (default r1). --model_class <name>
+  is still accepted (legacy). reg_axis reads the optional model_config keys
+  reg_axis_num_blocks, reg_axis_num_memory_tokens, reg_axis_target_flag and
+  reg_axis_count_feature (CITNP/models/regime_axis/README.md).
 - --scale_conditioning {none,stats}: stats feeds each variable's standardisation
   (log std, mean / std) to the model (information parity with the oracle;
   default none: no new parameters).
@@ -50,6 +52,11 @@ from CITNP.models.mixed_context_model import (
     load_r1_checkpoint,
     load_upstream_checkpoint,
     resolve_model_class,
+)
+from CITNP.models.regime_axis import (
+    REG_AXIS_CONFIG_KEYS,
+    RegimeAxisMixedContextModel,
+    RegimeAxisMixedContextMoGModel,
 )
 from CITNP.models.scale_conditioning import SCALE_CONDITIONING_OPTIONS
 
@@ -113,6 +120,7 @@ MODEL_KEYS = (
     "model_class",
     "intervention_encoding",
     "scale_conditioning",
+    *REG_AXIS_CONFIG_KEYS,
 )
 
 # Keys that select the method: if given both on the command line and in the
@@ -286,10 +294,29 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         dtype=args.dtype,
         num_mixture_components=args.num_mixture_components,
         scale_conditioning=args.scale_conditioning or "none",
+        # reg_axis keys absent from the model YAML keep the dataclass defaults
+        **{
+            k: getattr(args, k)
+            for k in REG_AXIS_CONFIG_KEYS
+            if getattr(args, k, None) is not None
+        },
     )
     model_cls, encoding = resolve_model_class(
         args.intervention_encoding, args.model_class
     )
+    is_reg_axis = issubclass(
+        model_cls, (RegimeAxisMixedContextModel, RegimeAxisMixedContextMoGModel)
+    )
+    stray = [
+        k for k in REG_AXIS_CONFIG_KEYS if getattr(args, k, None) is not None
+    ]
+    if stray and not is_reg_axis:
+        raise ValueError(f"{stray} only apply to the reg_axis encoding")
+    if is_reg_axis and args.init_from_upstream:
+        raise ValueError(
+            "--init_from_upstream does not apply to reg_axis: its transformer "
+            "parameters have no upstream counterpart; train from scratch"
+        )
     if args.init_from_r1 and not issubclass(
         model_cls, (LayerwiseMixedContextModel, LayerwiseMixedContextMoGModel)
     ):

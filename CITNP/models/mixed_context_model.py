@@ -45,6 +45,10 @@ from CITNP.models.causaltransformercomponents import (
 )
 from CITNP.models.extra_node_encoder import ExtraNodeMixedCausalInfEncoder
 from CITNP.models.nncomponents import build_mlp
+from CITNP.models.regime_axis import (
+    RegimeAxisMixedContextModel,  # noqa: F401  # resolvable as model_class
+    RegimeAxisMixedContextMoGModel,
+)
 from CITNP.models.scale_conditioning import ScaleConditioning, check_scale_conditioning
 from CITNP.utils.outputs import ModelOutput
 from CITNP.utils.utils import (
@@ -468,6 +472,7 @@ INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
     "r1": MixedContextMoGModel,
     "layerwise": LayerwiseMixedContextMoGModel,
     "extra_node": ExtraNodeMixedContextMoGModel,
+    "reg_axis": RegimeAxisMixedContextMoGModel,
 }
 
 

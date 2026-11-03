@@ -26,6 +26,7 @@ def load_model(
     The class is resolved by resolve_model_class from the optional YAML keys intervention_encoding and/or model_class (default: r1, MixedContextMoGModel).
     """
     from CITNP.models.mixed_context_model import resolve_model_class
+    from CITNP.models.regime_axis import REG_AXIS_CONFIG_KEYS
 
     with open(model_config) as f:
         m = yaml.safe_load(f)
@@ -44,6 +45,8 @@ def load_model(
         dtype="float32",
         num_mixture_components=m["num_mixture_components"],
         scale_conditioning=m.get("scale_conditioning", "none"),
+        # reg_axis only; absent keys keep the dataclass defaults
+        **{k: m[k] for k in REG_AXIS_CONFIG_KEYS if k in m},
     )
     model_cls, _ = resolve_model_class(
         m.get("intervention_encoding"), m.get("model_class")

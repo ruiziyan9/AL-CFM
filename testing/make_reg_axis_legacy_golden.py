@@ -112,7 +112,9 @@ def main() -> None:
                 assert base is not None
                 for k, v in base.items():
                     assert torch.equal(sd[k], v), (method, k)
-                stored = {k: v for k, v in sd.items() if k.startswith(SCALE_PREFIX)}
+                stored = {
+                    k: v for k, v in sd.items() if k.startswith(SCALE_PREFIX)
+                }
                 assert set(sd) == set(base) | set(stored)
             cases[f"{method}/{scale}"] = {
                 "state_dict": pack(stored),
