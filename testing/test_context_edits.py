@@ -104,6 +104,25 @@ def test_move_row_targets():
         np.testing.assert_array_equal(edited[order[n:]], mask[order[n:]])
 
 
+def test_new_target_roles():
+    from CITNP.evaluation.intervention_diagnostics import new_target_roles
+
+    moved_to = np.array([0, 2, -1, 1, 2])
+    assert new_target_roles(moved_to, [1, 4], T=2, Y=0) == {
+        "new_target_role": "treatment", "num_moved_to_treatment": 2,
+        "num_moved_to_outcome": 0, "num_moved_to_other": 0,
+    }  # fmt: skip
+    assert new_target_roles(moved_to, [0], T=2, Y=0)["new_target_role"] == (
+        "outcome"
+    )
+    assert new_target_roles(moved_to, [3], T=2, Y=0)["new_target_role"] == "other"
+    mixed = new_target_roles(moved_to, [0, 1, 3], T=2, Y=0)
+    assert mixed["new_target_role"] == "mixed"
+    assert new_target_roles(moved_to, [2], T=2, Y=0)["new_target_role"] == (
+        "not_applicable"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -274,6 +293,7 @@ def test_label_blind_model_has_zero_sensitivity():
     pooled = summary[
         (summary["identifiable_from_observational"] == ALL)
         & (summary["treatment_intervened_in_context"] == ALL)
+        & (summary["new_target_role"] == ALL)
         & (summary["num_edited_rows"] == ALL)
     ]
     finite = pooled["mean_shift_ratio"].dropna()
@@ -300,6 +320,15 @@ def test_run_context_edits_structure(encoding):
         "secondary_kl_oracle_to_model_edited",
     }  # fmt: skip
     assert not any("loglik" in c for c in df.columns)
+    relabel = df[df["edit"] == "relabel_observational"]
+    assert (relabel["new_target_role"] == "not_applicable").all()
+    moved = df[df["edit"] == "move_target"]
+    moved_counts = moved[
+        ["num_moved_to_treatment", "num_moved_to_outcome", "num_moved_to_other"]
+    ].sum(1)
+    assert (moved_counts == moved["num_edited_rows"]).all()
+    single = moved[moved["num_edited_rows"] == 1]
+    assert set(single["new_target_role"]) <= {"treatment", "outcome", "other"}
     assert (df["T"] != df["Y"]).all()
     assert (df["num_edited_rows"] >= 1).all()
     assert (df["num_edited_rows"] <= df["num_intervened_rows"]).all()
@@ -309,13 +338,14 @@ def test_run_context_edits_structure(encoding):
         assert np.isfinite(df[column]).all(), column
 
     summary = summarise_context_edits(df)
-    assert list(summary.columns[:4]) == [
+    assert list(summary.columns[: len(CONTEXT_EDIT_STRATA) + 2]) == [
         "edit", *CONTEXT_EDIT_STRATA, "num_edited_rows"
     ]
     assert set(summary["edit"]) == set(CONTEXT_EDITS)
     pooled = summary[
         (summary["identifiable_from_observational"] == ALL)
         & (summary["treatment_intervened_in_context"] == ALL)
+        & (summary["new_target_role"] == ALL)
     ]
     overall = pooled[pooled["num_edited_rows"] == ALL]
     assert len(overall) == len(CONTEXT_EDITS)

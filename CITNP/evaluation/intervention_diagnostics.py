@@ -429,6 +429,40 @@ def move_row_targets(
     return edited
 
 
+NOT_APPLICABLE = "not_applicable"
+MIXED = "mixed"
+
+
+def new_target_roles(
+    moved_to: np.ndarray, edited_rows: np.ndarray, T: int, Y: int
+) -> dict:
+    """Role of the new target k of every moved row with respect to the query
+    (T, Y): counts per role and one label for all of them.
+
+    Returns {"new_target_role": "treatment" / "outcome" / "other" if every
+    moved row shares that role, else "mixed" ("not_applicable" if no row
+    moved), "num_moved_to_treatment", "num_moved_to_outcome",
+    "num_moved_to_other"}."""
+    k = np.asarray(moved_to)[np.asarray(edited_rows, dtype=int)]
+    k = k[k >= 0]
+    counts = {
+        "treatment": int((k == T).sum()),
+        "outcome": int((k == Y).sum()),
+        "other": int(((k != T) & (k != Y)).sum()),
+    }
+    present = [role for role, c in counts.items() if c]
+    if not present:
+        role = NOT_APPLICABLE
+    elif len(present) == 1:
+        role = present[0]
+    else:
+        role = MIXED
+    return {
+        "new_target_role": role,
+        **{f"num_moved_to_{r}": c for r, c in counts.items()},
+    }
+
+
 def _slope(t: np.ndarray, mean: np.ndarray) -> float:
     """Least-squares slope of mean(t); NaN for fewer than two distinct t."""
     if len(np.unique(t)) < 2:
@@ -588,8 +622,13 @@ def run_context_edits(
     (`tasks.observationally_identified` on the task's true SCM),
     treatment_intervened_in_context and outcome_intervened_in_context (any
     intervened cell in column T / Y of the unedited context), relation
-    (`question_class` of the true graph), and
-    num_edited_rows_targeting_treatment (edited rows that intervened on T).
+    (`question_class` of the true graph),
+    num_edited_rows_targeting_treatment (edited rows that intervened on T),
+    and, for move_target, new_target_role with num_moved_to_treatment /
+    _outcome / _other (`new_target_roles`: whether the new targets k are the
+    query's treatment, its outcome or another variable; "mixed" when the n
+    moved rows differ, so the n = 1 rows give the clean comparison;
+    "not_applicable" for relabel_observational).
 
     The model standardises each context with its observational rows, so by
     default relabelling rows observational also changes the standardisation
@@ -782,6 +821,15 @@ def run_context_edits(
                         bool(original[:, Y].any()),
                     "num_query_points": len(t_values),
                 }  # fmt: skip
+                if edit == "move_target":
+                    row.update(new_target_roles(moved_to, edited_rows, T, Y))
+                else:
+                    row.update({
+                        "new_target_role": NOT_APPLICABLE,
+                        "num_moved_to_treatment": 0,
+                        "num_moved_to_outcome": 0,
+                        "num_moved_to_other": 0,
+                    })  # fmt: skip
                 for who in ("model", "oracle"):
                     row[f"{who}_mean_shift"] = float(shift[who].mean())
                     row[f"{who}_mean_shift_rms"] = float(
@@ -811,6 +859,7 @@ def run_context_edits(
 CONTEXT_EDIT_STRATA = (
     "identifiable_from_observational",
     "treatment_intervened_in_context",
+    "new_target_role",
 )
 ALL = "all"
 

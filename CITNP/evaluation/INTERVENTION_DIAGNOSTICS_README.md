@@ -189,20 +189,22 @@ edit, n), for model and oracle:
 | `*_kl_original_to_edited` | KL(original ‖ edited) predictive, Monte Carlo (`n_y` draws per t from the original; the same draws for every n), mean over t |
 | `mean_shift_sign_agreement` | fraction of t where the model's shift has the oracle's sign |
 | `secondary_kl_oracle_to_model_original` / `_edited` | KL(oracle ‖ model) on the unedited / edited context; **secondary only** |
-| strata | `identifiable_from_observational` (population check on the true SCM: every DAG in its Markov equivalence class gives the same p(X_Y \| do(X_T))), `treatment_intervened_in_context`, `outcome_intervened_in_context`, `relation`, `num_edited_rows_targeting_treatment` |
+| strata | `identifiable_from_observational` (population check on the true SCM: every DAG in its Markov equivalence class gives the same p(X_Y \| do(X_T))), `treatment_intervened_in_context`, `outcome_intervened_in_context`, `relation`, `num_edited_rows_targeting_treatment`; for `move_target` also `new_target_role` (`treatment`, `outcome` or `other`: the new target k relative to the query; `mixed` when the n moved rows differ; `not_applicable` for relabelling) with `num_moved_to_treatment` / `_outcome` / `_other` |
 
 The predictives are mixtures, so there is no closed-form KL. The KLs are
 Monte Carlo estimates, the way `kshot` / `kshot-prior` compare mixtures
 (`metrics.kl_mc`). The ground truth's log-likelihood is not used.
 
 `<out>_summary.csv` (`summarise_context_edits`) groups the rows by edit, by
-each combination of the two main strata, and by `num_edited_rows` or not.
+each combination of the strata `identifiable_from_observational`,
+`treatment_intervened_in_context` and `new_target_role`, and by
+`num_edited_rows` or not.
 `all` marks an ungrouped key. Per group it reports `mean_shift_ratio`,
 `slope_change_ratio` and `kl_ratio` (model / oracle of the mean magnitudes);
 `mean_shift_correlation`, `slope_change_correlation` and `kl_correlation`
 (Pearson correlation over queries); `mean_shift_sign_agreement` and
-`slope_change_sign_agreement`. The rows with `num_edited_rows ≠ all` and both
-strata `all` form the shift-vs-number-of-edited-rows curves. Their x axis is
+`slope_change_sign_agreement`. The rows with `num_edited_rows ≠ all` and
+every stratum `all` form the shift-vs-number-of-edited-rows curves. Their x axis is
 the absolute number of edited rows. The last grid point of each task is all
 of its rows, a number that differs between tasks, so for the "everything
 relabelled" end point select rows with `fraction_edited_rows == 1` in the
@@ -237,6 +239,10 @@ below refer to it. The `edited_normalisation` run differs only for
   when rows intervening on the query treatment are edited
   (`num_edited_rows_targeting_treatment`). Identifiable queries need no
   interventions, so small shifts there are expected for both.
+- For `move_target`, compare `new_target_role` at `num_edited_rows = 1`:
+  the ratio and correlation per role show whether the model's response
+  depends on which variable the label names in the same way as the
+  oracle's does.
 - The curves show whether the model's response grows with the number of
   relabelled rows the way the oracle's does. A flat model curve under a
   rising oracle curve means insensitivity to the labels.

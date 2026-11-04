@@ -795,11 +795,19 @@ def _run_context_edits(a: argparse.Namespace) -> None:
     if summary.empty:
         print("no task had an intervened context row")
         return
-    overall = summary[summary["num_edited_rows"] == "all"]
+    pooled = summary[summary["num_edited_rows"] == "all"]
+    overall = pooled[pooled["new_target_role"] == "all"]
+    by_role = summary[(summary["edit"] == "move_target")
+                      & (summary["num_edited_rows"] == 1)
+                      & (summary["identifiable_from_observational"] == "all")
+                      & (summary["treatment_intervened_in_context"] == "all")]  # fmt: skip
     with pd.option_context("display.width", 220, "display.max_rows", 200):
         print("\n=== label sensitivity, model vs oracle (all numbers of "
               "edited rows pooled)")  # fmt: skip
         print(overall[cols].round(3).to_string(index=False))
+        print("\n=== move_target, one moved row, by role of the new target")
+        print(by_role[["new_target_role", *cols[3:]]].round(3)
+              .to_string(index=False))  # fmt: skip
 
 
 def _run_plot_monitoring(a: argparse.Namespace) -> None:
