@@ -110,6 +110,11 @@ The extra-node parameters are not zero-initialised, so `--init_from_upstream`
 loads but does not reproduce upstream at step 0, and `--init_from_r1` is
 rejected. For the comparison with layerwise, train from scratch.
 
+Whether intervened rows stay distinguishable from observational ones inside
+a trained model (metadata embedding geometry, per-layer probes, label
+sensitivity against the exact oracle; any encoding):
+[`INTERVENTION_DIAGNOSTICS_README.md`](../evaluation/INTERVENTION_DIAGNOSTICS_README.md).
+
 ## Alternative encoding: `reg_axis`
 
 `--intervention_encoding reg_axis` processes each experimental regime
