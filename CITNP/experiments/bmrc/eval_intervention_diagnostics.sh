@@ -33,7 +33,7 @@
 #   N_TASKS        default 200 (both probe-intervention and context-edits)
 #   TASK_OFFSET    default 0
 #   NUM_VARIABLES  optional D (default: the checkpoint's number of variables;
-#                  must agree with the checkpoint)
+#                  a D outside the training prior only warns)
 #   MAX_BATCH_SIZE optional cap on (context version, query) elements per
 #                  model forward pass in context-edits (default: one pass
 #                  per context; set it if memory runs out)

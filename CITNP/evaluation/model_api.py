@@ -7,6 +7,7 @@ Everything else derives what it needs from `predict_mixture` via
 `context_states`.
 """
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -99,14 +100,19 @@ def load_model(
     weights in `ckpt` and return it in eval mode, ready for data with
     `num_nodes` variables.
 
-    The model is built for the number of variables the checkpoint records
-    (`checkpoint_num_variables`: training prior config, or the extra-node
-    index embedding), as training built it; models built for D variables
-    accept data with fewer. num_nodes (the evaluation's D) defaults to that
-    number (FALLBACK_NUM_NODES = 3 for checkpoints that record nothing, as
-    before). ValueError if num_nodes disagrees with the checkpoint: larger
-    than the model's number of variables, or not one of its training prior's
-    num_variables.
+    num_nodes (the evaluation's D) defaults to the number of variables the
+    checkpoint records (`checkpoint_num_variables`: largest D of the
+    training prior config, or the extra-node index embedding), else
+    FALLBACK_NUM_NODES = 3, as before.
+
+    Only an architecture that cannot run at num_nodes is an error: an
+    extra-node model has one index embedding per variable, so num_nodes
+    larger than its index-embedding table raises ValueError (it is built for
+    the table's size and accepts fewer variables). The other encodings have
+    no parameter that depends on D: they are built for num_nodes (or the
+    recorded D, if larger) and run at any D. If num_nodes is outside the
+    training prior's num_variables, a UserWarning says so and loading
+    continues.
 
     The class is resolved by resolve_model_class from the optional YAML keys
     intervention_encoding and/or model_class (default: r1,
@@ -122,18 +128,28 @@ def load_model(
     )
     if num_nodes is None:
         num_nodes = built if built is not None else FALLBACK_NUM_NODES
-    if built is not None and num_nodes > built:
+    index_rows = None
+    if _INDEX_EMBEDDING_KEY in state_dict:
+        index_rows = int(state_dict[_INDEX_EMBEDDING_KEY].shape[0])
+    if index_rows is not None and num_nodes > index_rows:
         raise ValueError(
-            f"num_variables={num_nodes} disagrees with the checkpoint: the "
-            f"model was built for {built} variables ({source})"
+            f"num_variables={num_nodes} cannot run on this checkpoint: its "
+            f"extra-node index embedding has {index_rows} rows, one per "
+            f"variable ({ckpt})"
         )
     if training_num_variables is not None and (
         num_nodes not in training_num_variables
     ):
-        raise ValueError(
-            f"num_variables={num_nodes} disagrees with the checkpoint: it was "
-            f"trained on num_variables {training_num_variables} ({source})"
+        warnings.warn(
+            f"num_variables={num_nodes} is outside the training prior's "
+            f"num_variables {training_num_variables} ({source}); the model "
+            "runs, but was not trained on this D",
+            stacklevel=2,
         )
+    # extra_node: the table's size; otherwise any size works
+    build_size = index_rows if index_rows is not None else max(
+        num_nodes, built or 0
+    )
     with open(model_config) as f:
         m = yaml.safe_load(f)
     cfg = CausalInfModelConfig(
@@ -143,7 +159,7 @@ def load_model(
         nhead=m["nhead"],
         dropout=0.0,
         num_layers_encoder=m["num_layers_encoder"],
-        num_nodes=built if built is not None else num_nodes,
+        num_nodes=build_size,
         sample_attn_mode=m["sample_attn_mode"],
         linear_attention=m.get("linear_attention", False),
         mean_loss_across_samples=False,

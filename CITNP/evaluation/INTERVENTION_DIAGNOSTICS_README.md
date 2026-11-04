@@ -47,9 +47,11 @@ without pre-simulated data need `--data_config`.
 The number of variables D comes from the checkpoint as well
 (`model_api.checkpoint_num_variables`): the largest D of the training
 prior, or the number of rows of the extra-node index embedding.
-`load_model` builds the model for that D, as training did, and raises a
-clear error if `--num_variables` disagrees (larger than the model's D, or
-not one of the training prior's `num_variables`).
+`--num_variables` overrides it. `load_model` raises an error only if the
+architecture cannot run at that D (an extra-node model with more variables
+than rows in its index embedding); for any other D outside the training
+prior's `num_variables` it warns and continues. The diagnostics also need D
+to be one of the evaluation prior's `num_variables`, to draw tasks.
 Results and data stay outside the repository; pass an output path elsewhere.
 
 ## 1. Embedding geometry (`extra_node` only, parameters only)

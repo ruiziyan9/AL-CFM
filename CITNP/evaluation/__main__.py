@@ -233,8 +233,8 @@ def _diagnostic_data_args(p: argparse.ArgumentParser, *, base_seed: int) -> None
                         "next to it)")  # fmt: skip
     p.add_argument("--num_variables", type=int, default=None,
                    help="D (default: the checkpoint's number of variables, "
-                        "else the smallest D of the prior); must agree with "
-                        "the checkpoint")  # fmt: skip
+                        "else the smallest D of the prior); a D outside the "
+                        "training prior only warns")  # fmt: skip
     p.add_argument("--n_tasks", type=int, default=200)
     p.add_argument("--task_offset", type=int, default=0)
     p.add_argument("--base_seed", type=int, default=base_seed,
@@ -707,9 +707,10 @@ def _load_diagnostic_inputs(
     (`model_api.training_prior_config_path`; a.data_config is set to it so
     that _meta.json records it). D is --num_variables, else the
     checkpoint's number of variables (`model_api.checkpoint_num_variables`),
-    else the smallest D of the prior; `load_model` rejects a D that
-    disagrees with the checkpoint, and D must be one of the prior's
-    num_variables."""
+    else the smallest D of the prior; D must be one of the prior's
+    num_variables (to draw tasks), and `load_model` rejects only a D the
+    architecture cannot run at (warning for a D outside the training
+    prior)."""
     import torch
 
     from CITNP.evaluation.model_api import (

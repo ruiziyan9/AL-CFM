@@ -65,7 +65,7 @@ def test_extra_node_index_embedding_gives_the_number_of_variables(tmp_path):
     # fewer variables than the model was built for: allowed, same weights
     fewer = load_model(str(ckpt), model_config, "cpu", num_nodes=3)
     assert fewer.encoder.num_nodes == 4
-    with pytest.raises(ValueError, match="disagrees"):
+    with pytest.raises(ValueError, match="cannot run"):
         load_model(str(ckpt), model_config, "cpu", num_nodes=5)
 
 
@@ -78,8 +78,33 @@ def test_training_prior_config_gives_the_number_of_variables(tmp_path):
     model_config = str(tmp_path / "model.yaml")
     assert load_model(str(ckpt), model_config, "cpu").num_nodes == 4
     assert load_model(str(ckpt), model_config, "cpu", num_nodes=3).num_nodes == 4
-    with pytest.raises(ValueError, match="trained on num_variables"):
+    with pytest.warns(UserWarning, match="outside the training prior"):
         load_model(str(ckpt), model_config, "cpu", num_nodes=2)
+
+
+def test_layerwise_runs_outside_its_training_prior_with_a_warning(tmp_path):
+    """Encodings without D-dependent parameters load and run at a D outside
+    the training prior; load_model only warns."""
+    import numpy as np
+
+    from CITNP.evaluation.model_api import predict_mixture
+
+    ckpt = save_model(tmp_path, "layerwise", 3)
+    write_training_prior(tmp_path, [3])
+    with pytest.warns(UserWarning, match="outside the training prior"):
+        model = load_model(
+            str(ckpt), str(tmp_path / "model.yaml"), "cpu", num_nodes=4
+        )
+    assert model.num_nodes == 4
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(30, 4))
+    mask = np.zeros((30, 4), dtype=bool)
+    mask[20:, 3] = True
+    mu, sd, logw = predict_mixture(
+        model, x, mask, 3, 0, np.linspace(-1, 1, 3), device="cpu"
+    )
+    assert mu.shape[:2] == (1, 3)
+    assert torch.isfinite(mu).all() and (sd > 0).all()
 
 
 def test_prior_and_index_embedding_must_agree(tmp_path):
@@ -131,7 +156,9 @@ def test_diagnostic_cli_needs_a_prior_when_none_is_recorded(tmp_path):
               "--out", str(tmp_path / "p.csv")])  # fmt: skip
 
 
-def test_diagnostic_cli_rejects_a_disagreeing_num_variables(tmp_path):
+def test_diagnostic_cli_rejects_a_d_the_prior_cannot_generate(tmp_path):
+    """--num_variables 4 with a D = 3 prior: no tasks to draw (and the
+    extra-node table has 3 rows), so the command stops with an error."""
     from CITNP.evaluation.__main__ import main
 
     run = tmp_path / "run"
