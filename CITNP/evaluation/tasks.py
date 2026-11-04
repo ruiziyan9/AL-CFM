@@ -349,17 +349,12 @@ def _dags_by_markov_equivalence_class(D: int) -> dict:
     return classes
 
 
-def observationally_identified(
-    scm: LinearSCM, T: int, Y: int, tol: float = 1e-6
-) -> bool:
-    """Is p(X_Y | do(X_T)) identified from observational data alone?
-
-    Population version (infinite observational sample, faithful SCM): every
-    DAG in the Markov equivalence class of the SCM's graph is fitted to the
-    SCM's observational covariance (each node regressed on its parents in
-    that DAG); the query is identified iff all of them give the same
-    interventional slope and variance, to relative tolerance `tol`.
-    """
+def markov_equivalent_effects(scm: LinearSCM, T: int, Y: int) -> np.ndarray:
+    """(slope, variance) of p(X_Y | do(X_T)) [m, 2] under each of the m DAGs
+    in the Markov equivalence class of the SCM's graph (support of scm.B),
+    each fitted to the SCM's population observational covariance S
+    (every node regressed on its parents in that DAG). The SCM's own DAG is
+    one of them and gives the true effect."""
     D = len(scm.s2)
     A = np.linalg.inv(np.eye(D) - scm.B.T)
     S = A @ np.diag(scm.s2) @ A.T
@@ -375,9 +370,48 @@ def observationally_identified(
                 B[pa, j] = w
                 s2[j] -= S[pa, j] @ w
         effects.append(LinearSCM(B, s2).do_dist(T, Y))
-    effects_array = np.asarray(effects)
-    spread = np.ptp(effects_array, axis=0).max()
-    return bool(spread <= tol * max(1.0, np.abs(effects_array).max()))
+    return np.asarray(effects)
+
+
+def observationally_identified(
+    scm: LinearSCM, T: int, Y: int, tol: float = 1e-6
+) -> bool:
+    """Is p(X_Y | do(X_T)) identified from observational data alone?
+
+    What it checks: the SCM's graph is the support of scm.B (assumed
+    faithful). Every DAG in its Markov equivalence class (MEC: same skeleton
+    and v-structures) reproduces the SCM's population observational
+    covariance S exactly with its own linear-Gaussian parameters, so
+    observational data, however many rows, cannot tell them apart. The
+    query is identified iff all of them imply the same interventional slope
+    and variance (`markov_equivalent_effects`; equal to relative tolerance
+    `tol`). It is a property of the true graph and weights only: it ignores
+    the context's interventional rows (which can make an unidentified query
+    identifiable; see treatment_intervened_in_context), the sample size and
+    every prior.
+
+    Relation to the oracle's graph uncertainty: given a large
+    observation-only context, the oracle's posterior over DAGs
+    concentrates on the MEC (if its graph prior gives the MEC's DAGs
+    positive mass), and the data no longer separate the DAGs within it. With
+    a score-equivalent parameter prior (e.g. linear_iw) their marginal
+    likelihoods are equal and the posterior within the MEC is the graph
+    prior restricted to it; with a non-score-equivalent one (the NIG
+    priors) the ratios tend to finite constants. Either way:
+      - identified query: every DAG with posterior mass gives the same
+        do-distribution, so the oracle's predictive concentrates on the true
+        one (spread shrinking with the number of rows);
+      - unidentified query: the oracle stays a mixture of different
+        do-distributions, with weights that do not vanish as rows are added.
+    The label can disagree with the oracle's certainty when the graph prior
+    puts zero mass on some MEC members (e.g. motif priors): the oracle may
+    then be certain of an effect that this check calls unidentified.
+    testing/test_observational_identifiability.py checks the relation on a
+    large observation-only context.
+    """
+    effects = markov_equivalent_effects(scm, T, Y)
+    spread = np.ptp(effects, axis=0).max()
+    return bool(spread <= tol * max(1.0, np.abs(effects).max()))
 
 
 def default_n_obs(cfg) -> int:

@@ -29,8 +29,7 @@ from CITNP.evaluation.intervention_diagnostics import (
 )
 from CITNP.evaluation.metrics import sample_mixture
 from CITNP.evaluation.model_api import predict_mixture
-from CITNP.evaluation.oracle import LinearSCM, all_dags, dag_key
-from CITNP.evaluation.tasks import observationally_identified
+from CITNP.evaluation.oracle import all_dags, dag_key
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_intervention_probes import (  # noqa: E402
@@ -135,20 +134,6 @@ def test_new_target_roles():
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def test_observational_identifiability():
-    chain = np.zeros((3, 3))
-    chain[0, 1], chain[1, 2] = 0.9, -0.8
-    chain_scm = LinearSCM(chain, np.array([0.3, 0.2, 0.25]))
-    # MEC {0->1->2, 2->1->0, 0<-1->2}: the effect of X0 on X2 is not identified
-    assert not observationally_identified(chain_scm, 0, 2)
-    collider = np.zeros((3, 3))
-    collider[0, 2], collider[1, 2] = 0.9, 0.7
-    collider_scm = LinearSCM(collider, np.array([0.3, 0.3, 0.2]))
-    # a v-structure is alone in its MEC: every query is identified
-    assert observationally_identified(collider_scm, 0, 2)
-    assert observationally_identified(collider_scm, 2, 0)
-
-
 def test_sample_mixture_moments():
     rng = np.random.default_rng(0)
     mu = np.array([[0.0, 4.0], [1.0, 1.0]])

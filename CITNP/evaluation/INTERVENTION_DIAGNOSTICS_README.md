@@ -250,6 +250,13 @@ below refer to it. The `edited_normalisation` run differs only for
 - A ratio near 0: the model ignores the labels. If this holds for
   `relabel_observational` but not for `layerwise`, the intervened rows are
   being treated as observational.
+- `identifiable_from_observational` is a property of the true graph and
+  weights (`tasks.observationally_identified`): on a large observation-only
+  context the oracle is then certain of the effect, and otherwise it stays a
+  mixture over the Markov-equivalent DAGs. It ignores the context's own
+  interventional rows, which is what `treatment_intervened_in_context`
+  stratifies. Graph priors with zero mass on some equivalent DAGs (motif
+  priors) can make the oracle certain of a query labelled unidentifiable.
 - Ratios are most informative where the oracle moves. The oracle moves most
   for queries that are not identifiable from observational data alone and
   when rows intervening on the query treatment are edited
