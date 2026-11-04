@@ -35,15 +35,24 @@ from CITNP.evaluation.tasks import observationally_identified
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_intervention_probes import (  # noqa: E402
     CFG,
+    EDIT_BASE_SEED,
     PRIOR,
+    tasks_with_interventions,
     tiny_model,
     tiny_model_yaml,
+    window_with_interventions,
 )
 from test_mixed_context_model import D  # noqa: E402
 
-SMALL_RUN = dict(
-    D=D, device="cpu", n_tasks=6, n_mc=20, n_y=8, max_query_points=4,
-)  # fmt: skip
+NUM_TASKS = 6
+
+
+def small_run() -> dict:
+    """Six tasks that have intervened rows (selected, not left to chance)."""
+    return dict(
+        D=D, device="cpu", n_mc=20, n_y=8, max_query_points=4,
+        task_indices=list(tasks_with_interventions(EDIT_BASE_SEED, NUM_TASKS)),
+    )  # fmt: skip
 
 
 def uniform_prior(num_variables: int) -> dict:
@@ -235,11 +244,12 @@ class RecordingPredictor:
 def test_one_batched_call_per_context_with_valid_masks():
     predictor = RecordingPredictor(mask_weight=0.1)
     df = run_context_edits(
-        predictor, CFG, log_graph_prior=uniform_prior(D), **SMALL_RUN
+        predictor, CFG, log_graph_prior=uniform_prior(D), **small_run()
     )
-    assert len(df) > 0
-    # one model call per scored task, holding every version of its context
-    assert len(predictor.calls) == df["task"].nunique()
+    # every selected task is scored, with one model call holding every
+    # version of its context
+    assert df["task"].nunique() == NUM_TASKS
+    assert len(predictor.calls) == NUM_TASKS
     for x, masks, normalisation in predictor.calls:
         assert normalisation is None  # the model's normal input path
         original = masks[0]
@@ -260,7 +270,7 @@ def test_keep_original_normalisation_ablation():
     predictor = RecordingPredictor(mask_weight=0.1)
     run_context_edits(
         predictor, CFG, log_graph_prior=uniform_prior(D),
-        keep_original_normalisation=True, **SMALL_RUN,
+        keep_original_normalisation=True, **small_run(),
     )  # fmt: skip
     for _, masks, normalisation in predictor.calls:
         assert normalisation.shape == masks.shape
@@ -300,7 +310,7 @@ def test_batched_versions_match_single_predictions():
 def test_label_blind_model_has_zero_sensitivity():
     df = run_context_edits(
         RecordingPredictor(mask_weight=0.0), CFG,
-        log_graph_prior=uniform_prior(D), **SMALL_RUN,
+        log_graph_prior=uniform_prior(D), **small_run(),
     )  # fmt: skip
     assert (df["model_mean_shift_rms"] == 0).all()
     assert (df["model_kl_original_to_edited"] == 0).all()
@@ -318,8 +328,10 @@ def test_label_blind_model_has_zero_sensitivity():
 @pytest.mark.parametrize("encoding", ["extra_node", "layerwise"])
 def test_run_context_edits_structure(encoding):
     df = run_context_edits(
-        tiny_model(encoding), CFG, log_graph_prior=uniform_prior(D), **SMALL_RUN
-    )
+        tiny_model(encoding), CFG, log_graph_prior=uniform_prior(D),
+        **small_run(),
+    )  # fmt: skip
+    assert df["task"].nunique() == NUM_TASKS
     assert set(df["edit"]) == set(CONTEXT_EDITS)
     assert set(df.columns) >= {
         "task", "T", "Y", "edit", "num_edited_rows", "num_intervened_rows",
@@ -385,11 +397,13 @@ def test_context_edits_cli(tmp_path):
     out = tmp_path / "edits.csv"
     main(["context-edits", "--ckpt", str(ckpt), "--model_config",
           str(model_config), "--data_config", str(data_config),
-          "--n_tasks", "4", "--n_mc", "20", "--n_y", "8",
+          "--n_tasks", "2",
+          "--task_offset", str(window_with_interventions(EDIT_BASE_SEED, 2)),
+          "--n_mc", "20", "--n_y", "8",
           "--max_query_points", "4", "--max_batch_size", "8",
           "--graph_prior_samples", "200", "--device", "cpu",
           "--out", str(out)])  # fmt: skip
-    assert len(pd.read_csv(out)) > 0
+    assert pd.read_csv(out)["task"].nunique() == 2
     assert len(pd.read_csv(tmp_path / "edits_summary.csv")) > 0
     meta = json.loads((tmp_path / "edits_meta.json").read_text())
     assert meta["num_variables"] == D

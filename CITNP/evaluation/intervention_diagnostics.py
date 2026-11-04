@@ -84,6 +84,15 @@ CELL_PROBES = tuple(p for p in INTERVENTION_PROBES if p.startswith("cell"))
 VALUE_BASELINE_POINT = "value_baseline"
 
 
+def _task_indices(
+    task_offset: int, n_tasks: int, task_indices: list[int] | None
+) -> list[int]:
+    """task_indices if given, else task_offset .. task_offset + n_tasks - 1."""
+    if task_indices is not None:
+        return [int(i) for i in task_indices]
+    return list(range(task_offset, task_offset + n_tasks))
+
+
 def query_rows_by_treatment(task) -> dict[int, np.ndarray]:
     """Treatment T -> indices of the task's query rows that intervene on T
     only, for every T that has such rows (in increasing T)."""
@@ -229,6 +238,7 @@ def run_intervention_probes(
     device,
     n_tasks: int = 200,
     task_offset: int = 0,
+    task_indices: list[int] | None = None,
     base_seed: int = 9201,
     rows_per_task: int = 32,
     n_folds: int = 5,
@@ -240,7 +250,8 @@ def run_intervention_probes(
     """Per-layer linear probes: is "this row / this cell is intervened" still
     linearly decodable from the context states at each depth?
 
-    Tasks task_offset .. task_offset + n_tasks - 1 of the training prior
+    Tasks task_offset .. task_offset + n_tasks - 1 (or the indices in
+    task_indices) of the training prior
     (`tasks.prior_task(data_cfg, i, base_seed, D)`). Per task, rows_per_task
     context rows (half with an intervened cell where possible, `pick_rows`)
     and one question (T, Y) for the role embedding (`choose_question`), both
@@ -301,7 +312,8 @@ def run_intervention_probes(
     baseline: dict = {p: [] for p in CELL_PROBES}
     labels: dict = {p: [] for p in probes}
     groups: dict = {p: [] for p in probes}
-    for i in range(task_offset, task_offset + n_tasks):
+    indices = _task_indices(task_offset, n_tasks, task_indices)
+    for done, i in enumerate(indices, start=1):
         task = prior_task(data_cfg, i, base_seed, D)
         rng = np.random.default_rng([seed, i])
         intervened = np.asarray(task.ctx_int, dtype=bool)
@@ -321,8 +333,8 @@ def run_intervention_probes(
             groups[p].append(np.full(len(probe_labels), i))
             if p in baseline:
                 baseline[p].append(base[p])
-        if (i - task_offset + 1) % 50 == 0:
-            print(f"probe states: {i - task_offset + 1}/{n_tasks} tasks")
+        if done % 50 == 0:
+            print(f"probe states: {done}/{len(indices)} tasks")
 
     settings = dict(n_folds=n_folds, l2=l2, max_iter=max_iter, seed=seed)
     rows_out: list[dict] = []
@@ -561,6 +573,7 @@ def run_context_edits(
     device,
     n_tasks: int = 200,
     task_offset: int = 0,
+    task_indices: list[int] | None = None,
     base_seed: int = 9301,
     n_mc: int = 2000,
     n_y: int = 64,
@@ -578,7 +591,8 @@ def run_context_edits(
     predictions change when only the intervention mask of the context is
     edited, as a function of how many rows are edited?
 
-    Tasks task_offset .. task_offset + n_tasks - 1 of the training prior
+    Tasks task_offset .. task_offset + n_tasks - 1 (or the indices in
+    task_indices) of the training prior
     (`tasks.prior_task(data_cfg, i, base_seed, D)`); tasks whose context has
     no intervened row are skipped. Per task, default_rng([seed, i]) draws a
     random order of the intervened rows (`edit_order`) and, for every row, a
@@ -702,7 +716,8 @@ def run_context_edits(
 
     rows: list[dict] = []
     num_skipped = 0
-    for i in range(task_offset, task_offset + n_tasks):
+    indices = _task_indices(task_offset, n_tasks, task_indices)
+    for done, i in enumerate(indices, start=1):
         task, debug = prior_task(data_cfg, i, base_seed, D, return_debug=True)
         x = np.asarray(task.ctx_x, dtype=np.float64)
         original = np.asarray(task.ctx_int, dtype=bool)
@@ -861,8 +876,8 @@ def run_context_edits(
                     row["secondary_kl_oracle_to_model_edited_se"],
                 ) = kl_secondary
                 rows.append(row)
-        if (i - task_offset + 1) % 10 == 0:
-            print(f"context edits: {i - task_offset + 1}/{n_tasks} tasks")
+        if done % 10 == 0:
+            print(f"context edits: {done}/{len(indices)} tasks")
     if num_skipped:
         print(f"context edits: skipped {num_skipped} task(s) without an "
               "intervened context row or a query")  # fmt: skip

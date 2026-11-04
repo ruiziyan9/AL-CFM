@@ -4,6 +4,7 @@ intervention encoding, and the `probe-intervention` command (random tiny
 models, CPU, tasks from a small prior). No thresholds on what a model has
 learned."""
 
+import functools
 import json
 import sys
 from dataclasses import asdict
@@ -23,6 +24,7 @@ from CITNP.evaluation.intervention_diagnostics import (
     VALUE_BASELINE_POINT,
     choose_question,
     pick_rows,
+    query_treatments,
     run_intervention_probes,
 )
 from CITNP.evaluation.model_api import probe_points
@@ -54,7 +56,6 @@ PRIOR = dict(
     n_qry=6,
     qry_mode="grouped",
     n_obs_min=10,
-    p_k0=0.2,  # most tasks have interventional rows
 )
 CFG = MixedRegimeConfig(**PRIOR)
 ENCODINGS = sorted(INTERVENTION_ENCODINGS)
@@ -62,7 +63,48 @@ RESULT_COLUMNS = {
     "probe", "point", "depth", "labels", "accuracy", "balanced_accuracy",
     "auc", "majority_class_rate", "n", "num_classes", "num_groups",
 }  # fmt: skip
-SMALL_RUN = dict(D=D, device="cpu", n_tasks=6, rows_per_task=8, n_folds=2)
+# Default task-stream seeds of run_intervention_probes / run_context_edits.
+PROBE_BASE_SEED, EDIT_BASE_SEED = 9201, 9301
+TASK_SEARCH_LIMIT = 500
+
+
+def has_interventions(task) -> bool:
+    """Context with an intervened row, and query rows to ask about."""
+    return bool(np.asarray(task.ctx_int).any()) and bool(query_treatments(task))
+
+
+@functools.lru_cache(maxsize=None)
+def tasks_with_interventions(base_seed: int, count: int) -> tuple[int, ...]:
+    """The first `count` task indices of CFG's stream `base_seed` whose
+    context has intervened rows (asserted, so tests never depend on how
+    often the prior draws them)."""
+    found = [
+        i for i in range(TASK_SEARCH_LIMIT)
+        if has_interventions(prior_task(CFG, i, base_seed, D))
+    ][:count]  # fmt: skip
+    assert len(found) == count, f"only {len(found)} tasks with interventions"
+    return tuple(found)
+
+
+@functools.lru_cache(maxsize=None)
+def window_with_interventions(base_seed: int, length: int) -> int:
+    """First offset such that tasks offset .. offset + length - 1 of CFG's
+    stream `base_seed` all have intervened rows (for CLI runs, which take a
+    contiguous range); asserted to exist."""
+    for offset in range(TASK_SEARCH_LIMIT):
+        if all(
+            has_interventions(prior_task(CFG, i, base_seed, D))
+            for i in range(offset, offset + length)
+        ):
+            return offset
+    raise AssertionError(f"no {length} consecutive tasks with interventions")
+
+
+def small_run() -> dict:
+    return dict(
+        D=D, device="cpu", rows_per_task=8, n_folds=2,
+        task_indices=list(tasks_with_interventions(PROBE_BASE_SEED, 6)),
+    )  # fmt: skip
 
 
 def tiny_model(encoding: str, seed: int = 0) -> torch.nn.Module:
@@ -146,7 +188,8 @@ def test_pick_rows_balances_intervened_rows():
 
 
 def test_question_is_a_query_treatment():
-    task = prior_task(CFG, 0, 9201, D)
+    (i,) = tasks_with_interventions(PROBE_BASE_SEED, 1)
+    task = prior_task(CFG, i, PROBE_BASE_SEED, D)
     T, Y = choose_question(task, np.random.default_rng(0))
     assert T != Y
     assert task.qry_int[:, T].any()
@@ -173,7 +216,9 @@ def test_load_prior_config_accepts_a_dataset_config(tmp_path):
 @pytest.mark.parametrize("encoding", ENCODINGS)
 def test_run_intervention_probes_structure(encoding):
     model = tiny_model(encoding)
-    df = run_intervention_probes(model, CFG, **SMALL_RUN)
+    df = run_intervention_probes(model, CFG, **small_run())
+    # every probe has samples from every selected task
+    assert (df["num_groups"] == 6).all()
     assert set(df.columns) == RESULT_COLUMNS
     expected = set(CELL_PROBES)
     if encoding == "extra_node":
@@ -195,8 +240,8 @@ def test_run_intervention_probes_structure(encoding):
 
 def test_run_intervention_probes_is_deterministic():
     model = tiny_model("extra_node")
-    first = run_intervention_probes(model, CFG, **SMALL_RUN)
-    second = run_intervention_probes(model, CFG, **SMALL_RUN)
+    first = run_intervention_probes(model, CFG, **small_run())
+    second = run_intervention_probes(model, CFG, **small_run())
     pd.testing.assert_frame_equal(first, second)
 
 
@@ -211,9 +256,12 @@ def test_probe_intervention_cli(tmp_path):
     out = tmp_path / "probes.csv"
     main(["probe-intervention", "--ckpt", str(ckpt), "--model_config",
           str(model_config), "--data_config", str(data_config),
-          "--n_tasks", "4", "--rows_per_task", "8", "--n_folds", "2",
+          "--n_tasks", "4",
+          "--task_offset", str(window_with_interventions(PROBE_BASE_SEED, 4)),
+          "--rows_per_task", "8", "--n_folds", "2",
           "--device", "cpu", "--out", str(out)])  # fmt: skip
     df = pd.read_csv(out)
+    assert (df["num_groups"] == 4).all()
     assert set(df.columns) == RESULT_COLUMNS
     meta = json.loads((tmp_path / "probes_meta.json").read_text())
     assert meta["metadata_column"] is True and meta["num_variables"] == D
