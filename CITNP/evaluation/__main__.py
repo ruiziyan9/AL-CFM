@@ -18,6 +18,9 @@
            --bank bank.pkl --out probe.csv               # + probe.png
     python -m CITNP.evaluation embedding-geometry --ckpt ... \
            --model_config ... --out geometry.json      # extra_node only
+    python -m CITNP.evaluation probe-intervention --ckpt ... \
+           --model_config ... --data_config ... [--n_tasks 200] \
+           --out intervention_probes.csv               # + _meta.json
 
 `kshot` evaluates ONE hand-built SCM, where the model can beat the oracle.
 ONLY `kshot-prior` gives a true oracle lower bound: every task is drawn from
@@ -30,7 +33,8 @@ the oracle's graph prior (graph_prior_samples).
 
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
 and `probe-flag` compute, CITNP.evaluation.embedding_geometry for
-`embedding-geometry`,
+`embedding-geometry`, CITNP.evaluation.intervention_diagnostics for
+`probe-intervention`,
 CITNP.evaluation.tasks.build_bank for the bank and CITNP.evaluation.plots for
 the figures.
 """
@@ -210,6 +214,38 @@ def _embedding_geometry_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--device", default=None, help="default: cuda if available, else cpu"
     )
+
+
+def _diagnostic_data_args(p: argparse.ArgumentParser, *, base_seed: int) -> None:
+    """Model, data and task-stream arguments of the intervention-encoding
+    diagnostics that draw tasks from a prior."""
+    p.add_argument("--ckpt", required=True)
+    p.add_argument("--model_config", required=True)
+    p.add_argument("--data_config", required=True,
+                   help="prior config, or a pre-simulated dataset config "
+                        "(its prior_config is used; chunk files are not "
+                        "read)")  # fmt: skip
+    p.add_argument("--num_variables", type=int, default=None,
+                   help="D (default: the smallest D of the prior)")  # fmt: skip
+    p.add_argument("--n_tasks", type=int, default=200)
+    p.add_argument("--task_offset", type=int, default=0)
+    p.add_argument("--base_seed", type=int, default=base_seed,
+                   help="task stream seed (prior_task key)")  # fmt: skip
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--no_normalise", action="store_true",
+                   help="skip per-task standardisation (as in training)")  # fmt: skip
+    p.add_argument(
+        "--device", default=None, help="default: cuda if available, else cpu"
+    )
+
+
+def _probe_intervention_parser(p: argparse.ArgumentParser) -> None:
+    _diagnostic_data_args(p, base_seed=9201)
+    p.add_argument("--rows_per_task", type=int, default=32)
+    p.add_argument("--n_folds", type=int, default=5)
+    p.add_argument("--l2", type=float, default=1e-3)
+    p.add_argument("--max_iter", type=int, default=200)
+    p.add_argument("--out", default="intervention_probes.csv")
 
 
 # --------------------------------------------------------------------------- #
@@ -619,6 +655,76 @@ def _run_embedding_geometry(a: argparse.Namespace) -> None:
           f"{single['min_pairwise_normalised_distance']}")  # fmt: skip
 
 
+def _load_diagnostic_inputs(a: argparse.Namespace):
+    """(prior config, D, device, loaded model) of a diagnostic command."""
+    from CITNP.evaluation.model_api import load_model
+    from CITNP.evaluation.tasks import load_prior_config
+
+    data_cfg = load_prior_config(a.data_config)
+    D = a.num_variables or min(int(d) for d in data_cfg.num_variables)
+    device = a.device or _default_device()
+    model = load_model(a.ckpt, a.model_config, device, num_nodes=D)
+    return data_cfg, D, device, model
+
+
+def _write_diagnostic_meta(
+    a: argparse.Namespace, D: int, seconds: float, **extra
+) -> str:
+    """Write <out>_meta.json (inputs, git commit, arguments) next to the
+    results of a diagnostic command; returns its path."""
+    import json
+
+    from CITNP.datasets.create_mixed_regime_chunks import _git_commit
+
+    meta = {
+        "data_config": {"path": a.data_config, "sha256": _sha256(a.data_config)},
+        "model_config": {
+            "path": a.model_config, "sha256": _sha256(a.model_config),
+        },
+        "ckpt": a.ckpt,
+        "git_commit": _git_commit(),
+        "args": vars(a),
+        "num_variables": D,
+        "seconds": seconds,
+        **extra,
+    }  # fmt: skip
+    path = a.out.removesuffix(".csv") + "_meta.json"
+    with open(path, "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+    return path
+
+
+def _run_probe_intervention(a: argparse.Namespace) -> None:
+    import time
+
+    import pandas as pd
+
+    from CITNP.evaluation.intervention_diagnostics import run_intervention_probes
+    from CITNP.evaluation.model_api import probe_points, uses_metadata_node
+
+    t0 = time.time()
+    data_cfg, D, device, model = _load_diagnostic_inputs(a)
+    df = run_intervention_probes(
+        model, data_cfg, D=D, device=device, n_tasks=a.n_tasks,
+        task_offset=a.task_offset, base_seed=a.base_seed,
+        rows_per_task=a.rows_per_task, n_folds=a.n_folds, l2=a.l2,
+        max_iter=a.max_iter, seed=a.seed, normalise=not a.no_normalise,
+    )  # fmt: skip
+    df.to_csv(a.out, index=False)
+    meta = _write_diagnostic_meta(
+        a, D, time.time() - t0, probe_points=probe_points(model),
+        metadata_column=uses_metadata_node(model),
+    )  # fmt: skip
+    print(f"wrote {a.out} and {meta}")
+    table = df.pivot_table(
+        index=["probe", "depth", "point"], columns="labels",
+        values="balanced_accuracy",
+    )  # fmt: skip
+    with pd.option_context("display.width", 200, "display.max_rows", 500):
+        print("\n=== held-out balanced accuracy (true vs shuffled labels)")
+        print(table.round(3))
+
+
 def _run_plot_monitoring(a: argparse.Namespace) -> None:
     import matplotlib
 
@@ -663,6 +769,10 @@ COMMANDS = {
         _embedding_geometry_parser,
         "extra_node: norms and cosines of the metadata embeddings (no data)",
     ),
+    "probe-intervention": (
+        _probe_intervention_parser,
+        "per-layer linear probes: is a row / cell intervened (any encoding)?",
+    ),
 }
 
 
@@ -696,6 +806,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_probe_flag(a, parsers["probe-flag"])
     elif a.command == "embedding-geometry":
         _run_embedding_geometry(a)
+    elif a.command == "probe-intervention":
+        _run_probe_intervention(a)
     else:
         _run_plot_monitoring(a)
 

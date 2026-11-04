@@ -221,6 +221,55 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 PRIOR_DESIGNS = ["random", "do(T)", "do(Y)", "do(other)"]
 
 
+def prior_task(
+    cfg, i: int, base_seed: int, D: int, return_debug: bool = False
+):
+    """Task `i` of the training prior, context and queries included: the
+    training generator called with key make_key(SOURCE_ADHOC, D, base_seed,
+    i), the key `prior_scm` uses (see there for why it collides with no
+    other stream). Works for every function family.
+
+    Returns the generator's Task, or (Task, debug dict) with return_debug.
+    """
+    from CITNP.datasets.mixed_regime_generator import (
+        SOURCE_ADHOC,
+        generate_task,
+        make_key,
+    )
+
+    return generate_task(
+        cfg,
+        make_key(SOURCE_ADHOC, D, base_seed, i),
+        num_variables=D,
+        return_debug=return_debug,
+    )
+
+
+def load_prior_config(path):
+    """MixedRegimeConfig of a prior config (YAML or JSON), or of the prior
+    named by a pre-simulated dataset config (a YAML with a `prior_config`
+    key, CITNP/datasets/dataset_config.py). Either way, evaluations draw
+    their tasks from that prior with `prior_task`; the dataset's chunk files
+    are never read."""
+    from pathlib import Path
+
+    import yaml  # type: ignore[import-untyped]
+
+    from CITNP.datasets.create_mixed_regime_chunks import load_config
+    from CITNP.datasets.dataset_config import (
+        load_presimulated_dataset_config,
+        prior_config_path,
+    )
+
+    path = Path(path)
+    if path.suffix in (".yaml", ".yml"):
+        raw = yaml.safe_load(path.read_text())
+        if isinstance(raw, dict) and "prior_config" in raw:
+            dataset_config = load_presimulated_dataset_config(path)
+            return load_config(prior_config_path(dataset_config))
+    return load_config(path)
+
+
 def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     """SCM, graph and do-value distribution of task `i` of the training prior.
 
@@ -250,20 +299,10 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     (LinearSCM, graph [D, D] int in the task's variable order, do_dist dict,
     number of resample attempts the generator needed).
     """
-    from CITNP.datasets.mixed_regime_generator import (
-        SOURCE_ADHOC,
-        generate_task,
-        make_key,
-    )
     from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
 
     require_exact_oracle(cfg)
-    task, debug = generate_task(
-        cfg,
-        make_key(SOURCE_ADHOC, D, base_seed, i),
-        num_variables=D,
-        return_debug=True,
-    )
+    task, debug = prior_task(cfg, i, base_seed, D, return_debug=True)
     lg = scm_from_debug(debug)
     if not np.allclose(lg.c, 0.0):
         raise ValueError("prior_scm needs zero intercepts (normalise: false)")
