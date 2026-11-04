@@ -179,10 +179,43 @@ def effective_components(logw: torch.Tensor) -> torch.Tensor:
 # --------------------------------------------------------------------------- #
 # Internal representations
 # --------------------------------------------------------------------------- #
+def uses_metadata_node(model: torch.nn.Module) -> bool:
+    """True if `model` uses the extra-node intervention encoding, whose
+    transformer runs on D + 1 node positions per row: the D variables and
+    one intervention-metadata column (see CITNP/models/extra_node_encoder.py).
+    """
+    from CITNP.models.extra_node_encoder import ExtraNodeMixedCausalInfEncoder
+
+    return isinstance(
+        getattr(model, "encoder", None), ExtraNodeMixedCausalInfEncoder
+    )
+
+
+def _uses_regime_axis(model: torch.nn.Module) -> bool:
+    """True if `model` uses the reg_axis encoding (RegimeAxisEncoder), which
+    has its own blocks instead of the upstream transformer stack."""
+    from CITNP.models.regime_axis import RegimeAxisEncoder
+
+    return isinstance(getattr(model, "encoder", None), RegimeAxisEncoder)
+
+
 def probe_points(model: torch.nn.Module) -> list[str]:
     """Names of the depths `context_states` returns, in forward order:
     "embed" (encoder input), then "block<l>/sample" and "block<l>/node"
-    (after the sample- and node-attention layer of encoder block l)."""
+    (after the sample- and node-attention layer of encoder block l).
+
+    reg_axis models have no node-attention layer after their sample
+    attention; for them the names are "embed", then per block l
+    "block<l>/sample" (after the within-regime sample attention) and, in
+    every block but the last, "block<l>/feedback" (after the context cells
+    read the regime memories)."""
+    if _uses_regime_axis(model):
+        names = ["embed"]
+        for i, block in enumerate(model.encoder.blocks):
+            names.append(f"block{i}/sample")
+            if block.feedback is not None:
+                names.append(f"block{i}/feedback")
+        return names
     stack = model.encoder.encoder
     names = ["embed"]
     for i in range(len(stack.node_layers)):
@@ -190,54 +223,28 @@ def probe_points(model: torch.nn.Module) -> list[str]:
     return names
 
 
-@torch.no_grad()
-def context_states(
-    model: torch.nn.Module,
-    ctx_x: np.ndarray,
-    ctx_int: np.ndarray,
-    T: int,
-    Y: int,
-    *,
-    device: str | torch.device,
-    zero_flags: bool = False,
-    normalise: bool = True,
-) -> dict[str, torch.Tensor]:
-    """Residual-stream representation of every CONTEXT cell at each depth of
-    `probe_points(model)`, for one context and one question (T, Y).
-
-    Returns {name: float32 CPU tensor [N, D, d_model]}. Context rows attend
-    only to context rows, so the states do not depend on the query do-values
-    (a single dummy query point is used). The role embedding does depend on
-    (T, Y), hence the arguments. zero_flags sets every intervened-cell flag to
-    False, as in `predict_mixture`. Works for every mixed-context model class
-    (the hooks sit on the upstream attention layers, which all share).
-    Internal node positions beyond the D variables (e.g. the extra-node
-    metadata column) are dropped.
-    """
+def _register_upstream_stack_hooks(model, keep, num_context: int) -> list:
+    """Hooks on the upstream transformer stack (r1, layerwise, extra_node)
+    that pass every probe point's context states [1, Nc, D', d_model] to
+    keep(name, states); returns the hook handles."""
     stack = model.encoder.encoder
-    Nc = int(np.asarray(ctx_x).shape[0])
-    D = int(np.asarray(ctx_x).shape[1])
-    B = 1
-    states: dict[str, torch.Tensor] = {}
-
-    def keep(name, x):  # x [B, Nc, D', d_model]; D' = D + internal positions
-        states[name] = x.detach().float().cpu()[0, :, :D]
+    batch_size = 1
 
     def pre_embed(_mod, args):
-        keep("embed", args[0][:, :Nc])
+        keep("embed", args[0][:, :num_context])
 
     def after_sample(name, ctx_only):
-        def hook(_mod, _args, out):  # out [B * D, S, d_model]
+        def hook(_mod, _args, out):  # out [B * D', S, d_model]
             S = out.shape[1]
-            x = out.reshape(B, -1, S, out.shape[-1]).permute(0, 2, 1, 3)
-            keep(name, x if ctx_only else x[:, :Nc])
+            x = out.reshape(batch_size, -1, S, out.shape[-1]).permute(0, 2, 1, 3)
+            keep(name, x if ctx_only else x[:, :num_context])
 
         return hook
 
     def after_node(name):
-        def hook(_mod, _args, out):  # out [B * S, D, d_model]
-            x = out.reshape(B, -1, *out.shape[1:])
-            keep(name, x[:, :Nc])
+        def hook(_mod, _args, out):  # out [B * S, D', d_model]
+            x = out.reshape(batch_size, -1, *out.shape[1:])
+            keep(name, x[:, :num_context])
 
         return hook
 
@@ -255,6 +262,94 @@ def context_states(
         handles.append(
             node_layer.register_forward_hook(after_node(f"block{i}/node"))
         )
+    return handles
+
+
+def _register_regime_axis_hooks(model, keep) -> list:
+    """Hooks on the reg_axis blocks that pass every probe point's context
+    states [1, Nc, D, d_model] to keep(name, states); returns the handles."""
+    blocks = model.encoder.blocks
+
+    def pre_embed(_mod, args):  # args[0]: context tokens [B, Nc, D, d_model]
+        keep("embed", args[0])
+
+    def after_sample(name):
+        def hook(_mod, _args, out):  # out [B, D, Nc, d_model]
+            keep(name, out.permute(0, 2, 1, 3))
+
+        return hook
+
+    def after_feedback(name):
+        def hook(_mod, _args, out):  # out [B * D, Nc, d_model]
+            x = out.reshape(1, -1, *out.shape[1:]).permute(0, 2, 1, 3)
+            keep(name, x)
+
+        return hook
+
+    handles = [blocks[0].register_forward_pre_hook(pre_embed)]
+    for i, block in enumerate(blocks):
+        handles.append(
+            block.sample_attn.register_forward_hook(
+                after_sample(f"block{i}/sample")
+            )
+        )
+        if block.feedback is not None:
+            handles.append(
+                block.feedback.register_forward_hook(
+                    after_feedback(f"block{i}/feedback")
+                )
+            )
+    return handles
+
+
+@torch.no_grad()
+def context_states(
+    model: torch.nn.Module,
+    ctx_x: np.ndarray,
+    ctx_int: np.ndarray,
+    T: int,
+    Y: int,
+    *,
+    device: str | torch.device,
+    zero_flags: bool = False,
+    normalise: bool = True,
+    include_metadata_node: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Residual-stream representation of every CONTEXT cell at each depth of
+    `probe_points(model)`, for one context and one question (T, Y).
+
+    Returns {name: float32 CPU tensor [N, D, d_model]}. Context rows attend
+    only to context rows, so the states do not depend on the query do-values
+    (a single dummy query point is used). The role embedding does depend on
+    (T, Y), hence the arguments. zero_flags sets every intervened-cell flag to
+    False, as in `predict_mixture`. Works for every mixed-context model class
+    (r1, layerwise and extra_node: hooks on the upstream attention layers,
+    which they all share; reg_axis: hooks on its blocks, see `probe_points`).
+
+    Internal node positions beyond the D variables (the extra-node metadata
+    column) are dropped, unless include_metadata_node is True: then the
+    states are [N, D + 1, d_model] with the metadata column last. Only
+    extra-node models have that column; for any other model
+    include_metadata_node=True raises ValueError.
+    """
+    if include_metadata_node and not uses_metadata_node(model):
+        raise ValueError(
+            "include_metadata_node=True needs a model with the extra_node "
+            f"intervention encoding; {type(model).__name__} has no metadata "
+            "column"
+        )
+    Nc = int(np.asarray(ctx_x).shape[0])
+    D = int(np.asarray(ctx_x).shape[1])
+    kept_columns = D + 1 if include_metadata_node else D
+    states: dict[str, torch.Tensor] = {}
+
+    def keep(name, x):  # x [1, Nc, D', d_model]; D' = D + internal positions
+        states[name] = x.detach().float().cpu()[0, :, :kept_columns]
+
+    if _uses_regime_axis(model):
+        handles = _register_regime_axis_hooks(model, keep)
+    else:
+        handles = _register_upstream_stack_hooks(model, keep, Nc)
     try:
         inp, _, _ = _model_inputs(
             ctx_x, ctx_int, int(T), int(Y), np.zeros(1),
