@@ -22,7 +22,7 @@
            --model_config ... --data_config ... [--n_tasks 200] \
            --out intervention_probes.csv               # + _meta.json
     python -m CITNP.evaluation context-edits --ckpt ... --model_config ... \
-           --data_config ... [--n_tasks 200] [--max_edit_steps 16] \
+           --data_config ... [--n_tasks 200] [--keep_original_normalisation] \
            --out context_edits.csv     # + _summary.csv, _meta.json
 
 `kshot` evaluates ONE hand-built SCM, where the model can beat the oracle.
@@ -266,9 +266,10 @@ def _context_edits_parser(p: argparse.ArgumentParser) -> None:
                    help="largest D for exact DAG enumeration")  # fmt: skip
     p.add_argument("--n_y", type=int, default=64,
                    help="MC draws per do-value for the KLs")  # fmt: skip
-    p.add_argument("--max_edit_steps", type=int, default=None,
-                   help="at most this many numbers of edited rows per task "
-                        "(geometric; default: every n from 1 to all)")  # fmt: skip
+    p.add_argument("--max_batch_size", type=int, default=None,
+                   help="largest number of (context version, query) elements "
+                        "per model forward pass (default: all versions of a "
+                        "context in one pass)")  # fmt: skip
     p.add_argument("--keep_original_normalisation", action="store_true",
                    help="give every edited context the unedited context's "
                         "standardisation and scale features, so only the "
@@ -775,7 +776,7 @@ def _run_context_edits(a: argparse.Namespace) -> None:
         model, data_cfg, D=D, device=device, n_tasks=a.n_tasks,
         task_offset=a.task_offset, base_seed=a.base_seed, n_mc=a.n_mc,
         n_y=a.n_y, min_graph_prob=a.min_graph_prob,
-        max_query_points=a.max_query_points, max_edit_steps=a.max_edit_steps,
+        max_query_points=a.max_query_points, max_batch_size=a.max_batch_size,
         seed=a.seed, normalise=not a.no_normalise,
         keep_original_normalisation=a.keep_original_normalisation,
         max_oracle_nodes=a.max_oracle_nodes,

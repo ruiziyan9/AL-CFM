@@ -43,7 +43,6 @@ from test_mixed_context_model import D  # noqa: E402
 
 SMALL_RUN = dict(
     D=D, device="cpu", n_tasks=6, n_mc=20, n_y=8, max_query_points=4,
-    max_edit_steps=3,
 )  # fmt: skip
 
 
@@ -68,10 +67,11 @@ def test_edit_order_and_counts():
     order = edit_order(mask, np.random.default_rng(0))
     assert sorted(order) == sorted(np.flatnonzero(mask.any(1)))
     assert np.array_equal(order, edit_order(mask, np.random.default_rng(0)))
-    assert edit_counts(4) == [1, 2, 3, 4]
-    capped = edit_counts(100, max_steps=5)
-    assert capped[0] == 1 and capped[-1] == 100 and len(capped) <= 6
-    assert capped == sorted(set(capped))
+    assert edit_counts(1) == [1]
+    assert edit_counts(4) == [1, 2, 4]
+    assert edit_counts(5) == [1, 2, 4, 5]
+    assert edit_counts(100) == [1, 2, 4, 8, 16, 32, 64, 100]
+    assert edit_counts(0) == []
 
 
 def test_relabel_rows_as_observational():
@@ -180,39 +180,46 @@ def test_normalisation_mask_freezes_every_scale_dependent_input():
 # End to end
 # --------------------------------------------------------------------------- #
 class RecordingPredictor:
-    """Stub model: N(c * number of intervened cells, 1) for every query
-    (c = 0 makes it ignore the labels); records its inputs."""
+    """Stub of `predict_mixture_versions`: N(c * number of intervened cells
+    of the version, 1) for every query (c = 0 makes it ignore the labels);
+    records its inputs."""
 
     def __init__(self, mask_weight: float):
         self.mask_weight = mask_weight
         self.calls: list = []
 
-    def __call__(self, x, m, Ts, Ys, t, normalisation_int_mask=None):
-        self.calls.append((x.copy(), m.copy(), normalisation_int_mask))
-        shape = (len(Ts), len(t), 1)
-        mean = self.mask_weight * float(m.sum())
-        mu = torch.full(shape, mean, dtype=torch.float64)
-        sd = torch.ones(shape, dtype=torch.float64)
-        return mu, sd, torch.zeros(shape, dtype=torch.float64)
+    def __call__(self, x, masks, Ts, Ys, t, normalisation_int_masks=None):
+        self.calls.append((x.copy(), masks.copy(), normalisation_int_masks))
+        V, Q, n = len(masks), len(Ts), t.shape[1]
+        assert t.shape[0] == Q
+        means = self.mask_weight * masks.reshape(V, -1).sum(1).astype(float)
+        mu = torch.as_tensor(means)[:, None, None, None].expand(V, Q, n, 1)
+        sd = torch.ones(V, Q, n, 1, dtype=torch.float64)
+        return mu.clone(), sd, torch.zeros(V, Q, n, 1, dtype=torch.float64)
 
 
-def test_edits_leave_values_unchanged_and_masks_valid():
+def test_one_batched_call_per_context_with_valid_masks():
     predictor = RecordingPredictor(mask_weight=0.1)
     df = run_context_edits(
         predictor, CFG, log_graph_prior=uniform_prior(D), **SMALL_RUN
     )
     assert len(df) > 0
-    by_task: dict = {}
-    for x, m, normalisation in predictor.calls:
+    # one model call per scored task, holding every version of its context
+    assert len(predictor.calls) == df["task"].nunique()
+    for x, masks, normalisation in predictor.calls:
         assert normalisation is None  # the model's normal input path
-        by_task.setdefault(x.tobytes(), []).append(m)
-    for masks in by_task.values():
         original = masks[0]
+        num_intervened = int(original.any(1).sum())
+        assert len(masks) == 1 + len(CONTEXT_EDITS) * len(
+            edit_counts(num_intervened)
+        )
+        assert masks.dtype == bool and masks.shape[1:] == original.shape
         for m in masks:
-            assert m.shape == original.shape and m.dtype == bool
             # each row keeps its number of intervened cells or loses all
             counts = m.sum(1)
             assert ((counts == original.sum(1)) | (counts == 0)).all()
+    edited_all = df[df["fraction_edited_rows"] == 1]
+    assert set(edited_all["edit"]) == set(CONTEXT_EDITS)
 
 
 def test_keep_original_normalisation_ablation():
@@ -221,10 +228,39 @@ def test_keep_original_normalisation_ablation():
         predictor, CFG, log_graph_prior=uniform_prior(D),
         keep_original_normalisation=True, **SMALL_RUN,
     )  # fmt: skip
-    first_mask = {}
-    for x, m, normalisation in predictor.calls:
-        original = first_mask.setdefault(x.tobytes(), m)
-        np.testing.assert_array_equal(normalisation, original)
+    for _, masks, normalisation in predictor.calls:
+        assert normalisation.shape == masks.shape
+        for version in normalisation:
+            np.testing.assert_array_equal(version, masks[0])
+
+
+def test_batched_versions_match_single_predictions():
+    from CITNP.evaluation.model_api import predict_mixture_versions
+
+    model = tiny_model("extra_node")
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(30, D))
+    mask = example_mask()
+    masks = np.stack([mask, np.zeros_like(mask), mask[:, [1, 2, 0]]])
+    Ts, Ys = np.array([0, 0, 2]), np.array([1, 2, 1])
+    t = rng.normal(size=(3, 4))
+    for normalisation in (None, np.repeat(mask[None], 3, axis=0)):
+        batched = predict_mixture_versions(
+            model, x, masks, Ts, Ys, t, device="cpu",
+            normalisation_int_masks=normalisation, max_batch_size=4,
+        )  # fmt: skip
+        for v in range(3):
+            for q in range(3):
+                single = predict_mixture(
+                    model, x, masks[v], Ts[q], Ys[q], t[q], device="cpu",
+                    normalisation_int_mask=None
+                    if normalisation is None
+                    else normalisation[v],
+                )  # fmt: skip
+                for b, s_ in zip(batched, single):
+                    np.testing.assert_allclose(
+                        b[v, q].numpy(), s_[0].numpy(), rtol=1e-5, atol=1e-6
+                    )
 
 
 def test_label_blind_model_has_zero_sensitivity():
@@ -300,7 +336,7 @@ def test_context_edits_cli(tmp_path):
     main(["context-edits", "--ckpt", str(ckpt), "--model_config",
           str(model_config), "--data_config", str(data_config),
           "--n_tasks", "4", "--n_mc", "20", "--n_y", "8",
-          "--max_query_points", "4", "--max_edit_steps", "2",
+          "--max_query_points", "4", "--max_batch_size", "8",
           "--graph_prior_samples", "200", "--device", "cpu",
           "--out", str(out)])  # fmt: skip
     assert len(pd.read_csv(out)) > 0

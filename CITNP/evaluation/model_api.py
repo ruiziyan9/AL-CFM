@@ -65,7 +65,8 @@ def _model_inputs(
     `context_scale` [Q, D, 2] is (log std, mean / std) per variable (zeros
     without normalisation), used by models with scale_conditioning "stats".
     The standardisation uses the observational rows of
-    `normalisation_int_mask` [N, D] (default: `ctx_int`)."""
+    `normalisation_int_mask` [N, D] (default: `ctx_int`). t is [n_t] (shared
+    by all queries) or [Q, n_t] (one row of do-values per query)."""
     Ts = torch.as_tensor(np.atleast_1d(T), dtype=torch.long)
     Ys = torch.as_tensor(np.atleast_1d(Y), dtype=torch.long)
     if Ts.ndim != 1 or Ts.shape != Ys.shape:
@@ -89,9 +90,13 @@ def _model_inputs(
     scale = torch.stack([std.log(), mean / std], dim=-1)[None].repeat(Q, 1, 1)
     flags = (torch.zeros_like(ci) if zero_flags else ci).repeat(Q, 1, 1)
     tt = torch.as_tensor(np.asarray(t), dtype=torch.float32)
-    tgt = torch.zeros(Q, len(tt), D, 1)
+    if tt.ndim == 1:  # do-values shared by every query
+        tt = tt[None].expand(Q, -1)
+    if tt.ndim != 2 or tt.shape[0] != Q:
+        raise ValueError("t must be [n_t] or [Q, n_t] (one row per query)")
+    tgt = torch.zeros(Q, tt.shape[1], D, 1)
     for q, Tq in enumerate(Ts.tolist()):
-        tgt[q, :, Tq, 0] = (tt - mean[Tq]) / std[Tq]
+        tgt[q, :, Tq, 0] = (tt[q] - mean[Tq]) / std[Tq]
     inp = dict(
         context_data=cxn,
         target_data=tgt,
@@ -162,6 +167,71 @@ def predict_mixture(
     w = out.weights[:, :, 0].double()
     m_y = mean[Ys].double().to(device)[:, None, None]
     s_y = std[Ys].double().to(device)[:, None, None]
+    logw = torch.log(w + 1e-12)
+    logw = logw - torch.logsumexp(logw, dim=-1, keepdim=True)
+    return mu * s_y + m_y, sd * s_y + 1e-12, logw
+
+
+@torch.no_grad()
+def predict_mixture_versions(
+    model: torch.nn.Module,
+    ctx_x: np.ndarray,
+    ctx_ints: np.ndarray,
+    T: np.ndarray,
+    Y: np.ndarray,
+    t: np.ndarray,
+    *,
+    device: str | torch.device,
+    normalise: bool = True,
+    normalisation_int_masks: np.ndarray | None = None,
+    max_batch_size: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """`predict_mixture` for several intervention masks ("versions") of ONE
+    context, in a single model forward pass.
+
+    ctx_x [N, D]: the context values, shared by every version.
+    ctx_ints [V, N, D] bool: one intervention mask per version.
+    T, Y [Q] int: the queries, asked of every version.
+    t [Q, n_t] (or [n_t], shared): do-values, one row per query.
+    normalisation_int_masks [V, N, D] bool, optional: the mask whose
+    observational rows standardise each version (default: its own mask, as
+    `predict_mixture`; see there for everything that follows it).
+    max_batch_size: split the V * Q batch elements into forward passes of at
+    most this many (default: one pass), to bound memory.
+
+    Returns mu, sd, logw as float64 tensors [V, Q, n_t, K] on `device`, on
+    the raw scale, logw normalised over K; equal to `predict_mixture` per
+    version up to the rounding of batched kernels.
+    """
+    ctx_ints = np.asarray(ctx_ints, dtype=bool)
+    V = ctx_ints.shape[0]
+    inputs, means, stds = [], [], []
+    for v in range(V):
+        inp, mean, std = _model_inputs(
+            ctx_x, ctx_ints[v], T, Y, t, zero_flags=False, normalise=normalise,
+            normalisation_int_mask=None
+            if normalisation_int_masks is None
+            else normalisation_int_masks[v],
+        )  # fmt: skip
+        inputs.append(inp)
+        means.append(mean)
+        stds.append(std)
+    batch = {k: torch.cat([inp[k] for inp in inputs]) for k in inputs[0]}
+    total = batch["intervention_index"].shape[0]
+    step = total if max_batch_size is None else int(max_batch_size)
+    parts: list[tuple[torch.Tensor, ...]] = []
+    for start in range(0, total, step):
+        out = _call(model, {k: v[start : start + step] for k, v in batch.items()},
+                    device)  # fmt: skip
+        parts.append((out.pred_mean[:, :, 0], out.pred_std[:, :, 0],
+                      out.weights[:, :, 0]))  # fmt: skip
+    mu, sd, w = (torch.cat(p).double() for p in zip(*parts))  # [V * Q, n_t, K]
+    Q = len(inputs[0]["outcome_index"])
+    mu, sd, w = (p.reshape(V, Q, *p.shape[1:]) for p in (mu, sd, w))
+    Ys = inputs[0]["outcome_index"]
+    m_y = torch.stack([m[Ys] for m in means]).double().to(mu.device)
+    s_y = torch.stack([s[Ys] for s in stds]).double().to(mu.device)
+    m_y, s_y = m_y[:, :, None, None], s_y[:, :, None, None]
     logw = torch.log(w + 1e-12)
     logw = logw - torch.logsumexp(logw, dim=-1, keepdim=True)
     return mu * s_y + m_y, sd * s_y + 1e-12, logw

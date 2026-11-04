@@ -40,7 +40,7 @@ from CITNP.evaluation.metrics import (
 )
 from CITNP.evaluation.model_api import (
     context_states,
-    predict_mixture,
+    predict_mixture_versions,
     probe_points,
     uses_metadata_node,
 )
@@ -368,14 +368,16 @@ def edit_order(intervened: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     return rng.permutation(np.flatnonzero(np.asarray(intervened).any(1)))
 
 
-def edit_counts(num_intervened: int, max_steps: int | None = None) -> list[int]:
-    """Numbers n of edited rows: every n = 1 .. num_intervened, or, with
-    max_steps, at most max_steps of them spaced geometrically (1 and
-    num_intervened always included)."""
-    if max_steps is None or max_steps >= num_intervened:
-        return list(range(1, num_intervened + 1))
-    grid = np.geomspace(1, num_intervened, max(int(max_steps), 2))
-    return sorted({int(round(n)) for n in grid} | {1, num_intervened})
+def edit_counts(num_intervened: int) -> list[int]:
+    """Numbers n of edited rows: the geometric grid 1, 2, 4, ... below
+    num_intervened, then num_intervened itself ("all"), which is always
+    included."""
+    counts = []
+    n = 1
+    while n < num_intervened:
+        counts.append(n)
+        n *= 2
+    return counts + [num_intervened] if num_intervened > 0 else []
 
 
 def relabel_rows_as_observational(
@@ -461,33 +463,52 @@ def _sign_agreement(model_shift, oracle_shift, tol: float = 1e-9) -> float:
     return float(same.mean())
 
 
-def _predictives(predict, oracle, x, mask, queries, normalisation_int_mask,
-                 oracle_kw):  # fmt: skip
-    """Model and oracle predictive distributions for every query of one
-    (possibly edited) context.
+def query_batch(task, max_query_points: int):
+    """The context-edit queries of a task as one batch: every (T, Y), Y != T,
+    for each treatment T of the task's query rows
+    (`query_rows_by_treatment`), with the do-values x_T of T's first
+    max_query_points rows.
 
-    queries: T -> do-values t [n]. Returns {(T, Y): {"model": (mu, sd, logw)
-    float64 CPU tensors [n, K], "oracle": (log_w, w, slope, var) arrays
-    [M], "model_mean", "oracle_mean": [n]}}.
-    """
-    D = x.shape[1]
-    out = {}
-    for T, t in queries.items():
-        Ys = np.array([Y for Y in range(D) if Y != T])
-        mu, sd, logw = predict(
-            x, mask, np.full(len(Ys), T), Ys, t,
-            normalisation_int_mask=normalisation_int_mask,
-        )  # fmt: skip
-        mu, sd, logw = mu.cpu(), sd.cpu(), logw.cpu()
-        for q, Y in enumerate(Ys.tolist()):
-            model = (mu[q], sd[q], logw[q])
-            model_mean, _ = mixture_moments(*(p.numpy() for p in model))
-            log_w, slope, var = oracle.predictive_components(T, Y, **oracle_kw)
-            log_w, w, var = oracle_weights(log_w, var)
-            out[(T, Y)] = {
-                "model": model, "oracle": (log_w, w, slope, var),
-                "model_mean": model_mean, "oracle_mean": float(w @ slope) * t,
-            }  # fmt: skip
+    Returns (pairs [(T, Y)] of length Q, t [Q, n] float64 do-values padded
+    with zeros to the longest query, lengths [Q]). Padding rows are query
+    rows the model predicts independently of the others; they are dropped
+    from every result."""
+    query_x = np.asarray(task.qry_x, dtype=np.float64)
+    D = query_x.shape[1]
+    by_treatment = {
+        T: query_x[rows[:max_query_points], T]
+        for T, rows in query_rows_by_treatment(task).items()
+    }
+    pairs = [(T, Y) for T in by_treatment for Y in range(D) if Y != T]
+    lengths = np.array([len(by_treatment[T]) for T, _ in pairs], dtype=int)
+    t = np.zeros((len(pairs), int(lengths.max()) if len(pairs) else 0))
+    for q, (T, _) in enumerate(pairs):
+        t[q, : lengths[q]] = by_treatment[T]
+    return pairs, t, lengths
+
+
+def _version_predictives(
+    oracle, model_parameters, pairs, t, lengths, oracle_kw
+) -> list[dict]:
+    """Model and oracle predictive distributions of every query for one
+    (possibly edited) context version.
+
+    model_parameters: (mu, sd, logw) float64 CPU tensors [Q, n, K] of this
+    version. Returns, per query q, {"model": (mu, sd, logw) [n_q, K],
+    "oracle": (log_w, w, slope, var) [M], "model_mean", "oracle_mean":
+    [n_q]} with n_q = lengths[q] (padding dropped)."""
+    mu, sd, logw = model_parameters
+    out = []
+    for q, (T, Y) in enumerate(pairs):
+        n = int(lengths[q])
+        model = (mu[q, :n], sd[q, :n], logw[q, :n])
+        model_mean, _ = mixture_moments(*(p.numpy() for p in model))
+        log_w, slope, var = oracle.predictive_components(T, Y, **oracle_kw)
+        log_w, w, var = oracle_weights(log_w, var)
+        out.append({
+            "model": model, "oracle": (log_w, w, slope, var),
+            "model_mean": model_mean, "oracle_mean": float(w @ slope) * t[q, :n],
+        })  # fmt: skip
     return out
 
 
@@ -511,10 +532,10 @@ def run_context_edits(
     n_y: int = 64,
     min_graph_prob: float = 1e-4,
     max_query_points: int = 32,
-    max_edit_steps: int | None = None,
     seed: int = 0,
     normalise: bool = True,
     keep_original_normalisation: bool = False,
+    max_batch_size: int | None = None,
     max_oracle_nodes: int = 4,
     log_graph_prior: dict | None = None,
     graph_prior_samples: int | None = None,
@@ -528,8 +549,8 @@ def run_context_edits(
     no intervened row are skipped. Per task, default_rng([seed, i]) draws a
     random order of the intervened rows (`edit_order`) and, for every row, a
     new target (`draw_new_targets`). For each edit of `CONTEXT_EDITS` and
-    n in `edit_counts(number of intervened rows, max_edit_steps)` (by default
-    every n from 1 to all), the first n rows of the order are edited:
+    each n of the geometric grid `edit_counts` (1, 2, 4, ..., all intervened
+    rows), the first n rows of the order are edited:
         relabel_observational   their cells set to False
         move_target             their intervention moved j -> k != j
     The values x never change, and the edited mask goes through the model's
@@ -537,11 +558,13 @@ def run_context_edits(
     target, the query's treatment and outcome included: neither the model
     nor the oracle needs a restriction.
 
-    Queries: for each treatment T of the task's query rows
-    (`query_rows_by_treatment`), the do-values t of its first
-    max_query_points rows, and every outcome Y != T. The oracle is refitted
-    on (x, edited mask) and the model rerun on every edited context. Per
-    query, edit and n, for model and oracle alike (each against its own
+    Queries (`query_batch`): for each treatment T of the task's query rows,
+    the do-values t of its first max_query_points rows, and every outcome
+    Y != T. All versions of a context (the unedited one and every edit and
+    n) and all queries go through the model in one forward pass
+    (`model_api.predict_mixture_versions`; max_batch_size splits it to bound
+    memory). The oracle is refitted on (x, edited mask) for every version.
+    Per query, edit and n, for model and oracle alike (each against its own
     prediction on the unedited context):
         *_mean_shift            mean over t of (edited - original)
                                 predictive mean
@@ -586,8 +609,9 @@ def run_context_edits(
     ----------
     predict_or_model : torch.nn.Module | callable
         A loaded model (any size and intervention encoding), or a predictor
-        (x, m, Ts, Ys, t, normalisation_int_mask=None) -> (mu, sd, logw)
-        [Q, n, K] on the raw scale, like `model_api.predict_mixture`.
+        (x, masks [V, N, D], Ts [Q], Ys [Q], t [Q, n],
+        normalisation_int_masks=None) -> (mu, sd, logw) [V, Q, n, K] on the
+        raw scale, like `model_api.predict_mixture_versions`.
 
     data_cfg : MixedRegimeConfig
         Linear-Gaussian prior with normalise: false (`require_exact_oracle`).
@@ -599,9 +623,9 @@ def run_context_edits(
         Oracle MC parameter draws per query (budget "total"), MC draws per
         do-value for the KLs, DAG posterior cut-off.
 
-    max_edit_steps : int | None
-        Cap on the number of n values per task and edit (cost grows
-        linearly in it); None: every n.
+    max_batch_size : int | None
+        Largest number of (version, query) elements per model forward pass
+        (default: all versions of a context in one pass).
 
     log_graph_prior, graph_prior_samples
         Oracle graph prior, as in `experiments.run_kshot_prior`.
@@ -620,8 +644,9 @@ def run_context_edits(
     require_exact_oracle(data_cfg)
     if isinstance(predict_or_model, torch.nn.Module):
         predict = partial(
-            predict_mixture, predict_or_model, device=device, normalise=normalise
-        )
+            predict_mixture_versions, predict_or_model, device=device,
+            normalise=normalise, max_batch_size=max_batch_size,
+        )  # fmt: skip
     else:
         predict = predict_or_model
     graph_prior = log_graph_prior
@@ -637,65 +662,22 @@ def run_context_edits(
     num_skipped = 0
     for i in range(task_offset, task_offset + n_tasks):
         task, debug = prior_task(data_cfg, i, base_seed, D, return_debug=True)
-        scm = linear_scm_from_debug(debug)
-        graph = task.graph.astype(int)
         x = np.asarray(task.ctx_x, dtype=np.float64)
         original = np.asarray(task.ctx_int, dtype=bool)
-        if not original.any():
+        pairs, t_batch, lengths = query_batch(task, max_query_points)
+        if not original.any() or not pairs:
             num_skipped += 1
             continue
+        scm = linear_scm_from_debug(debug)
+        graph = task.graph.astype(int)
         rng = np.random.default_rng([seed, i])
         order = edit_order(original, rng)
         moved_from, moved_to = draw_new_targets(original, rng)
-        query_x = np.asarray(task.qry_x, dtype=np.float64)
-        queries = {
-            T: query_x[query_rows[:max_query_points], T]
-            for T, query_rows in query_rows_by_treatment(task).items()
-        }
-        oracle_kw = dict(
-            n_mc=n_mc, min_graph_prob=min_graph_prob, seed=i, budget="total"
-        )
 
-        def predictives(mask):
-            oracle = LinGaussOracle(
-                D, log_graph_prior=graph_prior, prior=parameter_prior
-            ).fit(x, mask)
-            return _predictives(
-                predict, oracle, x, mask, queries,
-                original if keep_original_normalisation else None,
-                {**oracle_kw, "param_cache": {}},
-            )  # fmt: skip
-
-        base = predictives(original)
-        # per query: draws from the original predictives and their log
-        # densities, shared by every edit and n
-        reference = {}
-        for (T, Y), p in base.items():
-            t = torch.as_tensor(queries[T], dtype=torch.float64)
-            qrng = np.random.default_rng([seed, i, T, Y])
-            mu, sd, logw = p["model"]
-            y_model = torch.as_tensor(
-                sample_mixture(mu.numpy(), sd.numpy(), logw.numpy(), n_y, qrng)
-            )
-            _, w, slope, var = p["oracle"]
-            y_oracle = torch.as_tensor(
-                sample_oracle(w, slope, var, queries[T], n_y, qrng)
-            )
-            lp_oracle = _oracle_logpdf(y_oracle, p["oracle"], t)
-            reference[(T, Y)] = {
-                "t": t,
-                "y_model": y_model,
-                "lp_model": mix_logpdf(y_model, *p["model"]),
-                "y_oracle": y_oracle,
-                "lp_oracle": lp_oracle,
-                "kl_oracle_model": float(
-                    kl_mc(lp_oracle, mix_logpdf(y_oracle, *p["model"])).mean()
-                ),
-            }
-
-        counts = edit_counts(len(order), max_edit_steps)
-        for edit_index, edit in enumerate(CONTEXT_EDITS):
-            for n in counts:
+        # every version of the context: (edit, n, edited rows, mask)
+        versions = [("original", 0, order[:0], original)]
+        for edit in CONTEXT_EDITS:
+            for n in edit_counts(len(order)):
                 edited_rows = order[:n]
                 if edit == "relabel_observational":
                     mask = relabel_rows_as_observational(original, edited_rows)
@@ -703,71 +685,126 @@ def run_context_edits(
                     mask = move_row_targets(
                         original, edited_rows, moved_from, moved_to
                     )
-                after = predictives(mask)
-                for (T, Y), before in base.items():
-                    ref = reference[(T, Y)]
-                    now = after[(T, Y)]
-                    t_values = queries[T]
-                    shift = {
-                        who: now[f"{who}_mean"] - before[f"{who}_mean"]
-                        for who in ("model", "oracle")
-                    }
-                    kl_model = kl_mc(
-                        ref["lp_model"], mix_logpdf(ref["y_model"], *now["model"])
+                versions.append((edit, n, edited_rows, mask))
+        masks = np.stack([v[3] for v in versions])  # [V, N, D]
+        normalisation = (
+            np.repeat(original[None], len(versions), axis=0)
+            if keep_original_normalisation
+            else None
+        )
+        Ts = np.array([T for T, _ in pairs])
+        Ys = np.array([Y for _, Y in pairs])
+        mu, sd, logw = predict(
+            x, masks, Ts, Ys, t_batch, normalisation_int_masks=normalisation
+        )  # [V, Q, n, K]
+        mu, sd, logw = mu.cpu(), sd.cpu(), logw.cpu()
+        oracle_kw = dict(
+            n_mc=n_mc, min_graph_prob=min_graph_prob, seed=i, budget="total"
+        )
+        predictives = []
+        for v, (_, _, _, mask) in enumerate(versions):
+            oracle = LinGaussOracle(
+                D, log_graph_prior=graph_prior, prior=parameter_prior
+            ).fit(x, mask)
+            predictives.append(_version_predictives(
+                oracle, (mu[v], sd[v], logw[v]), pairs, t_batch, lengths,
+                {**oracle_kw, "param_cache": {}},
+            ))  # fmt: skip
+
+        # per query: draws from the original predictives and their log
+        # densities, shared by every edit and n
+        reference = []
+        for q, (T, Y) in enumerate(pairs):
+            p = predictives[0][q]
+            t_values = t_batch[q, : lengths[q]]
+            qrng = np.random.default_rng([seed, i, T, Y])
+            m_mu, m_sd, m_logw = p["model"]
+            y_model = torch.as_tensor(sample_mixture(
+                m_mu.numpy(), m_sd.numpy(), m_logw.numpy(), n_y, qrng
+            ))  # fmt: skip
+            _, w, slope, var = p["oracle"]
+            y_oracle = torch.as_tensor(
+                sample_oracle(w, slope, var, t_values, n_y, qrng)
+            )
+            t_tensor = torch.as_tensor(t_values, dtype=torch.float64)
+            lp_oracle = _oracle_logpdf(y_oracle, p["oracle"], t_tensor)
+            reference.append({
+                "t": t_values, "t_tensor": t_tensor,
+                "y_model": y_model, "lp_model": mix_logpdf(y_model, *p["model"]),
+                "y_oracle": y_oracle, "lp_oracle": lp_oracle,
+                "kl_oracle_model": float(
+                    kl_mc(lp_oracle, mix_logpdf(y_oracle, *p["model"])).mean()
+                ),
+            })  # fmt: skip
+
+        edit_index = {edit: k for k, edit in enumerate(CONTEXT_EDITS)}
+        for v, (edit, n, edited_rows, _) in enumerate(versions):
+            if edit == "original":
+                continue
+            for q, (T, Y) in enumerate(pairs):
+                before, now = predictives[0][q], predictives[v][q]
+                ref = reference[q]
+                t_values = ref["t"]
+                shift = {
+                    who: now[f"{who}_mean"] - before[f"{who}_mean"]
+                    for who in ("model", "oracle")
+                }
+                kl_model = kl_mc(
+                    ref["lp_model"], mix_logpdf(ref["y_model"], *now["model"])
+                )
+                lp_oracle_edited = _oracle_logpdf(
+                    ref["y_oracle"], now["oracle"], ref["t_tensor"]
+                )
+                kl_oracle = kl_mc(ref["lp_oracle"], lp_oracle_edited)
+                srng = np.random.default_rng([seed, i, T, Y, edit_index[edit], n])
+                _, w, slope, var = now["oracle"]
+                y_edit = torch.as_tensor(
+                    sample_oracle(w, slope, var, t_values, n_y, srng)
+                )
+                kl_secondary = kl_mc(
+                    _oracle_logpdf(y_edit, now["oracle"], ref["t_tensor"]),
+                    mix_logpdf(y_edit, *now["model"]),
+                )
+                row = {
+                    "D": D, "task": i, "T": T, "Y": Y, "edit": edit,
+                    "num_edited_rows": n,
+                    "num_intervened_rows": len(order),
+                    "fraction_edited_rows": n / len(order),
+                    "num_edited_rows_targeting_treatment": int(
+                        original[edited_rows, T].sum()
+                    ),
+                    "relation": question_class(graph, T, Y),
+                    "identifiable_from_observational":
+                        observationally_identified(scm, T, Y),
+                    "treatment_intervened_in_context":
+                        bool(original[:, T].any()),
+                    "outcome_intervened_in_context":
+                        bool(original[:, Y].any()),
+                    "num_query_points": len(t_values),
+                }  # fmt: skip
+                for who in ("model", "oracle"):
+                    row[f"{who}_mean_shift"] = float(shift[who].mean())
+                    row[f"{who}_mean_shift_rms"] = float(
+                        np.sqrt(np.mean(shift[who] ** 2))
                     )
-                    kl_oracle = kl_mc(
-                        ref["lp_oracle"],
-                        _oracle_logpdf(ref["y_oracle"], now["oracle"], ref["t"]),
-                    )
-                    srng = np.random.default_rng([seed, i, T, Y, edit_index, n])
-                    _, w, slope, var = now["oracle"]
-                    y_edit = torch.as_tensor(
-                        sample_oracle(w, slope, var, t_values, n_y, srng)
-                    )
-                    kl_secondary = kl_mc(
-                        _oracle_logpdf(y_edit, now["oracle"], ref["t"]),
-                        mix_logpdf(y_edit, *now["model"]),
-                    )
-                    row = {
-                        "D": D, "task": i, "T": T, "Y": Y, "edit": edit,
-                        "num_edited_rows": n,
-                        "num_intervened_rows": len(order),
-                        "fraction_edited_rows": n / len(order),
-                        "num_edited_rows_targeting_treatment": int(
-                            original[edited_rows, T].sum()
-                        ),
-                        "relation": question_class(graph, T, Y),
-                        "identifiable_from_observational":
-                            observationally_identified(scm, T, Y),
-                        "treatment_intervened_in_context":
-                            bool(original[:, T].any()),
-                        "outcome_intervened_in_context":
-                            bool(original[:, Y].any()),
-                        "num_query_points": len(t_values),
-                    }  # fmt: skip
-                    for who in ("model", "oracle"):
-                        row[f"{who}_mean_shift"] = float(shift[who].mean())
-                        row[f"{who}_mean_shift_rms"] = float(
-                            np.sqrt(np.mean(shift[who] ** 2))
-                        )
-                        row[f"{who}_slope_change"] = _slope(t_values, shift[who])
-                    row["model_kl_original_to_edited"] = float(kl_model.mean())
-                    row["oracle_kl_original_to_edited"] = float(kl_oracle.mean())
-                    row["mean_shift_sign_agreement"] = _sign_agreement(
-                        shift["model"], shift["oracle"]
-                    )
-                    row["secondary_kl_oracle_to_model_original"] = ref[
-                        "kl_oracle_model"
-                    ]
-                    row["secondary_kl_oracle_to_model_edited"] = float(
-                        kl_secondary.mean()
-                    )
-                    rows.append(row)
+                    row[f"{who}_slope_change"] = _slope(t_values, shift[who])
+                row["model_kl_original_to_edited"] = float(kl_model.mean())
+                row["oracle_kl_original_to_edited"] = float(kl_oracle.mean())
+                row["mean_shift_sign_agreement"] = _sign_agreement(
+                    shift["model"], shift["oracle"]
+                )
+                row["secondary_kl_oracle_to_model_original"] = ref[
+                    "kl_oracle_model"
+                ]
+                row["secondary_kl_oracle_to_model_edited"] = float(
+                    kl_secondary.mean()
+                )
+                rows.append(row)
         if (i - task_offset + 1) % 10 == 0:
             print(f"context edits: {i - task_offset + 1}/{n_tasks} tasks")
     if num_skipped:
         print(f"context edits: skipped {num_skipped} task(s) without an "
-              "intervened context row")  # fmt: skip
+              "intervened context row or a query")  # fmt: skip
     return pd.DataFrame(rows)
 
 

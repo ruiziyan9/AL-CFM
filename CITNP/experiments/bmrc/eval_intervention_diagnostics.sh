@@ -30,9 +30,9 @@
 #   N_TASKS        default 200 (both probe-intervention and context-edits)
 #   TASK_OFFSET    default 0
 #   NUM_VARIABLES  optional D (default: the smallest D of the prior)
-#   MAX_EDIT_STEPS optional cap on the numbers of edited rows per task in
-#                  context-edits (default: every n from 1 to all; the cost
-#                  grows linearly with it)
+#   MAX_BATCH_SIZE optional cap on (context version, query) elements per
+#                  model forward pass in context-edits (default: one pass
+#                  per context; set it if memory runs out)
 #   DEVICE         default cpu (see eval_kshot_prior.sh for GPU options)
 #   PROBE_ARGS     further probe-intervention arguments (e.g. "--rows_per_task 64")
 #   EDIT_ARGS      further context-edits arguments (e.g. "--n_mc 1000")
@@ -55,7 +55,7 @@ DIAGNOSTICS=${DIAGNOSTICS:-embedding-geometry probe-intervention context-edits}
 N_TASKS=${N_TASKS:-200}
 TASK_OFFSET=${TASK_OFFSET:-0}
 NUM_VARIABLES=${NUM_VARIABLES:-}
-MAX_EDIT_STEPS=${MAX_EDIT_STEPS:-}
+MAX_BATCH_SIZE=${MAX_BATCH_SIZE:-}
 DEVICE=${DEVICE:-cpu}
 PROBE_ARGS=${PROBE_ARGS:-}
 EDIT_ARGS=${EDIT_ARGS:-}
@@ -65,8 +65,8 @@ read -ra PROBE_EXTRA <<< "$PROBE_ARGS"
 read -ra EDIT_EXTRA <<< "$EDIT_ARGS"
 NV=()
 if [ -n "$NUM_VARIABLES" ]; then NV=(--num_variables "$NUM_VARIABLES"); fi
-STEPS=()
-if [ -n "$MAX_EDIT_STEPS" ]; then STEPS=(--max_edit_steps "$MAX_EDIT_STEPS"); fi
+BATCH=()
+if [ -n "$MAX_BATCH_SIZE" ]; then BATCH=(--max_batch_size "$MAX_BATCH_SIZE"); fi
 COMMON=(--ckpt "$CKPT" --model_config "$MODEL_CFG" --device "$DEVICE")
 TASKS=(--data_config "$DATA_CFG" --n_tasks "$N_TASKS"
   --task_offset "$TASK_OFFSET" ${NV[@]+"${NV[@]}"})
@@ -102,11 +102,11 @@ for diagnostic in $DIAGNOSTICS; do
     context-edits)
       # primary readout first: only the intervention mask changes
       commands+=("python -u -m CITNP.evaluation context-edits $(printf '%q ' \
-        "${COMMON[@]}" "${TASKS[@]}" ${STEPS[@]+"${STEPS[@]}"} \
+        "${COMMON[@]}" "${TASKS[@]}" ${BATCH[@]+"${BATCH[@]}"} \
         ${EDIT_EXTRA[@]+"${EDIT_EXTRA[@]}"} --keep_original_normalisation \
         --out "${OUT_PREFIX}_context_edits_original_normalisation.csv")")
       commands+=("python -u -m CITNP.evaluation context-edits $(printf '%q ' \
-        "${COMMON[@]}" "${TASKS[@]}" ${STEPS[@]+"${STEPS[@]}"} \
+        "${COMMON[@]}" "${TASKS[@]}" ${BATCH[@]+"${BATCH[@]}"} \
         ${EDIT_EXTRA[@]+"${EDIT_EXTRA[@]}"} \
         --out "${OUT_PREFIX}_context_edits_edited_normalisation.csv")")
       ;;

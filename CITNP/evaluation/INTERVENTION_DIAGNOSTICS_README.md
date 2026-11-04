@@ -149,8 +149,8 @@ oracle given the same edited context (`LinGaussOracle` refitted on (x,
 edited mask)), i.e. a reasoner who believes the labels. Each predictor is
 compared with its own prediction on the unedited context. Per task, a seeded
 order of the intervened rows is drawn; with n edited rows, the first n rows
-of that order are edited, for n = 1 … all (`--max_edit_steps` thins this to a
-geometric grid):
+of that order are edited, for n on the geometric grid 1, 2, 4, … and always
+all intervened rows (`edit_counts`):
 
 - `relabel_observational`: the n rows are relabelled observational;
 - `move_target`: each of the n rows has its intervention moved from variable
@@ -202,7 +202,11 @@ each combination of the two main strata, and by `num_edited_rows` or not.
 `mean_shift_correlation`, `slope_change_correlation` and `kl_correlation`
 (Pearson correlation over queries); `mean_shift_sign_agreement` and
 `slope_change_sign_agreement`. The rows with `num_edited_rows ≠ all` and both
-strata `all` form the shift-vs-number-of-edited-rows curves.
+strata `all` form the shift-vs-number-of-edited-rows curves. Their x axis is
+the absolute number of edited rows. The last grid point of each task is all
+of its rows, a number that differs between tasks, so for the "everything
+relabelled" end point select rows with `fraction_edited_rows == 1` in the
+per-query CSV.
 
 ```bash
 # primary readout: only the intervention mask changes
@@ -243,10 +247,12 @@ below refer to it. The `edited_normalisation` run differs only for
   `kshot-prior` for that.
 
 Requirements: a linear-Gaussian prior with `normalise: false`
-(`tasks.require_exact_oracle`) and D ≤ 4. Cost: for every task, edit and n,
-the oracle is refitted and the model rerun. With every n from 1 to all
-(dozens to hundreds of intervened rows per task) this dominates the run time;
-use `--max_edit_steps` (e.g. 16) or split tasks with `--task_offset`.
+(`tasks.require_exact_oracle`) and D ≤ 4. Cost: the grid has about
+2 (log2 R + 1) edited versions per task for R intervened rows. All versions
+of a context and all its queries go through the model in one forward pass
+(`model_api.predict_mixture_versions`; `--max_batch_size` splits it if
+memory runs out), and the oracle is refitted once per version. Split long
+runs over tasks with `--task_offset`.
 
 ## Running on BMRC
 
@@ -263,7 +269,7 @@ for MODEL in extra_node layerwise; do
   RUN=<results root>/<run name of $MODEL>
   REPO=$PWD CKPT=$RUN/best_model.pt MODEL_CFG=$RUN/resolved_model_config.yaml \
       DATA_CFG=CITNP/experiments/configs/oracle_d3_iw_motif.yaml \
-      OUT_PREFIX=<diagnostics dir>/$MODEL MAX_EDIT_STEPS=16 \
+      OUT_PREFIX=<diagnostics dir>/$MODEL \
       sbatch CITNP/experiments/bmrc/eval_intervention_diagnostics.sh
 done
 ```
