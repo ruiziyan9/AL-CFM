@@ -200,3 +200,4 @@ slurm-*.out
 wandb/
 *.npz
 figs/
+data/

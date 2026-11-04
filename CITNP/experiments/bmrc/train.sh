@@ -10,7 +10,13 @@
 #   MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m.yaml \
 #       sbatch CITNP/experiments/bmrc/train.sh
 #
-#   DATA_CFG, MODEL_CFG  required
+#   DATA_CFG, MODEL_CFG  required (DATA_CFG may be left unset when DATASET_CONFIG
+#               is set: it is then the dataset config's `prior_config:` line)
+#   DATASET_CONFIG  optional: train from pre-simulated data (a YAML in
+#               CITNP/experiments/configs/datasets/, generated with
+#               generate_presimulated_data.sh under $DATA_ROOT, default
+#               $OUT/data). Resuming aborts if the train split's config.json
+#               changed since the first launch.
 #   RUN         run name (default <data>__<model>__s<SEED>); never reuse a
 #               name for a different experiment (see the resume guard below)
 #   EPOCHS      default 500 (x 200 iterations)
@@ -43,6 +49,10 @@
 #SBATCH --output=/gpfs3/well/cebam/users/%u/alcfm/logs/%x_%j.out
 #SBATCH --error=/gpfs3/well/cebam/users/%u/alcfm/logs/%x_%j.err
 set -euo pipefail
+DATASET_CONFIG=${DATASET_CONFIG:-}
+if [ -z "${DATA_CFG:-}" ] && [ -n "$DATASET_CONFIG" ]; then
+  DATA_CFG=$(sed -n 's/^prior_config: *\([^ #]*\).*/\1/p' "$DATASET_CONFIG")
+fi
 DATA_CFG=${DATA_CFG:?set DATA_CFG, e.g. CITNP/experiments/configs/oracle_d3.yaml}
 MODEL_CFG=${MODEL_CFG:?set MODEL_CFG, e.g. CITNP/experiments/configs/oracle_d3_model_m.yaml}
 EPOCHS=${EPOCHS:-500}
@@ -58,6 +68,7 @@ USER=${USER:-$(id -un)}
 W=${W:-/gpfs3/well/cebam/users/$USER}
 REPO=${REPO:-$W/AL-CFM}
 OUT=${OUT:-$W/alcfm}
+DATA_ROOT=${DATA_ROOT:-$OUT/data}
 if [ -d "$REPO" ]; then cd "$REPO"; fi
 
 hash10() { sha1sum "$1" | cut -c1-10; }
@@ -69,6 +80,22 @@ CKPT=$RUN_DIR/last_model.pt
 HASHES=$OUT/run_hashes/$RUN.txt
 WANT_HASHES="data=$DATA_HASH
 model=$MODEL_HASH"
+DATASET_ARGS=()
+if [ -n "$DATASET_CONFIG" ]; then
+  DATASET_NAME=$(sed -n 's/^dataset_name: *\([^ #]*\).*/\1/p' "$DATASET_CONFIG")
+  TRAIN_SPLIT_CONFIG_JSON=$DATA_ROOT/$DATASET_NAME/train/config.json
+  # The fingerprint of the train split's config.json is recorded too, so
+  # resuming aborts if the simulated data were regenerated differently.
+  # (DRY_RUN may run before the data exist.)
+  if [ -f "$TRAIN_SPLIT_CONFIG_JSON" ]; then
+    TRAIN_DATA_FINGERPRINT=$(hash10 "$TRAIN_SPLIT_CONFIG_JSON")
+  else
+    TRAIN_DATA_FINGERPRINT=missing
+  fi
+  WANT_HASHES="$WANT_HASHES
+presimulated_train_data=$TRAIN_DATA_FINGERPRINT"
+  DATASET_ARGS=(--dataset_config "$DATASET_CONFIG" --data_root "$DATA_ROOT")
+fi
 
 # Resume decision: RESUME is "" or "--resume_full <ckpt>"; abort on mismatch.
 RESUME=""
@@ -106,6 +133,7 @@ BANK_CMD=(python -m CITNP.evaluation.oracle_bank
 TRAIN_CMD=(python -u -m CITNP.experiments.mixed_train
   --data_config "$DATA_CFG"
   --model_config "$MODEL_CFG"
+  ${DATASET_ARGS[@]+"${DATASET_ARGS[@]}"}
   --device cuda --dtype float32
   --batch_size 256 --iterations_per_epoch 200 --epochs "$EPOCHS"
   --learning_rate 5e-4 --lr_warmup_ratio 0.02 --lr_schedule cosine
@@ -134,6 +162,11 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "RUN=$RUN"
   echo "DATA_CFG=$DATA_CFG (sha1 $DATA_HASH)"
   echo "MODEL_CFG=$MODEL_CFG (sha1 $MODEL_HASH)"
+  if [ -n "$DATASET_CONFIG" ]; then
+    echo "DATASET_CONFIG=$DATASET_CONFIG"
+    echo "DATA_ROOT=$DATA_ROOT"
+    echo "train split config.json fingerprint: $TRAIN_DATA_FINGERPRINT"
+  fi
   echo "BANK=$BANK"
   if [ -f "$BANK" ]; then echo "# bank exists: not rebuilt"; else
     echo "# bank missing: built first with ('PID' is the job's process id)"
@@ -145,6 +178,12 @@ if [ "$DRY_RUN" = 1 ]; then
   else echo "# resume: no (fresh run; hashes written to $HASHES)"; fi
   print_cmd "${TRAIN_CMD[@]}"
   exit 0
+fi
+
+if [ -n "$DATASET_CONFIG" ] && [ "$TRAIN_DATA_FINGERPRINT" = missing ]; then
+  echo "ABORT: no simulated training data at $TRAIN_SPLIT_CONFIG_JSON;" >&2
+  echo "  generate it first with generate_presimulated_data.sh" >&2
+  exit 1
 fi
 
 source "${COMMON_ENV:-${SLURM_SUBMIT_DIR:-.}/CITNP/experiments/bmrc/common_env.sh}"

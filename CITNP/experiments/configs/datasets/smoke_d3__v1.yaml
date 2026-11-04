@@ -1,0 +1,9 @@
+# Small pre-simulated dataset for smoke tests (see CITNP/datasets/dataset_config.py).
+dataset_name: smoke_d3__v1
+prior_config: CITNP/experiments/configs/smoke_d3.yaml
+tasks_per_chunk_file: 256
+tasks_per_shape_group: 64
+splits:
+  train:      {num_tasks: 1024, base_seed: 0}
+  validation: {num_tasks: 128,  base_seed: 0}
+  test:       {num_tasks: 128,  base_seed: 0}

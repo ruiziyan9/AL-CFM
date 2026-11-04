@@ -1,0 +1,9 @@
+# Pre-simulated version of oracle_d3_iw_motif.yaml (see CITNP/datasets/dataset_config.py).
+dataset_name: oracle_d3_iw_motif__v1                              # directory under the data root
+prior_config: CITNP/experiments/configs/oracle_d3_iw_motif.yaml   # repo-relative
+tasks_per_chunk_file: 4096
+tasks_per_shape_group: 256        # must be a multiple of the training batch size
+splits:
+  train:      {num_tasks: 2048000, base_seed: 0}
+  validation: {num_tasks: 12800,   base_seed: 0}
+  test:       {num_tasks: 12800,   base_seed: 0}

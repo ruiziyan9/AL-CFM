@@ -4,6 +4,7 @@
 #   W        base directory               (default /gpfs3/well/cebam/users/$USER)
 #   REPO     checkout of this repository  (default $W/AL-CFM)
 #   OUT      logs, banks, results         (default $W/alcfm)
+#   DATA_ROOT  simulated datasets, outside the checkout (default $OUT/data)
 #   CONDA_ENV, MODULE                     (defaults mace_tnp, Miniforge3/24.11.3-0)
 #
 # Usage, from a batch script or an interactive `srun --pty bash` shell:
@@ -16,7 +17,9 @@ REPO=${REPO:-$W/AL-CFM}
 OUT=${OUT:-$W/alcfm}
 CONDA_ENV=${CONDA_ENV:-mace_tnp}
 MODULE=${MODULE:-Miniforge3/24.11.3-0}
-export W REPO OUT CONDA_ENV MODULE
+DATA_ROOT=${DATA_ROOT:-$OUT/data}
+export W REPO OUT CONDA_ENV MODULE DATA_ROOT
+export ALCFM_DATA_ROOT=$DATA_ROOT
 mkdir -p "$OUT/logs"
 cd "$REPO"
 module purge
