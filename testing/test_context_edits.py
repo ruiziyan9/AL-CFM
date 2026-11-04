@@ -150,6 +150,21 @@ def test_sample_mixture_moments():
     np.testing.assert_allclose(y.mean(1), [3.0, 1.0], atol=0.05)
 
 
+def test_kl_standard_error():
+    from CITNP.evaluation.metrics import kl_mc, kl_mc_mean_with_standard_error
+
+    rng = np.random.default_rng(0)
+    lp_p = torch.as_tensor(rng.normal(size=(4, 50)))
+    lp_q = torch.as_tensor(rng.normal(size=(4, 50)))
+    kl, se = kl_mc_mean_with_standard_error(lp_p, lp_q)
+    assert kl == pytest.approx(float(kl_mc(lp_p, lp_q).mean()))
+    d = (lp_p - lp_q).numpy()
+    expected = np.sqrt((d.var(1, ddof=1) / 50).sum()) / 4
+    assert se == pytest.approx(expected)
+    # identical densities: zero KL, zero standard error
+    assert kl_mc_mean_with_standard_error(lp_p, lp_p) == (0.0, 0.0)
+
+
 def test_normalisation_mask_default_and_override():
     model = tiny_model("r1")
     rng = np.random.default_rng(0)
@@ -318,7 +333,12 @@ def test_run_context_edits_structure(encoding):
         "mean_shift_sign_agreement",
         "secondary_kl_oracle_to_model_original",
         "secondary_kl_oracle_to_model_edited",
+        "model_kl_original_to_edited_se", "oracle_kl_original_to_edited_se",
+        "secondary_kl_oracle_to_model_original_se",
+        "secondary_kl_oracle_to_model_edited_se",
     }  # fmt: skip
+    for column in [c for c in df.columns if c.endswith("_se")]:
+        assert (df[column] >= 0).all(), column
     assert not any("loglik" in c for c in df.columns)
     relabel = df[df["edit"] == "relabel_observational"]
     assert (relabel["new_target_role"] == "not_applicable").all()

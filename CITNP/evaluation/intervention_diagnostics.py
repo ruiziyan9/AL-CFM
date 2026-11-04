@@ -30,7 +30,7 @@ import torch
 from CITNP.datasets.linear_gaussian_prior import LinearGaussianPrior
 from CITNP.evaluation.experiments import _value_features
 from CITNP.evaluation.metrics import (
-    kl_mc,
+    kl_mc_mean_with_standard_error,
     mix_logpdf,
     mixture_moments,
     oracle_mixture_on_grid,
@@ -608,12 +608,15 @@ def run_context_edits(
                                 Carlo with n_y draws per t from the original
                                 (the same draws for every n), mean over t,
                                 as the other evaluations compare mixtures
-                                (`metrics.kl_mc`)
+                                (`metrics.kl_mc`); *_se is its Monte Carlo
+                                standard error over the y draws
+                                (`metrics.kl_mc_mean_with_standard_error`)
         mean_shift_sign_agreement
                                 fraction of query points where the model's
                                 mean shift has the oracle's sign
-    Secondary only: secondary_kl_oracle_to_model_original / _edited, the
-    usual KL(oracle || model) on the unedited and the edited context. The
+    Secondary only: secondary_kl_oracle_to_model_original / _edited (each
+    with its *_se), the usual KL(oracle || model) on the unedited and the
+    edited context. The
     edited contexts are mislabelled, so they are outside the training
     distribution: a large discrepancy there is expected and is not a
     failure of the model on real data.
@@ -771,8 +774,8 @@ def run_context_edits(
                 "t": t_values, "t_tensor": t_tensor,
                 "y_model": y_model, "lp_model": mix_logpdf(y_model, *p["model"]),
                 "y_oracle": y_oracle, "lp_oracle": lp_oracle,
-                "kl_oracle_model": float(
-                    kl_mc(lp_oracle, mix_logpdf(y_oracle, *p["model"])).mean()
+                "kl_oracle_model": kl_mc_mean_with_standard_error(
+                    lp_oracle, mix_logpdf(y_oracle, *p["model"])
                 ),
             })  # fmt: skip
 
@@ -788,19 +791,21 @@ def run_context_edits(
                     who: now[f"{who}_mean"] - before[f"{who}_mean"]
                     for who in ("model", "oracle")
                 }
-                kl_model = kl_mc(
+                kl_model = kl_mc_mean_with_standard_error(
                     ref["lp_model"], mix_logpdf(ref["y_model"], *now["model"])
                 )
                 lp_oracle_edited = _oracle_logpdf(
                     ref["y_oracle"], now["oracle"], ref["t_tensor"]
                 )
-                kl_oracle = kl_mc(ref["lp_oracle"], lp_oracle_edited)
+                kl_oracle = kl_mc_mean_with_standard_error(
+                    ref["lp_oracle"], lp_oracle_edited
+                )
                 srng = np.random.default_rng([seed, i, T, Y, edit_index[edit], n])
                 _, w, slope, var = now["oracle"]
                 y_edit = torch.as_tensor(
                     sample_oracle(w, slope, var, t_values, n_y, srng)
                 )
-                kl_secondary = kl_mc(
+                kl_secondary = kl_mc_mean_with_standard_error(
                     _oracle_logpdf(y_edit, now["oracle"], ref["t_tensor"]),
                     mix_logpdf(y_edit, *now["model"]),
                 )
@@ -836,17 +841,25 @@ def run_context_edits(
                         np.sqrt(np.mean(shift[who] ** 2))
                     )
                     row[f"{who}_slope_change"] = _slope(t_values, shift[who])
-                row["model_kl_original_to_edited"] = float(kl_model.mean())
-                row["oracle_kl_original_to_edited"] = float(kl_oracle.mean())
+                (
+                    row["model_kl_original_to_edited"],
+                    row["model_kl_original_to_edited_se"],
+                ) = kl_model
+                (
+                    row["oracle_kl_original_to_edited"],
+                    row["oracle_kl_original_to_edited_se"],
+                ) = kl_oracle
                 row["mean_shift_sign_agreement"] = _sign_agreement(
                     shift["model"], shift["oracle"]
                 )
-                row["secondary_kl_oracle_to_model_original"] = ref[
-                    "kl_oracle_model"
-                ]
-                row["secondary_kl_oracle_to_model_edited"] = float(
-                    kl_secondary.mean()
-                )
+                (
+                    row["secondary_kl_oracle_to_model_original"],
+                    row["secondary_kl_oracle_to_model_original_se"],
+                ) = ref["kl_oracle_model"]
+                (
+                    row["secondary_kl_oracle_to_model_edited"],
+                    row["secondary_kl_oracle_to_model_edited_se"],
+                ) = kl_secondary
                 rows.append(row)
         if (i - task_offset + 1) % 10 == 0:
             print(f"context edits: {i - task_offset + 1}/{n_tasks} tasks")
@@ -866,6 +879,13 @@ ALL = "all"
 
 def _ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator > 0 else float("nan")
+
+
+def _mean_standard_error(standard_errors: pd.Series) -> float:
+    """Monte Carlo standard error of the mean of independent estimates with
+    the given standard errors: sqrt(sum se^2) / n."""
+    se = standard_errors.to_numpy(dtype=float)
+    return float(np.sqrt(np.sum(se**2)) / len(se)) if len(se) else float("nan")
 
 
 def _summary_row(group: pd.DataFrame) -> dict:
@@ -888,6 +908,12 @@ def _summary_row(group: pd.DataFrame) -> dict:
         "model_kl_original_to_edited": model_kl,
         "oracle_kl_original_to_edited": oracle_kl,
         "kl_ratio": _ratio(model_kl, oracle_kl),
+        "model_kl_original_to_edited_se": _mean_standard_error(
+            group["model_kl_original_to_edited_se"]
+        ),
+        "oracle_kl_original_to_edited_se": _mean_standard_error(
+            group["oracle_kl_original_to_edited_se"]
+        ),
         "mean_shift_correlation": _correlation(
             group["model_mean_shift"], group["oracle_mean_shift"]
         ),
@@ -908,6 +934,12 @@ def _summary_row(group: pd.DataFrame) -> dict:
         "secondary_kl_oracle_to_model_edited": group[
             "secondary_kl_oracle_to_model_edited"
         ].mean(),
+        "secondary_kl_oracle_to_model_original_se": _mean_standard_error(
+            group["secondary_kl_oracle_to_model_original_se"]
+        ),
+        "secondary_kl_oracle_to_model_edited_se": _mean_standard_error(
+            group["secondary_kl_oracle_to_model_edited_se"]
+        ),
     }
 
 
@@ -922,7 +954,14 @@ def summarise_context_edits(df: pd.DataFrame) -> pd.DataFrame:
         num_queries, num_tasks
         model_ / oracle_mean_shift_rms, mean_shift_ratio (model / oracle)
         model_ / oracle_abs_slope_change, slope_change_ratio
-        model_ / oracle_kl_original_to_edited, kl_ratio
+        model_ / oracle_kl_original_to_edited, kl_ratio, and *_se: the
+                                  Monte Carlo standard error of each mean
+                                  KL (`_mean_standard_error`; treats the
+                                  rows as independent, which holds across
+                                  queries but not across the n of one query,
+                                  whose estimates share their y draws, so
+                                  for groups pooling several n it is too
+                                  small)
         mean_shift_correlation, slope_change_correlation, kl_correlation
                                   Pearson correlation over queries
         mean_shift_sign_agreement mean over queries of the per-point value

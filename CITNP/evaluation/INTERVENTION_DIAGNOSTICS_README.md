@@ -187,6 +187,7 @@ edit, n), for model and oracle:
 | `*_mean_shift`, `*_mean_shift_rms` | edited − original predictive mean: mean and RMS over t |
 | `*_slope_change` | change of the predictive mean's slope in t |
 | `*_kl_original_to_edited` | KL(original ‖ edited) predictive, Monte Carlo (`n_y` draws per t from the original; the same draws for every n), mean over t |
+| `*_kl_*_se` | Monte Carlo standard error of each KL over the y draws (`metrics.kl_mc_mean_with_standard_error`); it does not include the oracle's own Monte Carlo error over parameter draws (`--n_mc`) |
 | `mean_shift_sign_agreement` | fraction of t where the model's shift has the oracle's sign |
 | `secondary_kl_oracle_to_model_original` / `_edited` | KL(oracle ‖ model) on the unedited / edited context; **secondary only** |
 | strata | `identifiable_from_observational` (population check on the true SCM: every DAG in its Markov equivalence class gives the same p(X_Y \| do(X_T))), `treatment_intervened_in_context`, `outcome_intervened_in_context`, `relation`, `num_edited_rows_targeting_treatment`; for `move_target` also `new_target_role` (`treatment`, `outcome` or `other`: the new target k relative to the query; `mixed` when the n moved rows differ; `not_applicable` for relabelling) with `num_moved_to_treatment` / `_outcome` / `_other` |
@@ -203,7 +204,10 @@ each combination of the strata `identifiable_from_observational`,
 `slope_change_ratio` and `kl_ratio` (model / oracle of the mean magnitudes);
 `mean_shift_correlation`, `slope_change_correlation` and `kl_correlation`
 (Pearson correlation over queries); `mean_shift_sign_agreement` and
-`slope_change_sign_agreement`. The rows with `num_edited_rows ≠ all` and
+`slope_change_sign_agreement`; and `*_se`, the Monte Carlo standard error of
+each mean KL. That SE treats rows as independent: true across queries, but
+not across the n of one query (they reuse the same y draws), so it is too
+small for groups that pool several n. The rows with `num_edited_rows ≠ all` and
 every stratum `all` form the shift-vs-number-of-edited-rows curves. Their x axis is
 the absolute number of edited rows. The last grid point of each task is all
 of its rows, a number that differs between tasks, so for the "everything

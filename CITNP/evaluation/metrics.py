@@ -122,6 +122,26 @@ def kl_mc(lp_p: torch.Tensor, lp_q: torch.Tensor) -> np.ndarray:
     return (lp_p - lp_q).mean(1).cpu().numpy()
 
 
+def kl_mc_mean_with_standard_error(
+    lp_p: torch.Tensor, lp_q: torch.Tensor
+) -> tuple[float, float]:
+    """Mean over grid points of the Monte Carlo KL(p || q) of `kl_mc`, and its
+    Monte Carlo standard error, from log p and log q at samples y ~ p
+    [n_t, n_y].
+
+    With d = log p - log q, the estimate is mean_t mean_y d and its standard
+    error sqrt(sum_t var_y(d) / n_y) / n_t (draws independent across grid
+    points; var with ddof 1). It covers the y draws only: if p or q is
+    itself a Monte Carlo mixture (the oracle's parameter draws), that error
+    is not included. NaN for a single draw per point."""
+    d = (lp_p - lp_q).double().cpu().numpy()
+    n_t, n_y = d.shape
+    if n_y < 2:
+        return float(d.mean()), float("nan")
+    standard_error = np.sqrt((d.var(axis=1, ddof=1) / n_y).sum()) / n_t
+    return float(d.mean()), float(standard_error)
+
+
 # --------------------------------------------------------------------------- #
 # Moments, implied effects, variance ratios
 # --------------------------------------------------------------------------- #
