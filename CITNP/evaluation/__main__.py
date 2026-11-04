@@ -16,6 +16,8 @@
     python -m CITNP.evaluation plot-monitoring RUN_DIR [RUN_DIR ...] --out monitoring.png
     python -m CITNP.evaluation probe-flag --ckpt ... --model_config ... \
            --bank bank.pkl --out probe.csv               # + probe.png
+    python -m CITNP.evaluation embedding-geometry --ckpt ... \
+           --model_config ... --out geometry.json      # extra_node only
 
 `kshot` evaluates ONE hand-built SCM, where the model can beat the oracle.
 ONLY `kshot-prior` gives a true oracle lower bound: every task is drawn from
@@ -27,7 +29,8 @@ task_offset, base_seed, n_y, n_mc, grid_eps) and how many graphs estimate
 the oracle's graph prior (graph_prior_samples).
 
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
-and `probe-flag` compute,
+and `probe-flag` compute, CITNP.evaluation.embedding_geometry for
+`embedding-geometry`,
 CITNP.evaluation.tasks.build_bank for the bank and CITNP.evaluation.plots for
 the figures.
 """
@@ -192,6 +195,18 @@ def _probe_flag_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no_normalise", action="store_true",
                    help="skip per-task standardisation (as in training)")  # fmt: skip
     p.add_argument("--out", default="probe.csv")
+    p.add_argument(
+        "--device", default=None, help="default: cuda if available, else cpu"
+    )
+
+
+def _embedding_geometry_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--ckpt", required=True)
+    p.add_argument("--model_config", required=True,
+                   help="model YAML of an extra_node model")  # fmt: skip
+    p.add_argument("--num_variables", type=int, default=3,
+                   help="number of variables D the model is built for")  # fmt: skip
+    p.add_argument("--out", default="metadata_embedding_geometry.json")
     p.add_argument(
         "--device", default=None, help="default: cuda if available, else cpu"
     )
@@ -569,6 +584,41 @@ def _run_probe_flag(
     _plot_probe(a.out)
 
 
+def _run_embedding_geometry(a: argparse.Namespace) -> None:
+    import json
+
+    from CITNP.datasets.create_mixed_regime_chunks import _git_commit
+    from CITNP.evaluation.embedding_geometry import metadata_embedding_geometry
+    from CITNP.evaluation.model_api import load_model
+
+    device = a.device or _default_device()
+    model = load_model(a.ckpt, a.model_config, device, num_nodes=a.num_variables)
+    geometry = metadata_embedding_geometry(model.encoder, a.num_variables)
+    result = {
+        "ckpt": a.ckpt,
+        "model_config": {
+            "path": a.model_config, "sha256": _sha256(a.model_config),
+        },
+        "git_commit": _git_commit(),
+        "geometry": geometry,
+    }  # fmt: skip
+    with open(a.out, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"wrote {a.out}")
+    single = geometry["single_target"]
+    print(f"||e_INT|| = {geometry['int_meta_embedding_norm']:.4f}  "
+          f"({geometry['normalisation']})")  # fmt: skip
+    for j, (norm, cosine, normalised_cosine) in enumerate(zip(
+        geometry["index_embedding_norms"],
+        geometry["cosine_int_meta_vs_index"],
+        single["normalised_cosine_to_observational"],
+    )):  # fmt: skip
+        print(f"  j={j}: ||e_j|| = {norm:.4f}, cos(e_INT, e_j) = {cosine:+.3f}, "
+              f"cos(N(e_INT + e_j), N(e_INT)) = {normalised_cosine:+.4f}")  # fmt: skip
+    print("  min distance between N(e_INT + e_j): "
+          f"{single['min_pairwise_normalised_distance']}")  # fmt: skip
+
+
 def _run_plot_monitoring(a: argparse.Namespace) -> None:
     import matplotlib
 
@@ -609,6 +659,10 @@ COMMANDS = {
         _probe_flag_parser,
         "linear probes: is the intervention flag still present at each depth?",
     ),
+    "embedding-geometry": (
+        _embedding_geometry_parser,
+        "extra_node: norms and cosines of the metadata embeddings (no data)",
+    ),
 }
 
 
@@ -640,6 +694,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_plot_kshot_prior(a, parsers["plot-kshot-prior"])
     elif a.command == "probe-flag":
         _run_probe_flag(a, parsers["probe-flag"])
+    elif a.command == "embedding-geometry":
+        _run_embedding_geometry(a)
     else:
         _run_plot_monitoring(a)
 
