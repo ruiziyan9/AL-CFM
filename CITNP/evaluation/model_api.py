@@ -7,6 +7,8 @@ Everything else derives what it needs from `predict_mixture` via
 `context_states`.
 """
 
+from pathlib import Path
+
 import numpy as np
 import torch
 import yaml  # type: ignore[import-untyped]
@@ -15,19 +17,123 @@ from CITNP.trainer.mixed_context_trainer import _normalisation_stats
 from CITNP.utils.configs import CausalInfModelConfig
 
 DEFAULT_MODEL_CLASS = "MixedContextMoGModel"
+# Copy of the training prior config that mixed_train writes next to the
+# checkpoints, with the original file's suffix (.yaml, .yml or .json).
+TRAINING_PRIOR_CONFIG_STEM = "training_prior_config"
+# Number of variables of a checkpoint that records none (the old default).
+FALLBACK_NUM_NODES = 3
+_INDEX_EMBEDDING_KEY = "encoder.index_embedding.weight"
+
+
+def training_prior_config_path(ckpt: str | Path) -> Path | None:
+    """The prior config the checkpoint `ckpt` was trained on, if its run
+    directory (the checkpoint's directory) records it:
+      1. <run dir>/training_prior_config.{yaml,yml,json}, the copy that
+         mixed_train writes;
+      2. <run dir>/presimulated_data.yaml (runs trained from pre-simulated
+         data): the prior_config of its dataset_config, if both exist.
+    None if neither is there (e.g. runs from before the copy was written).
+    """
+    run_dir = Path(ckpt).resolve().parent
+    for suffix in (".yaml", ".yml", ".json"):
+        path = run_dir / f"{TRAINING_PRIOR_CONFIG_STEM}{suffix}"
+        if path.is_file():
+            return path
+    record = run_dir / "presimulated_data.yaml"
+    if record.is_file():
+        from CITNP.datasets.dataset_config import (
+            load_presimulated_dataset_config,
+            prior_config_path,
+        )
+
+        dataset_config = yaml.safe_load(record.read_text()).get("dataset_config")
+        if dataset_config and Path(dataset_config).is_file():
+            path = prior_config_path(
+                load_presimulated_dataset_config(dataset_config)
+            )
+            if path.is_file():
+                return path
+    return None
+
+
+def checkpoint_num_variables(
+    ckpt: str | Path, state_dict: dict | None = None
+) -> tuple[int | None, list[int] | None, str]:
+    """What the checkpoint says about its number of variables.
+
+    Returns (num_nodes, training_num_variables, source):
+      num_nodes: D the model was built for (training builds it for the
+          largest D of its prior): max(num_variables) of the training prior
+          config (`training_prior_config_path`), else the number of rows of
+          the extra-node index embedding in `state_dict`, else None;
+      training_num_variables: the prior's num_variables, if the prior is
+          known, else None;
+      source: where num_nodes came from, for error messages.
+    Raises ValueError if the prior config and the index embedding disagree.
+    """
+    from CITNP.datasets.create_mixed_regime_chunks import load_config
+
+    rows = None
+    if state_dict is not None and _INDEX_EMBEDDING_KEY in state_dict:
+        rows = int(state_dict[_INDEX_EMBEDDING_KEY].shape[0])
+    prior_path = training_prior_config_path(ckpt)
+    if prior_path is not None:
+        prior = load_config(prior_path)
+        num_variables = sorted(int(d) for d in prior.num_variables)
+        if rows is not None and rows != max(num_variables):
+            raise ValueError(
+                f"{ckpt}: the extra-node index embedding has {rows} rows but "
+                f"the training prior {prior_path} has num_variables "
+                f"{num_variables}"
+            )
+        return max(num_variables), num_variables, f"training prior {prior_path}"
+    if rows is not None:
+        return rows, None, f"{ckpt} (extra-node index embedding)"
+    return None, None, "nothing recorded"
 
 
 def load_model(
-    ckpt: str, model_config: str, device: str, num_nodes: int = 3
+    ckpt: str, model_config: str, device: str, num_nodes: int | None = None
 ) -> torch.nn.Module:
-    """Build the model described by the YAML `model_config` for `num_nodes`
-    variables, load the weights in `ckpt` and return it in eval mode.
+    """Build the model described by the YAML `model_config`, load the
+    weights in `ckpt` and return it in eval mode, ready for data with
+    `num_nodes` variables.
 
-    The class is resolved by resolve_model_class from the optional YAML keys intervention_encoding and/or model_class (default: r1, MixedContextMoGModel).
+    The model is built for the number of variables the checkpoint records
+    (`checkpoint_num_variables`: training prior config, or the extra-node
+    index embedding), as training built it; models built for D variables
+    accept data with fewer. num_nodes (the evaluation's D) defaults to that
+    number (FALLBACK_NUM_NODES = 3 for checkpoints that record nothing, as
+    before). ValueError if num_nodes disagrees with the checkpoint: larger
+    than the model's number of variables, or not one of its training prior's
+    num_variables.
+
+    The class is resolved by resolve_model_class from the optional YAML keys
+    intervention_encoding and/or model_class (default: r1,
+    MixedContextMoGModel).
     """
     from CITNP.models.mixed_context_model import resolve_model_class
     from CITNP.models.regime_axis import REG_AXIS_CONFIG_KEYS
 
+    state = torch.load(ckpt, map_location="cpu")
+    state_dict = state.get("model_state_dict", state)
+    built, training_num_variables, source = checkpoint_num_variables(
+        ckpt, state_dict
+    )
+    if num_nodes is None:
+        num_nodes = built if built is not None else FALLBACK_NUM_NODES
+    if built is not None and num_nodes > built:
+        raise ValueError(
+            f"num_variables={num_nodes} disagrees with the checkpoint: the "
+            f"model was built for {built} variables ({source})"
+        )
+    if training_num_variables is not None and (
+        num_nodes not in training_num_variables
+    ):
+        raise ValueError(
+            f"num_variables={num_nodes} disagrees with the checkpoint: it was "
+            f"trained on num_variables {training_num_variables} ({source})"
+        )
     with open(model_config) as f:
         m = yaml.safe_load(f)
     cfg = CausalInfModelConfig(
@@ -37,7 +143,7 @@ def load_model(
         nhead=m["nhead"],
         dropout=0.0,
         num_layers_encoder=m["num_layers_encoder"],
-        num_nodes=num_nodes,
+        num_nodes=built if built is not None else num_nodes,
         sample_attn_mode=m["sample_attn_mode"],
         linear_attention=m.get("linear_attention", False),
         mean_loss_across_samples=False,
@@ -52,8 +158,7 @@ def load_model(
         m.get("intervention_encoding"), m.get("model_class")
     )
     model = model_cls(cfg)
-    state = torch.load(ckpt, map_location="cpu")
-    model.load_state_dict(state.get("model_state_dict", state))
+    model.load_state_dict(state_dict)
     return model.to(device).eval()
 
 

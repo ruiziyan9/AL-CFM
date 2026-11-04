@@ -61,6 +61,11 @@ All upstream arguments (`CITNP/utils/default_args.py`) are accepted.
 - validation / test: `split="val"` / `"test"` with `fresh_each_epoch=False`,
   `--val_iterations` / `--test_iterations` batches, identical on every pass.
 
+The run directory holds the checkpoints, `resolved_model_config.yaml` and
+`training_prior_config.<ext>`, a verbatim copy of `--data_config`.
+Evaluations read the number of variables and the default prior config of a
+checkpoint from that copy (`CITNP.evaluation.model_api.load_model`).
+
 The data config must use `qry_mode: grouped`. Upstream's wandb validation
 plots are disabled (they expect upstream's tuple batches). The test epoch
 reports losses overall and by stratum: causal direction of T → Y, seen /

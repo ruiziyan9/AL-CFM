@@ -37,6 +37,7 @@ import argparse
 import dataclasses
 import json
 import math
+import shutil
 import sys
 from pathlib import Path
 
@@ -413,6 +414,21 @@ def record_presimulated_data(
         yaml.safe_dump(record, f, sort_keys=False)
 
 
+def record_training_prior_config(
+    args: argparse.Namespace, model_save_dir: Path
+) -> None:
+    """Copy the --data_config file verbatim to
+    <run dir>/training_prior_config<suffix>, so evaluations can find the
+    prior (and the number of variables) a checkpoint was trained on
+    (`CITNP.evaluation.model_api.training_prior_config_path`)."""
+    if not getattr(args, "data_config", None):
+        return
+    source = Path(args.data_config)
+    shutil.copyfile(
+        source, model_save_dir / f"training_prior_config{source.suffix}"
+    )
+
+
 def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     """Datasets, model, configs and callbacks; returns (trainer, model_config)."""
     if data_cfg.qry_mode != "grouped":
@@ -520,6 +536,7 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         resolved["intervention_encoding"] = encoding
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
         yaml.safe_dump(resolved, f, sort_keys=False)
+    record_training_prior_config(args, model_save_dir)
 
     if args.dataset_config:
         record_presimulated_data(args, chunk_directories, model_save_dir)

@@ -211,8 +211,9 @@ def _embedding_geometry_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--ckpt", required=True)
     p.add_argument("--model_config", required=True,
                    help="model YAML of an extra_node model")  # fmt: skip
-    p.add_argument("--num_variables", type=int, default=3,
-                   help="number of variables D the model is built for")  # fmt: skip
+    p.add_argument("--num_variables", type=int, default=None,
+                   help="number of variables D (default: from the "
+                        "checkpoint)")  # fmt: skip
     p.add_argument("--out", default="metadata_embedding_geometry.json")
     p.add_argument(
         "--device", default=None, help="default: cuda if available, else cpu"
@@ -224,12 +225,16 @@ def _diagnostic_data_args(p: argparse.ArgumentParser, *, base_seed: int) -> None
     diagnostics that draw tasks from a prior."""
     p.add_argument("--ckpt", required=True)
     p.add_argument("--model_config", required=True)
-    p.add_argument("--data_config", required=True,
+    p.add_argument("--data_config", default=None,
                    help="prior config, or a pre-simulated dataset config "
                         "(its prior_config is used; chunk files are not "
-                        "read)")  # fmt: skip
+                        "read); default: the checkpoint's training prior "
+                        "(training_prior_config.* or presimulated_data.yaml "
+                        "next to it)")  # fmt: skip
     p.add_argument("--num_variables", type=int, default=None,
-                   help="D (default: the smallest D of the prior)")  # fmt: skip
+                   help="D (default: the checkpoint's number of variables, "
+                        "else the smallest D of the prior); must agree with "
+                        "the checkpoint")  # fmt: skip
     p.add_argument("--n_tasks", type=int, default=200)
     p.add_argument("--task_offset", type=int, default=0)
     p.add_argument("--base_seed", type=int, default=base_seed,
@@ -651,7 +656,9 @@ def _run_probe_flag(
     _plot_probe(a.out)
 
 
-def _run_embedding_geometry(a: argparse.Namespace) -> None:
+def _run_embedding_geometry(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
     import json
 
     from CITNP.datasets.create_mixed_regime_chunks import _git_commit
@@ -659,7 +666,12 @@ def _run_embedding_geometry(a: argparse.Namespace) -> None:
     from CITNP.evaluation.model_api import load_model
 
     device = a.device or _default_device()
-    model = load_model(a.ckpt, a.model_config, device, num_nodes=a.num_variables)
+    try:
+        model = load_model(
+            a.ckpt, a.model_config, device, num_nodes=a.num_variables
+        )
+    except ValueError as error:
+        parser.error(str(error))
     geometry = metadata_embedding_geometry(model.encoder, a.num_variables)
     result = {
         "ckpt": a.ckpt,
@@ -686,15 +698,53 @@ def _run_embedding_geometry(a: argparse.Namespace) -> None:
           f"{single['min_pairwise_normalised_distance']}")  # fmt: skip
 
 
-def _load_diagnostic_inputs(a: argparse.Namespace):
-    """(prior config, D, device, loaded model) of a diagnostic command."""
-    from CITNP.evaluation.model_api import load_model
+def _load_diagnostic_inputs(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+):
+    """(prior config, D, device, loaded model) of a diagnostic command.
+
+    --data_config defaults to the checkpoint's training prior
+    (`model_api.training_prior_config_path`; a.data_config is set to it so
+    that _meta.json records it). D is --num_variables, else the
+    checkpoint's number of variables (`model_api.checkpoint_num_variables`),
+    else the smallest D of the prior; `load_model` rejects a D that
+    disagrees with the checkpoint, and D must be one of the prior's
+    num_variables."""
+    import torch
+
+    from CITNP.evaluation.model_api import (
+        checkpoint_num_variables,
+        load_model,
+        training_prior_config_path,
+    )
     from CITNP.evaluation.tasks import load_prior_config
 
+    if a.data_config is None:
+        recorded = training_prior_config_path(a.ckpt)
+        if recorded is None:
+            parser.error(
+                f"--data_config is required: {a.ckpt} records no training "
+                "prior (no training_prior_config.* or presimulated_data.yaml "
+                "next to it)"
+            )
+        a.data_config = str(recorded)
+        print(f"data config: {a.data_config} (the checkpoint's training prior)")
     data_cfg = load_prior_config(a.data_config)
-    D = a.num_variables or min(int(d) for d in data_cfg.num_variables)
+    state = torch.load(a.ckpt, map_location="cpu")
+    built, _, _ = checkpoint_num_variables(
+        a.ckpt, state.get("model_state_dict", state)
+    )
+    D = a.num_variables or built or min(int(d) for d in data_cfg.num_variables)
+    if D not in [int(d) for d in data_cfg.num_variables]:
+        parser.error(
+            f"D={D} is not one of the prior's num_variables "
+            f"{list(data_cfg.num_variables)} ({a.data_config})"
+        )
     device = a.device or _default_device()
-    model = load_model(a.ckpt, a.model_config, device, num_nodes=D)
+    try:
+        model = load_model(a.ckpt, a.model_config, device, num_nodes=D)
+    except ValueError as error:
+        parser.error(str(error))
     return data_cfg, D, device, model
 
 
@@ -725,7 +775,9 @@ def _write_diagnostic_meta(
     return path
 
 
-def _run_probe_intervention(a: argparse.Namespace) -> None:
+def _run_probe_intervention(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
     import time
 
     import pandas as pd
@@ -734,7 +786,7 @@ def _run_probe_intervention(a: argparse.Namespace) -> None:
     from CITNP.evaluation.model_api import probe_points, uses_metadata_node
 
     t0 = time.time()
-    data_cfg, D, device, model = _load_diagnostic_inputs(a)
+    data_cfg, D, device, model = _load_diagnostic_inputs(a, parser)
     df = run_intervention_probes(
         model, data_cfg, D=D, device=device, n_tasks=a.n_tasks,
         task_offset=a.task_offset, base_seed=a.base_seed,
@@ -756,7 +808,9 @@ def _run_probe_intervention(a: argparse.Namespace) -> None:
         print(table.round(3))
 
 
-def _run_context_edits(a: argparse.Namespace) -> None:
+def _run_context_edits(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
     import os
     import time
 
@@ -771,7 +825,7 @@ def _run_context_edits(a: argparse.Namespace) -> None:
     # as kshot-prior: the exact oracle dominates the cost
     torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "1")))
     t0 = time.time()
-    data_cfg, D, device, model = _load_diagnostic_inputs(a)
+    data_cfg, D, device, model = _load_diagnostic_inputs(a, parser)
     df = run_context_edits(
         model, data_cfg, D=D, device=device, n_tasks=a.n_tasks,
         task_offset=a.task_offset, base_seed=a.base_seed, n_mc=a.n_mc,
@@ -894,11 +948,11 @@ def main(argv: list[str] | None = None) -> None:
     elif a.command == "probe-flag":
         _run_probe_flag(a, parsers["probe-flag"])
     elif a.command == "embedding-geometry":
-        _run_embedding_geometry(a)
+        _run_embedding_geometry(a, parsers["embedding-geometry"])
     elif a.command == "probe-intervention":
-        _run_probe_intervention(a)
+        _run_probe_intervention(a, parsers["probe-intervention"])
     elif a.command == "context-edits":
-        _run_context_edits(a)
+        _run_context_edits(a, parsers["context-edits"])
     else:
         _run_plot_monitoring(a)
 

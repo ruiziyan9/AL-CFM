@@ -6,15 +6,18 @@
 #   mkdir -p /gpfs3/well/cebam/users/$USER/alcfm/logs
 #   REPO=$PWD CKPT=<run dir>/best_model.pt \
 #       MODEL_CFG=<run dir>/resolved_model_config.yaml \
-#       DATA_CFG=CITNP/experiments/configs/oracle_d3_iw_motif.yaml \
 #       OUT_PREFIX=<results dir>/extra_node_m \
 #       sbatch CITNP/experiments/bmrc/eval_intervention_diagnostics.sh
 #
-#   CKPT, MODEL_CFG, DATA_CFG  required. DATA_CFG is the prior config the
-#                  model was trained on, or a pre-simulated dataset config
-#                  (configs/datasets/*.yaml; its prior_config is used, the
-#                  chunk files are not read). context-edits needs a
-#                  linear-Gaussian prior with normalise: false.
+#   CKPT, MODEL_CFG  required
+#   DATA_CFG       optional; default: the checkpoint's training prior
+#                  (training_prior_config.* next to the checkpoint, written
+#                  by mixed_train, or the prior of presimulated_data.yaml).
+#                  Required for runs that record neither. A prior config, or
+#                  a pre-simulated dataset config (configs/datasets/*.yaml;
+#                  its prior_config is used, the chunk files are not read).
+#                  context-edits needs a linear-Gaussian prior with
+#                  normalise: false.
 #   OUT_PREFIX     required; writes ${OUT_PREFIX}_metadata_embedding_geometry.json,
 #                  ${OUT_PREFIX}_intervention_probes{.csv,_meta.json} and two
 #                  context-edits runs, each {.csv,_summary.csv,_meta.json}:
@@ -29,7 +32,8 @@
 #                  MODEL_CFG selects extra_node
 #   N_TASKS        default 200 (both probe-intervention and context-edits)
 #   TASK_OFFSET    default 0
-#   NUM_VARIABLES  optional D (default: the smallest D of the prior)
+#   NUM_VARIABLES  optional D (default: the checkpoint's number of variables;
+#                  must agree with the checkpoint)
 #   MAX_BATCH_SIZE optional cap on (context version, query) elements per
 #                  model forward pass in context-edits (default: one pass
 #                  per context; set it if memory runs out)
@@ -49,7 +53,7 @@
 set -euo pipefail
 CKPT=${CKPT:?set CKPT}
 MODEL_CFG=${MODEL_CFG:?set MODEL_CFG}
-DATA_CFG=${DATA_CFG:?set DATA_CFG}
+DATA_CFG=${DATA_CFG:-}
 OUT_PREFIX=${OUT_PREFIX:?set OUT_PREFIX}
 DIAGNOSTICS=${DIAGNOSTICS:-embedding-geometry probe-intervention context-edits}
 N_TASKS=${N_TASKS:-200}
@@ -68,7 +72,9 @@ if [ -n "$NUM_VARIABLES" ]; then NV=(--num_variables "$NUM_VARIABLES"); fi
 BATCH=()
 if [ -n "$MAX_BATCH_SIZE" ]; then BATCH=(--max_batch_size "$MAX_BATCH_SIZE"); fi
 COMMON=(--ckpt "$CKPT" --model_config "$MODEL_CFG" --device "$DEVICE")
-TASKS=(--data_config "$DATA_CFG" --n_tasks "$N_TASKS"
+DC=()
+if [ -n "$DATA_CFG" ]; then DC=(--data_config "$DATA_CFG"); fi
+TASKS=(${DC[@]+"${DC[@]}"} --n_tasks "$N_TASKS"
   --task_offset "$TASK_OFFSET" ${NV[@]+"${NV[@]}"})
 
 if grep -Eq '^(intervention_encoding:[[:space:]]*extra_node|model_class:[[:space:]]*ExtraNode)' \

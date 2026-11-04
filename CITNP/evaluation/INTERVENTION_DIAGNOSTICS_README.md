@@ -35,9 +35,21 @@ generator (`tasks.prior_task`), as `kshot-prior` does: task i has the key
 `make_key(SOURCE_ADHOC, D, base_seed, i)`, which collides with no training,
 validation or test stream. The default base seeds are 9201 (probes) and 9301
 (edits), different from `kshot-prior` (9101) and the bank (4242).
-`--data_config` takes the prior config the model was trained on, or a
-pre-simulated dataset config (`configs/datasets/*.yaml`). For a dataset
-config its `prior_config` is used, and the chunk files are never read.
+`--data_config` takes a prior config, or a pre-simulated dataset config
+(`configs/datasets/*.yaml`). For a dataset config its `prior_config` is
+used, and the chunk files are never read. By default it is the checkpoint's
+training prior (`model_api.training_prior_config_path`): the copy
+`training_prior_config.<ext>` that `mixed_train` writes next to the
+checkpoints, or, for runs trained from pre-simulated data, the prior of
+their `presimulated_data.yaml`. Runs trained before that copy existed and
+without pre-simulated data need `--data_config`.
+
+The number of variables D comes from the checkpoint as well
+(`model_api.checkpoint_num_variables`): the largest D of the training
+prior, or the number of rows of the extra-node index embedding.
+`load_model` builds the model for that D, as training did, and raises a
+clear error if `--num_variables` disagrees (larger than the model's D, or
+not one of the training prior's `num_variables`).
 Results and data stay outside the repository; pass an output path elsewhere.
 
 ## 1. Embedding geometry (`extra_node` only, parameters only)
@@ -278,10 +290,10 @@ mkdir -p /gpfs3/well/cebam/users/$USER/alcfm/logs
 for MODEL in extra_node layerwise; do
   RUN=<results root>/<run name of $MODEL>
   REPO=$PWD CKPT=$RUN/best_model.pt MODEL_CFG=$RUN/resolved_model_config.yaml \
-      DATA_CFG=CITNP/experiments/configs/oracle_d3_iw_motif.yaml \
       OUT_PREFIX=<diagnostics dir>/$MODEL \
       sbatch CITNP/experiments/bmrc/eval_intervention_diagnostics.sh
 done
+# runs that record no training prior: add DATA_CFG=<the prior they were trained on>
 ```
 
 Tests: `testing/test_context_states.py`, `test_embedding_geometry.py`,
