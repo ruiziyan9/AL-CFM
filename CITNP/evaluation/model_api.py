@@ -145,7 +145,11 @@ def predict_mixture(
     normalisation_int_mask [N, D] bool, optional: take the standardisation
     from the observational rows of this mask instead of `ctx_int`, e.g. to
     edit the intervention mask without changing how the values are scaled.
-    Default None: the standardisation of `ctx_int`, as in training.
+    Everything derived from the standardisation follows it: the standardised
+    context and do-values, the scale features `context_scale` (log std,
+    mean / std) of scale_conditioning "stats" models, and the map of the
+    prediction back to the raw scale. Default None: the standardisation of
+    `ctx_int`, as in training.
     """
     inp, mean, std = _model_inputs(
         ctx_x, ctx_int, T, Y, t, zero_flags=zero_flags, normalise=normalise,

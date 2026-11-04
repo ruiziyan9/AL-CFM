@@ -159,10 +159,24 @@ geometric grid):
 
 The edited mask goes through the model's normal input path
 (`context_int_mask`). The model also standardises each context with its
-observational rows, so `relabel_observational` changes that standardisation
-too, as it would for a context that really was labelled that way.
-`--keep_original_normalisation` is the ablation that keeps the unedited
-standardisation. `move_target` never changes it.
+observational rows. Relabelling rows observational therefore changes two
+things at once: the label, and the scaling of every value (and, for
+`scale_conditioning: stats` models, the scale features `context_scale`).
+Run both settings:
+
+- **`--keep_original_normalisation` (primary readout).** Every edited
+  version gets the unedited context's standardisation, its scale features
+  and its map back to the raw scale (`predict_mixture`,
+  `normalisation_int_mask`). Only the intervention mask differs from the
+  unedited input, so any change in the prediction is a response to the
+  label. Use this run to answer the encoding question.
+- **Default (normal input path).** The standardisation comes from the
+  edited mask, as it would for a context that really was labelled that way.
+  Compare it with the primary run to see how much of the response comes
+  from the rescaling alone.
+
+`move_target` never changes the standardisation (observational rows stay
+observational), so the two runs agree for it up to Monte Carlo noise.
 
 Queries are each task's own query rows: their do-values t (at most
 `--max_query_points` per treatment) and every outcome Y ≠ T. Per (task, T, Y,
@@ -191,13 +205,22 @@ each combination of the two main strata, and by `num_edited_rows` or not.
 strata `all` form the shift-vs-number-of-edited-rows curves.
 
 ```bash
+# primary readout: only the intervention mask changes
 python -m CITNP.evaluation context-edits \
     --ckpt RUN/best_model.pt --model_config RUN/resolved_model_config.yaml \
     --data_config CITNP/experiments/configs/oracle_d3_iw_motif.yaml \
-    --n_tasks 200 --out OUT/extra_node_context_edits.csv
+    --n_tasks 200 --keep_original_normalisation \
+    --out OUT/extra_node_context_edits_original_normalisation.csv
+# normal input path (standardisation from the edited mask)
+python -m CITNP.evaluation context-edits \
+    --ckpt RUN/best_model.pt --model_config RUN/resolved_model_config.yaml \
+    --data_config CITNP/experiments/configs/oracle_d3_iw_motif.yaml \
+    --n_tasks 200 --out OUT/extra_node_context_edits_edited_normalisation.csv
 ```
 
-**Reading it.**
+**Reading it.** Read the `original_normalisation` run first; the points
+below refer to it. The `edited_normalisation` run differs only for
+`relabel_observational`.
 
 - A ratio near 1 with high correlation and sign agreement: the model reacts
   to the labels as much as, and in the same direction as, a reasoner who
@@ -228,8 +251,11 @@ use `--max_edit_steps` (e.g. 16) or split tasks with `--task_offset`.
 ## Running on BMRC
 
 [`eval_intervention_diagnostics.sh`](../experiments/bmrc/eval_intervention_diagnostics.sh)
-runs all three diagnostics for one checkpoint. It skips embedding-geometry
-when `MODEL_CFG` is not `extra_node`. `DRY_RUN=1` prints the commands.
+runs all three diagnostics for one checkpoint, with `context-edits` in both
+normalisation settings (`<OUT_PREFIX>_context_edits_original_normalisation*`,
+the primary readout, and `<OUT_PREFIX>_context_edits_edited_normalisation*`).
+It skips embedding-geometry when `MODEL_CFG` is not `extra_node`.
+`DRY_RUN=1` prints the commands.
 
 ```bash
 mkdir -p /gpfs3/well/cebam/users/$USER/alcfm/logs

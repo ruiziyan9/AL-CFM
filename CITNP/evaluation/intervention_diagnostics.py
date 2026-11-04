@@ -568,12 +568,18 @@ def run_context_edits(
     (`question_class` of the true graph), and
     num_edited_rows_targeting_treatment (edited rows that intervened on T).
 
-    The model standardises each context with its observational rows, so
-    relabelling rows observational also changes the standardisation, as it
-    would for a context that really was labelled that way (the oracle sees
-    the raw values). keep_original_normalisation=True instead keeps the
-    unedited context's standardisation for every edit (an ablation).
-    move_target never changes it: observational rows stay observational.
+    The model standardises each context with its observational rows, so by
+    default relabelling rows observational also changes the standardisation
+    (the model's normal input path, as for a context that really was
+    labelled that way; the oracle always sees the raw values). With
+    keep_original_normalisation=True every edited version gets the unedited
+    context's standardisation, and with it the same scale features
+    (`context_scale`) and the same map back to the raw scale
+    (`model_api.predict_mixture`, normalisation_int_mask): only the
+    intervention mask differs between versions. That run isolates the
+    response to the label and is the primary readout for the encoding
+    question; the default run shows the full input path. move_target never
+    changes the standardisation: observational rows stay observational.
     The oracle's MC draws use seed i for every context version.
 
     Args:

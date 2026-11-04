@@ -16,8 +16,13 @@
 #                  chunk files are not read). context-edits needs a
 #                  linear-Gaussian prior with normalise: false.
 #   OUT_PREFIX     required; writes ${OUT_PREFIX}_metadata_embedding_geometry.json,
-#                  ${OUT_PREFIX}_intervention_probes{.csv,_meta.json} and
-#                  ${OUT_PREFIX}_context_edits{.csv,_summary.csv,_meta.json}.
+#                  ${OUT_PREFIX}_intervention_probes{.csv,_meta.json} and two
+#                  context-edits runs, each {.csv,_summary.csv,_meta.json}:
+#                  ${OUT_PREFIX}_context_edits_original_normalisation
+#                    (--keep_original_normalisation: only the mask changes;
+#                    the primary readout) and
+#                  ${OUT_PREFIX}_context_edits_edited_normalisation
+#                    (the model's normal input path).
 #                  Keep it outside the git checkout.
 #   DIAGNOSTICS    default "embedding-geometry probe-intervention
 #                  context-edits"; embedding-geometry is skipped unless
@@ -95,10 +100,15 @@ for diagnostic in $DIAGNOSTICS; do
         --out "${OUT_PREFIX}_intervention_probes.csv")")
       ;;
     context-edits)
+      # primary readout first: only the intervention mask changes
+      commands+=("python -u -m CITNP.evaluation context-edits $(printf '%q ' \
+        "${COMMON[@]}" "${TASKS[@]}" ${STEPS[@]+"${STEPS[@]}"} \
+        ${EDIT_EXTRA[@]+"${EDIT_EXTRA[@]}"} --keep_original_normalisation \
+        --out "${OUT_PREFIX}_context_edits_original_normalisation.csv")")
       commands+=("python -u -m CITNP.evaluation context-edits $(printf '%q ' \
         "${COMMON[@]}" "${TASKS[@]}" ${STEPS[@]+"${STEPS[@]}"} \
         ${EDIT_EXTRA[@]+"${EDIT_EXTRA[@]}"} \
-        --out "${OUT_PREFIX}_context_edits.csv")")
+        --out "${OUT_PREFIX}_context_edits_edited_normalisation.csv")")
       ;;
     *)
       echo "unknown diagnostic: $diagnostic" >&2

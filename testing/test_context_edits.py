@@ -150,6 +150,32 @@ def test_normalisation_mask_default_and_override():
     assert not torch.equal(default[0], other[0])
 
 
+def test_normalisation_mask_freezes_every_scale_dependent_input():
+    """With the unedited mask as normalisation_int_mask, an edited mask
+    changes context_int_mask only: the standardised values, do-values,
+    scale features and the raw-scale map stay those of the unedited input."""
+    from CITNP.evaluation.model_api import _model_inputs
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(30, D)) * 3 + 1
+    mask = example_mask()
+    assert mask.any()
+    edited = np.zeros_like(mask)
+    kw = dict(zero_flags=False, normalise=True)
+    t = np.linspace(-1, 1, 3)
+    before, mean_b, std_b = _model_inputs(x, mask, [0, 1], [2, 2], t, **kw)
+    frozen, mean_f, std_f = _model_inputs(
+        x, edited, [0, 1], [2, 2], t, normalisation_int_mask=mask, **kw
+    )
+    free, mean_e, std_e = _model_inputs(x, edited, [0, 1], [2, 2], t, **kw)
+    assert torch.equal(mean_b, mean_f) and torch.equal(std_b, std_f)
+    for key in ("context_data", "target_data", "context_scale"):
+        assert torch.equal(before[key], frozen[key]), key
+    assert not torch.equal(before["context_int_mask"], frozen["context_int_mask"])
+    assert not torch.equal(before["context_scale"], free["context_scale"])
+    assert not torch.equal(mean_b, mean_e)
+
+
 # --------------------------------------------------------------------------- #
 # End to end
 # --------------------------------------------------------------------------- #

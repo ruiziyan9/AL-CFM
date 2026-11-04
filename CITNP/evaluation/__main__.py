@@ -270,8 +270,10 @@ def _context_edits_parser(p: argparse.ArgumentParser) -> None:
                    help="at most this many numbers of edited rows per task "
                         "(geometric; default: every n from 1 to all)")  # fmt: skip
     p.add_argument("--keep_original_normalisation", action="store_true",
-                   help="ablation: standardise every edited context like the "
-                        "unedited one (default: from the edited mask, the "
+                   help="give every edited context the unedited context's "
+                        "standardisation and scale features, so only the "
+                        "mask differs (primary readout for the encoding "
+                        "question; default: from the edited mask, the "
                         "model's normal input path)")  # fmt: skip
     p.add_argument("--out", default="context_edits.csv")
 
