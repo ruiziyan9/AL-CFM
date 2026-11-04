@@ -57,11 +57,15 @@ def load_model(
     return model.to(device).eval()
 
 
-def _model_inputs(ctx_x, ctx_int, T, Y, t, *, zero_flags, normalise):
+def _model_inputs(
+    ctx_x, ctx_int, T, Y, t, *, zero_flags, normalise, normalisation_int_mask=None
+):
     """Model keyword inputs (CPU, float32) for one context and Q queries,
     plus the per-variable standardisation (mean, std) [D] that was applied.
     `context_scale` [Q, D, 2] is (log std, mean / std) per variable (zeros
-    without normalisation), used by models with scale_conditioning "stats"."""
+    without normalisation), used by models with scale_conditioning "stats".
+    The standardisation uses the observational rows of
+    `normalisation_int_mask` [N, D] (default: `ctx_int`)."""
     Ts = torch.as_tensor(np.atleast_1d(T), dtype=torch.long)
     Ys = torch.as_tensor(np.atleast_1d(Y), dtype=torch.long)
     if Ts.ndim != 1 or Ts.shape != Ys.shape:
@@ -71,7 +75,12 @@ def _model_inputs(ctx_x, ctx_int, T, Y, t, *, zero_flags, normalise):
     ci = torch.as_tensor(np.asarray(ctx_int), dtype=torch.bool)[None]
     D = cx.shape[-1]
     if normalise:  # same per-task standardisation as prepare_mixed_batch
-        mean, std = _normalisation_stats(cx, ci)
+        norm_mask = ci
+        if normalisation_int_mask is not None:
+            norm_mask = torch.as_tensor(
+                np.asarray(normalisation_int_mask), dtype=torch.bool
+            )[None]
+        mean, std = _normalisation_stats(cx, norm_mask)
         mean, std = mean[0], std[0]
     else:
         mean, std = torch.zeros(D), torch.ones(D)
@@ -119,6 +128,7 @@ def predict_mixture(
     device: str | torch.device,
     zero_flags: bool = False,
     normalise: bool = True,
+    normalisation_int_mask: np.ndarray | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Model predictive p(X_Y | do(X_T = t), context) on the RAW data scale.
 
@@ -131,10 +141,16 @@ def predict_mixture(
     The context is standardised per task with `_normalisation_stats` (as in
     training) when `normalise`, else left as is; zero_flags sets every
     intervened-cell flag to False (flag ablation).
+
+    normalisation_int_mask [N, D] bool, optional: take the standardisation
+    from the observational rows of this mask instead of `ctx_int`, e.g. to
+    edit the intervention mask without changing how the values are scaled.
+    Default None: the standardisation of `ctx_int`, as in training.
     """
     inp, mean, std = _model_inputs(
-        ctx_x, ctx_int, T, Y, t, zero_flags=zero_flags, normalise=normalise
-    )
+        ctx_x, ctx_int, T, Y, t, zero_flags=zero_flags, normalise=normalise,
+        normalisation_int_mask=normalisation_int_mask,
+    )  # fmt: skip
     Ys = inp["outcome_index"]
     out = _call(model, inp, device)
     mu = out.pred_mean[:, :, 0].double()  # [Q, n_t, K], standardised scale

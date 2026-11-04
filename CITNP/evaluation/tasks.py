@@ -6,6 +6,7 @@ lazily). Functions that draw random numbers take the generator
 explicitly and draw in a fixed order, so results are reproducible.
 """
 
+import functools
 import itertools
 import random
 import time
@@ -16,7 +17,13 @@ from CITNP.datasets.linear_gaussian_prior import (
     LinearGaussianPrior,
     is_linear_gaussian,
 )
-from CITNP.evaluation.oracle import LinearSCM, LinGaussOracle, dag_key
+from CITNP.evaluation.oracle import (
+    LinearSCM,
+    LinGaussOracle,
+    all_dags,
+    dag_key,
+    mec_key,
+)
 
 # --------------------------------------------------------------------------- #
 # Confounder SCM roles and the six marginal interventional queries
@@ -270,6 +277,18 @@ def load_prior_config(path):
     return load_config(path)
 
 
+def linear_scm_from_debug(debug: dict) -> LinearSCM:
+    """The task's linear-Gaussian SCM (weights and noise variances, in the
+    task's variable order) from generate_task(..., return_debug=True).
+    Raises ValueError for non-zero intercepts (normalise must be false)."""
+    from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
+
+    lg = scm_from_debug(debug)
+    if not np.allclose(lg.c, 0.0):
+        raise ValueError("prior_scm needs zero intercepts (normalise: false)")
+    return LinearSCM(lg.B, lg.omega)
+
+
 def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     """SCM, graph and do-value distribution of task `i` of the training prior.
 
@@ -299,15 +318,10 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     (LinearSCM, graph [D, D] int in the task's variable order, do_dist dict,
     number of resample attempts the generator needed).
     """
-    from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
-
     require_exact_oracle(cfg)
     task, debug = prior_task(cfg, i, base_seed, D, return_debug=True)
-    lg = scm_from_debug(debug)
-    if not np.allclose(lg.c, 0.0):
-        raise ValueError("prior_scm needs zero intercepts (normalise: false)")
     return (
-        LinearSCM(lg.B, lg.omega),
+        linear_scm_from_debug(debug),
         task.graph.astype(int),
         dict(task.meta["do_dist"]),
         int(task.meta["resample_attempts"]),
@@ -324,6 +338,46 @@ def pair_design_pools(T: int, Y: int, D: int) -> dict:
         "do(Y)": Y,
         "do(other)": [j for j in range(D) if j not in (T, Y)],
     }
+
+
+@functools.lru_cache(maxsize=None)
+def _dags_by_markov_equivalence_class(D: int) -> dict:
+    """mec_key -> list of the labelled DAGs on D nodes in that class."""
+    classes: dict = {}
+    for g in all_dags(D):
+        classes.setdefault(mec_key(g), []).append(g)
+    return classes
+
+
+def observationally_identified(
+    scm: LinearSCM, T: int, Y: int, tol: float = 1e-6
+) -> bool:
+    """Is p(X_Y | do(X_T)) identified from observational data alone?
+
+    Population version (infinite observational sample, faithful SCM): every
+    DAG in the Markov equivalence class of the SCM's graph is fitted to the
+    SCM's observational covariance (each node regressed on its parents in
+    that DAG); the query is identified iff all of them give the same
+    interventional slope and variance, to relative tolerance `tol`.
+    """
+    D = len(scm.s2)
+    A = np.linalg.inv(np.eye(D) - scm.B.T)
+    S = A @ np.diag(scm.s2) @ A.T
+    effects = []
+    for g in _dags_by_markov_equivalence_class(D)[mec_key(scm.adj)]:
+        B = np.zeros((D, D))
+        s2 = np.zeros(D)
+        for j in range(D):
+            pa = np.flatnonzero(g[:, j])
+            s2[j] = S[j, j]
+            if len(pa):
+                w = np.linalg.solve(S[np.ix_(pa, pa)], S[pa, j])
+                B[pa, j] = w
+                s2[j] -= S[pa, j] @ w
+        effects.append(LinearSCM(B, s2).do_dist(T, Y))
+    effects_array = np.asarray(effects)
+    spread = np.ptp(effects_array, axis=0).max()
+    return bool(spread <= tol * max(1.0, np.abs(effects_array).max()))
 
 
 def default_n_obs(cfg) -> int:
@@ -349,7 +403,6 @@ def motif_graph_prior(cfg) -> dict:
     class size) for each of the 25 labelled DAGs, -inf for classes with
     probability 0."""
     from CITNP.datasets.motifs import MOTIF_SIZES, motif_class
-    from CITNP.evaluation.oracle import all_dags
 
     out = {}
     for g in all_dags(3):

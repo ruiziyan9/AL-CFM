@@ -21,6 +21,9 @@
     python -m CITNP.evaluation probe-intervention --ckpt ... \
            --model_config ... --data_config ... [--n_tasks 200] \
            --out intervention_probes.csv               # + _meta.json
+    python -m CITNP.evaluation context-edits --ckpt ... --model_config ... \
+           --data_config ... [--n_tasks 200] [--max_edit_steps 16] \
+           --out context_edits.csv     # + _summary.csv, _meta.json
 
 `kshot` evaluates ONE hand-built SCM, where the model can beat the oracle.
 ONLY `kshot-prior` gives a true oracle lower bound: every task is drawn from
@@ -34,7 +37,7 @@ the oracle's graph prior (graph_prior_samples).
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
 and `probe-flag` compute, CITNP.evaluation.embedding_geometry for
 `embedding-geometry`, CITNP.evaluation.intervention_diagnostics for
-`probe-intervention`,
+`probe-intervention` and `context-edits`,
 CITNP.evaluation.tasks.build_bank for the bank and CITNP.evaluation.plots for
 the figures.
 """
@@ -246,6 +249,31 @@ def _probe_intervention_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--l2", type=float, default=1e-3)
     p.add_argument("--max_iter", type=int, default=200)
     p.add_argument("--out", default="intervention_probes.csv")
+
+
+def _context_edits_parser(p: argparse.ArgumentParser) -> None:
+    _diagnostic_data_args(p, base_seed=9301)
+    p.add_argument("--n_mc", type=int, default=2000,
+                   help="oracle MC draws per query (budget total)")  # fmt: skip
+    p.add_argument("--min_graph_prob", type=float, default=1e-4)
+    p.add_argument("--max_query_points", type=int, default=32,
+                   help="query rows used per treatment")  # fmt: skip
+    p.add_argument("--graph_prior_samples", type=int, default=None,
+                   help="graphs sampled for the oracle's graph prior "
+                        "(default: 20000 for D = 3, 500000 "
+                        "for D >= 4)")  # fmt: skip
+    p.add_argument("--max_oracle_nodes", type=int, default=4,
+                   help="largest D for exact DAG enumeration")  # fmt: skip
+    p.add_argument("--n_y", type=int, default=64,
+                   help="MC draws per do-value for the KLs")  # fmt: skip
+    p.add_argument("--max_edit_steps", type=int, default=None,
+                   help="at most this many numbers of edited rows per task "
+                        "(geometric; default: every n from 1 to all)")  # fmt: skip
+    p.add_argument("--keep_original_normalisation", action="store_true",
+                   help="ablation: standardise every edited context like the "
+                        "unedited one (default: from the edited mask, the "
+                        "model's normal input path)")  # fmt: skip
+    p.add_argument("--out", default="context_edits.csv")
 
 
 # --------------------------------------------------------------------------- #
@@ -725,6 +753,52 @@ def _run_probe_intervention(a: argparse.Namespace) -> None:
         print(table.round(3))
 
 
+def _run_context_edits(a: argparse.Namespace) -> None:
+    import os
+    import time
+
+    import pandas as pd
+    import torch
+
+    from CITNP.evaluation.intervention_diagnostics import (
+        run_context_edits,
+        summarise_context_edits,
+    )
+
+    # as kshot-prior: the exact oracle dominates the cost
+    torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "1")))
+    t0 = time.time()
+    data_cfg, D, device, model = _load_diagnostic_inputs(a)
+    df = run_context_edits(
+        model, data_cfg, D=D, device=device, n_tasks=a.n_tasks,
+        task_offset=a.task_offset, base_seed=a.base_seed, n_mc=a.n_mc,
+        n_y=a.n_y, min_graph_prob=a.min_graph_prob,
+        max_query_points=a.max_query_points, max_edit_steps=a.max_edit_steps,
+        seed=a.seed, normalise=not a.no_normalise,
+        keep_original_normalisation=a.keep_original_normalisation,
+        max_oracle_nodes=a.max_oracle_nodes,
+        graph_prior_samples=a.graph_prior_samples,
+    )  # fmt: skip
+    summary = summarise_context_edits(df)
+    prefix = a.out.removesuffix(".csv")
+    df.to_csv(a.out, index=False)
+    summary.to_csv(prefix + "_summary.csv", index=False)
+    meta = _write_diagnostic_meta(a, D, time.time() - t0)
+    print(f"wrote {a.out}, {prefix}_summary.csv and {meta}")
+    cols = ["edit", "identifiable_from_observational",
+            "treatment_intervened_in_context", "num_queries",
+            "mean_shift_ratio", "mean_shift_correlation",
+            "mean_shift_sign_agreement", "kl_ratio", "kl_correlation"]  # fmt: skip
+    if summary.empty:
+        print("no task had an intervened context row")
+        return
+    overall = summary[summary["num_edited_rows"] == "all"]
+    with pd.option_context("display.width", 220, "display.max_rows", 200):
+        print("\n=== label sensitivity, model vs oracle (all numbers of "
+              "edited rows pooled)")  # fmt: skip
+        print(overall[cols].round(3).to_string(index=False))
+
+
 def _run_plot_monitoring(a: argparse.Namespace) -> None:
     import matplotlib
 
@@ -773,6 +847,10 @@ COMMANDS = {
         _probe_intervention_parser,
         "per-layer linear probes: is a row / cell intervened (any encoding)?",
     ),
+    "context-edits": (
+        _context_edits_parser,
+        "label sensitivity: edit the intervention mask, model vs exact oracle",
+    ),
 }
 
 
@@ -808,6 +886,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_embedding_geometry(a)
     elif a.command == "probe-intervention":
         _run_probe_intervention(a)
+    elif a.command == "context-edits":
+        _run_context_edits(a)
     else:
         _run_plot_monitoring(a)
 

@@ -92,6 +92,21 @@ def sample_oracle(
     )
 
 
+def sample_mixture(
+    mu: np.ndarray, sd: np.ndarray, logw: np.ndarray, n_y: int, rng
+) -> np.ndarray:
+    """Samples [n_t, n_y] of per-t Gaussian mixtures with parameters
+    mu, sd, logw [n_t, K] (e.g. a model's predictive on a grid of t)."""
+    n_t = mu.shape[0]
+    w = np.exp(logw - logsumexp(logw, axis=-1, keepdims=True))
+    cdf = np.cumsum(w, axis=-1)
+    cdf[:, -1] = 1.0
+    u = rng.random((n_t, n_y))
+    idx = (u[..., None] > cdf[:, None, :]).sum(-1)  # [n_t, n_y]
+    rows = np.arange(n_t)[:, None]
+    return mu[rows, idx] + sd[rows, idx] * rng.standard_normal((n_t, n_y))
+
+
 def oracle_mixture_on_grid(log_w, slope, var, g: torch.Tensor):
     """Oracle mixture as (mu, sd, logw) tensors [n_t, M] on g's device."""
     dev = g.device

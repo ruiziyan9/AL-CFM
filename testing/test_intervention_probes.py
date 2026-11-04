@@ -54,6 +54,7 @@ PRIOR = dict(
     n_qry=6,
     qry_mode="grouped",
     n_obs_min=10,
+    p_k0=0.2,  # most tasks have interventional rows
 )
 CFG = MixedRegimeConfig(**PRIOR)
 ENCODINGS = sorted(INTERVENTION_ENCODINGS)
