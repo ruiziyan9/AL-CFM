@@ -21,6 +21,8 @@
     python -m CITNP.evaluation probe-intervention --ckpt ... \
            --model_config ... --data_config ... [--n_tasks 200] \
            --out intervention_probes.csv               # + _meta.json
+    python -m CITNP.evaluation plot-intervention-diagnostics \
+           extra_node=PREFIX layerwise=PREFIX --out_dir DIR   # PNG + PDF
     python -m CITNP.evaluation context-edits --ckpt ... --model_config ... \
            --data_config ... [--n_tasks 200] [--keep_original_normalisation] \
            --out context_edits.csv     # + _summary.csv, _meta.json
@@ -254,6 +256,23 @@ def _probe_intervention_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--l2", type=float, default=1e-3)
     p.add_argument("--max_iter", type=int, default=200)
     p.add_argument("--out", default="intervention_probes.csv")
+
+
+def _plot_intervention_diagnostics_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument("models", nargs="+", metavar="LABEL=PREFIX",
+                   help="model label and result prefix of one diagnostics "
+                        "run (reads PREFIX_intervention_probes.csv and "
+                        "PREFIX_context_edits_{original,edited}_"
+                        "normalisation.csv)")  # fmt: skip
+    p.add_argument("--out_dir", required=True,
+                   help="directory for the figures (keep it outside the "
+                        "repository)")  # fmt: skip
+    p.add_argument("--min_kl_standard_errors", type=float, default=3.0,
+                   help="edit_sensitivity_ratio leaves out rows whose oracle "
+                        "KL is below this many standard errors")  # fmt: skip
+    p.add_argument("--n_bootstrap", type=int, default=1000,
+                   help="task-bootstrap resamples of the ratio intervals")  # fmt: skip
+    p.add_argument("--seed", type=int, default=0)
 
 
 def _context_edits_parser(p: argparse.ArgumentParser) -> None:
@@ -865,6 +884,28 @@ def _run_context_edits(
               .to_string(index=False))  # fmt: skip
 
 
+def _run_plot_intervention_diagnostics(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from CITNP.evaluation.plots import plot_intervention_diagnostics
+
+    prefixes: dict[str, str] = {}
+    for item in a.models:
+        label, sep, prefix = item.partition("=")
+        if not sep or not label or not prefix:
+            parser.error(f"expected LABEL=PREFIX, got {item!r}")
+        if label in prefixes:
+            parser.error(f"label {label!r} given twice")
+        prefixes[label] = prefix
+    plot_intervention_diagnostics(
+        prefixes, a.out_dir, min_kl_standard_errors=a.min_kl_standard_errors,
+        n_bootstrap=a.n_bootstrap, seed=a.seed,
+    )  # fmt: skip
+
+
 def _run_plot_monitoring(a: argparse.Namespace) -> None:
     import matplotlib
 
@@ -913,6 +954,10 @@ COMMANDS = {
         _probe_intervention_parser,
         "per-layer linear probes: is a row / cell intervened (any encoding)?",
     ),
+    "plot-intervention-diagnostics": (
+        _plot_intervention_diagnostics_parser,
+        "figures from probe-intervention / context-edits results (no GPU)",
+    ),
     "context-edits": (
         _context_edits_parser,
         "label sensitivity: edit the intervention mask, model vs exact oracle",
@@ -952,6 +997,10 @@ def main(argv: list[str] | None = None) -> None:
         _run_embedding_geometry(a, parsers["embedding-geometry"])
     elif a.command == "probe-intervention":
         _run_probe_intervention(a, parsers["probe-intervention"])
+    elif a.command == "plot-intervention-diagnostics":
+        _run_plot_intervention_diagnostics(
+            a, parsers["plot-intervention-diagnostics"]
+        )
     elif a.command == "context-edits":
         _run_context_edits(a, parsers["context-edits"])
     else:

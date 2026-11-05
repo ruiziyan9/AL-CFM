@@ -22,6 +22,16 @@ Training monitoring, from oracle_gap.csv / train_stats.csv in run directories:
 Flag probe, from <prefix>.csv written by `probe-flag`:
     <prefix>.png            probe AUC (flags on / off) and relative change of the
                             representation against encoder depth
+Intervention-encoding diagnostics, from labelled result prefixes P of
+`probe-intervention` / `context-edits` (`plot_intervention_diagnostics`;
+PNG and PDF in an output directory; see
+CITNP/evaluation/INTERVENTION_DIAGNOSTICS_README.md):
+    probes_by_layer            probe balanced accuracy against layer
+    edit_shift_scatter_*       model vs oracle shift per row (mean shift, KL)
+    edit_shift_curve           shift against the number of edited rows
+    edit_sensitivity_ratio     model / oracle ratio by stratum (+ .csv)
+    normalisation_effect       model shift, original vs edited normalisation
+    secondary_discrepancy      KL(oracle || model), unedited vs edited
 
 KL = Kullback-Leibler divergence, in nats per query point. Curves are means
 over seeds (queries averaged within a seed first), bands are +/- one standard
@@ -32,6 +42,7 @@ import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from CITNP.evaluation.tasks import DESIGNS, MAIN_QUERY, QUERIES, qname
@@ -542,3 +553,543 @@ def plot_flag_probe(df: pd.DataFrame, out: str) -> None:
         ax.legend(fontsize=8)
     _save(fig, out)
     print(f"wrote {out}")
+
+
+# --------------------------------------------------------------------------- #
+# Intervention-encoding diagnostics
+# --------------------------------------------------------------------------- #
+# Result files of one diagnostics run with prefix P (see
+# CITNP/experiments/bmrc/eval_intervention_diagnostics.sh).
+PROBES_SUFFIX = "_intervention_probes.csv"
+CONTEXT_EDITS_SUFFIXES = {
+    "original": "_context_edits_original_normalisation.csv",
+    "edited": "_context_edits_edited_normalisation.csv",
+}
+# Names written by CITNP.evaluation.intervention_diagnostics (not imported:
+# it needs torch).
+VALUE_BASELINE_POINT = "value_baseline"
+EDIT_ORDER = ("relabel_observational", "move_target")
+NEW_TARGET_ROLES = ("treatment", "outcome", "other")
+FIGURE_FORMATS = ("png", "pdf")
+SENSITIVITY_RATIO_CSV = "edit_sensitivity_ratio.csv"
+# Rows of the shift figures: (name, column suffix, axis label).
+SHIFT_METRICS = (
+    ("mean_shift_rms", "mean_shift_rms", "RMS shift of the predictive mean"),
+    ("kl", "kl_original_to_edited", "KL(original || edited), nats"),
+)
+_KL_LINEAR_THRESHOLD = 1e-3  # symlog axes: linear within +/- this
+
+
+def _save_figure(fig, out_dir: str | Path, name: str) -> list[Path]:
+    """Write fig as <out_dir>/<name>.png and .pdf, then close it."""
+    if fig.get_layout_engine() is None:
+        fig.tight_layout()
+    paths = [Path(out_dir) / f"{name}.{fmt}" for fmt in FIGURE_FORMATS]
+    for path in paths:
+        fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print("wrote " + ", ".join(str(p) for p in paths))
+    return paths
+
+
+def _model_colors(labels) -> dict[str, str]:
+    return {label: f"C{i}" for i, label in enumerate(labels)}
+
+
+def _edits_present(edits: dict[str, pd.DataFrame]) -> list[str]:
+    return [
+        e for e in EDIT_ORDER if any((d.edit == e).any() for d in edits.values())
+    ]
+
+
+def read_intervention_diagnostics(prefixes: dict[str, str]) -> dict:
+    """Result tables of labelled diagnostics runs.
+
+    prefixes: model label -> result prefix P. Reads P_intervention_probes.csv
+    and the per-row P_context_edits_{original,edited}_normalisation.csv (not
+    the _summary.csv files). Returns {"probes": {label: df}, "original":
+    {label: df}, "edited": {label: df}}; missing files are reported and
+    left out."""
+    paths = {"probes": PROBES_SUFFIX, **CONTEXT_EDITS_SUFFIXES}
+    out: dict[str, dict[str, pd.DataFrame]] = {key: {} for key in paths}
+    for label, prefix in prefixes.items():
+        for key, suffix in paths.items():
+            path = Path(prefix + suffix)
+            if path.exists():
+                out[key][label] = pd.read_csv(path)
+            else:
+                print(f"{label}: no {path}, skipping it")
+    return out
+
+
+def plot_probes_by_layer(
+    probes: dict[str, pd.DataFrame], out_dir: str | Path
+) -> list[Path]:
+    """Figure probes_by_layer: one panel per probe; held-out balanced
+    accuracy against layer (ordered by depth, labelled with the probe
+    point), solid for true labels, dashed for shuffled labels, one colour
+    per model label, dotted line at the probe's value_baseline. The y-axis
+    is 0.4 - 1.0, extended down for probes whose chance level 1 / classes is
+    below 0.4 (the target-variable probe), so the shuffled control stays
+    visible."""
+    colors = _model_colors(probes)
+    names: list[str] = []
+    for d in probes.values():
+        names += [p for p in d.probe.unique() if p not in names]
+    num_cols = min(3, len(names))
+    num_rows = -(-len(names) // num_cols)
+    fig, axes = plt.subplots(num_rows, num_cols, squeeze=False,
+                             figsize=(5.2 * num_cols, 4.2 * num_rows))  # fmt: skip
+    for ax, probe in zip(axes.flat, names):
+        tick_names: dict[int, set] = {}
+        bottom = 0.4
+        for label, df in probes.items():
+            d = df[df.probe == probe]
+            if d.empty:
+                continue
+            layers = d[d.depth >= 0]
+            for variant, ls in (("true", "-"), ("shuffled", "--")):
+                v = layers[layers["labels"] == variant].sort_values("depth")
+                ax.plot(v.depth, v.balanced_accuracy, ls, marker="o", ms=3,
+                        color=colors[label], label=f"{label}, {variant} labels")  # fmt: skip
+            base = d[(d.point == VALUE_BASELINE_POINT) & (d["labels"] == "true")]
+            if len(base):
+                ax.axhline(float(base.balanced_accuracy.iloc[0]), ls=":",
+                           color=colors[label], label=f"{label}, value baseline")  # fmt: skip
+            for depth, point in zip(layers.depth, layers.point):
+                tick_names.setdefault(int(depth), set()).add(str(point))
+            classes = d.num_classes.max()
+            if pd.notna(classes) and classes > 0:
+                bottom = min(bottom, 1.0 / classes - 0.05)
+        ticks = sorted(tick_names)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([" / ".join(sorted(tick_names[t])) for t in ticks],
+                           rotation=45, ha="right", fontsize=7)  # fmt: skip
+        ax.set_ylim(bottom, 1.0)
+        ax.set_title(probe, fontsize=9)
+        ax.set_xlabel("layer (depth)")
+        ax.set_ylabel("held-out balanced accuracy")
+    for ax in list(axes.flat)[len(names):]:
+        ax.set_axis_off()
+    axes.flat[0].legend(fontsize=6)
+    return _save_figure(fig, out_dir, "probes_by_layer")
+
+
+def _diagonal(ax, x, y) -> None:
+    """y = x line over the range of the finite values of x and y."""
+    values = np.concatenate([np.asarray(x, float), np.asarray(y, float)])
+    values = values[np.isfinite(values)]
+    if len(values):
+        lo, hi = values.min(), values.max()
+        ax.plot([lo, hi], [lo, hi], "k--", lw=0.8)
+
+
+def plot_edit_shift_scatter(
+    edits: dict[str, pd.DataFrame], out_dir: str | Path
+) -> list[Path]:
+    """Figures edit_shift_scatter_mean_shift (signed mean shift, linear axes)
+    and edit_shift_scatter_kl (KL(original || edited), log axes): one point
+    per (task, query, edit, n) row; x = oracle, y = model; rows of panels =
+    edit, columns = model label; colour = fraction_edited_rows; y = x line.
+    Rows with KL <= 0 (Monte Carlo noise) cannot be shown on log axes; the
+    panel title gives their number."""
+    from matplotlib.colors import Normalize
+
+    edit_names = _edits_present(edits)
+    paths = []
+    versions = (
+        ("mean_shift", "mean_shift", False,
+         "signed shift of the predictive mean"),
+        ("kl", "kl_original_to_edited", True, "KL(original || edited), nats"),
+    )  # fmt: skip
+    for name, column, log, axis_label in versions:
+        fig, axes = plt.subplots(
+            len(edit_names), len(edits), squeeze=False, layout="constrained",
+            figsize=(4.2 * len(edits) + 1, 3.8 * len(edit_names)),
+        )  # fmt: skip
+        for r, edit in enumerate(edit_names):
+            for c, (label, df) in enumerate(edits.items()):
+                ax = axes[r, c]
+                d = df[df.edit == edit]
+                x, y = d[f"oracle_{column}"], d[f"model_{column}"]
+                title = f"{label}: {edit}"
+                if log:
+                    keep = (x > 0) & (y > 0)
+                    if (~keep).sum():
+                        title += f"\n({int((~keep).sum())} rows <= 0 not shown)"
+                    d, x, y = d[keep], x[keep], y[keep]
+                    ax.set_xscale("log")
+                    ax.set_yscale("log")
+                ax.scatter(x, y, c=d.fraction_edited_rows, cmap="viridis",
+                           vmin=0, vmax=1, s=6, alpha=0.6)  # fmt: skip
+                _diagonal(ax, x, y)
+                ax.set_title(title, fontsize=9)
+                ax.set_xlabel(f"oracle: {axis_label}", fontsize=8)
+                ax.set_ylabel(f"model: {axis_label}", fontsize=8)
+        mappable = plt.cm.ScalarMappable(norm=Normalize(0, 1), cmap="viridis")
+        fig.colorbar(
+            mappable, ax=axes, label="fraction of intervened rows edited"
+        )
+        paths += _save_figure(fig, out_dir, f"edit_shift_scatter_{name}")
+    return paths
+
+
+def _quartiles(values: pd.Series) -> tuple[float, float, float]:
+    q = values.dropna().quantile([0.25, 0.5, 0.75])
+    return float(q[0.25]), float(q[0.5]), float(q[0.75])
+
+
+def plot_edit_shift_curve(
+    edits: dict[str, pd.DataFrame], out_dir: str | Path
+) -> list[Path]:
+    """Figure edit_shift_curve: shift against the number of edited rows n
+    (log2 axis); median and interquartile band over rows, model solid,
+    oracle dashed, one colour per model label; rows of panels = metric (RMS
+    mean shift, KL), columns = edit. "all" is defined per row as
+    num_edited_rows == num_intervened_rows and shown as its own point to the
+    right, since the number of intervened rows differs between tasks."""
+    colors = _model_colors(edits)
+    edit_names = _edits_present(edits)
+    partial_counts = sorted({
+        int(n) for d in edits.values()
+        for n in d.num_edited_rows[d.num_edited_rows < d.num_intervened_rows]
+    })  # fmt: skip
+    x_all = (np.log2(max(partial_counts)) if partial_counts else 0.0) + 1.0
+    fig, axes = plt.subplots(len(SHIFT_METRICS), len(edit_names), squeeze=False,
+                             figsize=(5.5 * len(edit_names), 4 * len(SHIFT_METRICS)))  # fmt: skip
+    for r, (metric, column, axis_label) in enumerate(SHIFT_METRICS):
+        for c, edit in enumerate(edit_names):
+            ax = axes[r, c]
+            for label, df in edits.items():
+                d = df[df.edit == edit]
+                is_all = d.num_edited_rows == d.num_intervened_rows
+                styles = (("model", "-", "o"), ("oracle", "--", "s"))
+                for who, ls, marker in styles:
+                    col = f"{who}_{column}"
+                    partial = d[~is_all].groupby("num_edited_rows")[col]
+                    stats = [(np.log2(n), *_quartiles(v)) for n, v in partial]
+                    if stats:
+                        x, lo, mid, hi = map(np.array, zip(*stats))
+                        ax.plot(x, mid, ls, marker=marker, ms=3,
+                                color=colors[label], label=f"{label} {who}")  # fmt: skip
+                        ax.fill_between(
+                            x, lo, hi, color=colors[label], alpha=0.12
+                        )
+                    if is_all.any():
+                        lo, mid, hi = _quartiles(d.loc[is_all, col])
+                        ax.errorbar([x_all], [mid], yerr=[[mid - lo], [hi - mid]],
+                                    fmt=marker, ms=5, capsize=3,
+                                    color=colors[label],
+                                    mfc="none" if who == "oracle" else colors[label])  # fmt: skip
+            ticks = [np.log2(n) for n in partial_counts] + [x_all]
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(
+                [str(n) for n in partial_counts] + ["all"], fontsize=8
+            )
+            if metric == "kl":
+                ax.set_yscale("symlog", linthresh=_KL_LINEAR_THRESHOLD)
+            ax.set_xlabel("number of edited rows (log2; 'all' per task)")
+            ax.set_ylabel(axis_label)
+            ax.set_title(edit, fontsize=9)
+    axes[0, 0].legend(fontsize=7)
+    return _save_figure(fig, out_dir, "edit_shift_curve")
+
+
+def _bootstrap_median_over_tasks(
+    values: np.ndarray, tasks: np.ndarray, n_bootstrap: int,
+    rng: np.random.Generator,
+) -> tuple[float, float, float]:  # fmt: skip
+    """Median of values and its 95% percentile interval from n_bootstrap
+    resamples of the TASKS (with replacement; every resampled task brings
+    all its rows). NaN for no values."""
+    if len(values) == 0:
+        return float("nan"), float("nan"), float("nan")
+    unique = np.unique(tasks)
+    rows_of_task = [np.flatnonzero(tasks == t) for t in unique]
+    medians = np.empty(n_bootstrap)
+    for b in range(n_bootstrap):
+        pick = rng.integers(len(unique), size=len(unique))
+        rows = np.concatenate([rows_of_task[k] for k in pick])
+        medians[b] = np.median(values[rows])
+    low, high = np.percentile(medians, [2.5, 97.5])
+    return float(np.median(values)), float(low), float(high)
+
+
+def _sensitivity_groups(df: pd.DataFrame):
+    """(edit, grouping, identifiable, treatment intervened, new target role,
+    row mask) of every group of `edit_sensitivity_table`; "all" where a key
+    is not grouped on."""
+    all_ = "all"
+    for edit in EDIT_ORDER:
+        in_edit = df.edit == edit
+        if not in_edit.any():
+            continue
+        yield edit, "stratum", all_, all_, all_, in_edit
+        for identifiable in (True, False):
+            for treated in (True, False):
+                mask = (
+                    in_edit
+                    & (df.identifiable_from_observational == identifiable)
+                    & (df.treatment_intervened_in_context == treated)
+                )
+                yield edit, "stratum", identifiable, treated, all_, mask
+        if edit == "move_target":
+            for role in NEW_TARGET_ROLES:
+                mask = (
+                    in_edit
+                    & (df.num_edited_rows == 1)
+                    & (df.new_target_role == role)
+                )
+                yield edit, "new_target_role, n = 1", all_, all_, role, mask
+
+
+def edit_sensitivity_table(
+    edits: dict[str, pd.DataFrame],
+    *,
+    min_kl_standard_errors: float = 3.0,
+    n_bootstrap: int = 1000,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """The numbers behind figure edit_sensitivity_ratio.
+
+    Per model label, edit and group (`_sensitivity_groups`: the 2 x 2 strata
+    identifiable_from_observational x treatment_intervened_in_context and
+    all rows; for move_target also new_target_role at num_edited_rows == 1),
+    the median over rows of the per-row model / oracle ratio of
+      kl:             model_kl_original_to_edited / oracle_kl_original_to_edited
+      mean_shift_rms: model_mean_shift_rms / oracle_mean_shift_rms
+    with a 95% interval from n_bootstrap resamples of the tasks
+    (`_bootstrap_median_over_tasks`, one generator seeded with `seed`, used
+    in table order). Rows are excluded where the oracle's KL is below
+    min_kl_standard_errors times its Monte Carlo standard error (the oracle
+    barely moves, so the ratio is noise), and, for mean_shift_rms, where the
+    oracle's shift is 0. Columns: model, metric, edit, grouping,
+    identifiable_from_observational, treatment_intervened_in_context,
+    new_target_role, num_rows, num_excluded, num_tasks, median_ratio,
+    ci_low, ci_high.
+    """
+    rng = np.random.default_rng(seed)
+    out = []
+    for label, df in edits.items():
+        oracle_kl = df.oracle_kl_original_to_edited
+        threshold = min_kl_standard_errors * df.oracle_kl_original_to_edited_se
+        resolved = (oracle_kl > 0) & (oracle_kl >= threshold)
+        ratios = {
+            "kl": (df.model_kl_original_to_edited / oracle_kl, resolved),
+            "mean_shift_rms": (
+                df.model_mean_shift_rms / df.oracle_mean_shift_rms,
+                resolved & (df.oracle_mean_shift_rms > 0),
+            ),
+        }
+        for group in _sensitivity_groups(df):
+            edit, grouping, identifiable, treated, role, mask = group
+            for metric, (ratio, usable) in ratios.items():
+                use = mask & usable & np.isfinite(ratio)
+                median, low, high = _bootstrap_median_over_tasks(
+                    ratio[use].to_numpy(), df.task[use].to_numpy(),
+                    n_bootstrap, rng,
+                )  # fmt: skip
+                out.append({
+                    "model": label, "metric": metric, "edit": edit,
+                    "grouping": grouping,
+                    "identifiable_from_observational": identifiable,
+                    "treatment_intervened_in_context": treated,
+                    "new_target_role": role,
+                    "num_rows": int(mask.sum()),
+                    "num_excluded": int((mask & ~use).sum()),
+                    "num_tasks": int(df.task[use].nunique()),
+                    "median_ratio": median, "ci_low": low, "ci_high": high,
+                })  # fmt: skip
+    return pd.DataFrame(out)
+
+
+def _group_label(row) -> str:
+    if row.grouping != "stratum":
+        return f"new target = {row.new_target_role}"
+    if row.identifiable_from_observational == "all":
+        return "all rows"
+    identifiable = row.identifiable_from_observational in (True, "True")
+    treated = row.treatment_intervened_in_context in (True, "True")
+    return (
+        f"{'ident.' if identifiable else 'not ident.'}, "
+        f"{'T int.' if treated else 'T not int.'}"
+    )
+
+
+def plot_edit_sensitivity_ratio(
+    table: pd.DataFrame, out_dir: str | Path
+) -> list[Path]:
+    """Figure edit_sensitivity_ratio from `edit_sensitivity_table`: median
+    per-row model / oracle ratio with its 95% task-bootstrap interval, log
+    axis, line at 1; rows of panels = metric (KL, RMS mean shift), columns =
+    relabel_observational strata, move_target strata, move_target by role
+    of the new target (n = 1); one colour per model label. Groups whose
+    median is not positive cannot be shown on the log axis."""
+    colors = _model_colors(table.model.unique())
+    panels = [
+        (edit, grouping)
+        for edit in EDIT_ORDER
+        for grouping in ("stratum", "new_target_role, n = 1")
+        if ((table.edit == edit) & (table.grouping == grouping)).any()
+    ]
+    metrics = [("kl", "KL ratio"), ("mean_shift_rms", "RMS mean-shift ratio")]
+    fig, axes = plt.subplots(len(metrics), len(panels), squeeze=False,
+                             figsize=(5 * len(panels), 4.2 * len(metrics)))  # fmt: skip
+    num_models = len(colors)
+    for r, (metric, axis_label) in enumerate(metrics):
+        for c, (edit, grouping) in enumerate(panels):
+            ax = axes[r, c]
+            d = table[(table.metric == metric) & (table.edit == edit)
+                      & (table.grouping == grouping)]  # fmt: skip
+            groups = list(
+                dict.fromkeys(_group_label(row) for row in d.itertuples())
+            )
+            for m, (label, color) in enumerate(colors.items()):
+                dm = d[d.model == label]
+                x = [groups.index(_group_label(row)) for row in dm.itertuples()]
+                x = np.array(x) + (m - (num_models - 1) / 2) * 0.15
+                mid = dm.median_ratio.to_numpy()
+                ok = np.isfinite(mid) & (mid > 0)
+                low = np.clip(dm.ci_low.to_numpy(), 1e-12, None)
+                high = dm.ci_high.to_numpy()
+                # bootstrap percentiles need not bracket the point median
+                below = np.clip(np.nan_to_num(mid - low), 0, None)
+                above = np.clip(np.nan_to_num(high - mid), 0, None)
+                ax.errorbar(x[ok], mid[ok], yerr=[below[ok], above[ok]],
+                            fmt="o", capsize=3, color=color, label=label)  # fmt: skip
+            ax.axhline(1.0, color="k", lw=0.8, ls="--")
+            ax.set_yscale("log")
+            ax.set_xticks(range(len(groups)))
+            ax.set_xticklabels(groups, rotation=30, ha="right", fontsize=7)
+            ax.set_ylabel(f"model / oracle, {axis_label}")
+            ax.set_title(f"{edit} ({grouping})", fontsize=9)
+    axes[0, 0].legend(fontsize=7)
+    return _save_figure(fig, out_dir, "edit_sensitivity_ratio")
+
+
+_ROW_KEYS = ["task", "T", "Y", "edit", "num_edited_rows"]
+
+
+def plot_normalisation_effect(
+    original: dict[str, pd.DataFrame],
+    edited: dict[str, pd.DataFrame],
+    out_dir: str | Path,
+) -> list[Path]:
+    """Figure normalisation_effect: per (task, query, edit, n) row, the
+    model's shift with the unedited standardisation (x, original
+    normalisation run) against the shift with the edited mask's
+    standardisation (y, edited normalisation run); rows of panels = signed
+    mean shift (linear) and KL (symlog), columns = model label, colour =
+    edit, y = x line. move_target never changes the standardisation, so
+    its points lie on the line up to Monte Carlo noise."""
+    labels = [label for label in original if label in edited]
+    versions = (
+        ("mean_shift", "signed shift of the predictive mean", False),
+        ("kl_original_to_edited", "KL(original || edited), nats", True),
+    )
+    fig, axes = plt.subplots(len(versions), len(labels), squeeze=False,
+                             figsize=(4.5 * len(labels), 4 * len(versions)))  # fmt: skip
+    for c, label in enumerate(labels):
+        columns = [f"model_{column}" for column, _, _ in versions]
+        merged = original[label][_ROW_KEYS + columns].merge(
+            edited[label][_ROW_KEYS + columns], on=_ROW_KEYS,
+            suffixes=("_original", "_edited"),
+        )  # fmt: skip
+        for r, (column, axis_label, symlog) in enumerate(versions):
+            ax = axes[r, c]
+            x_all, y_all = [], []
+            for k, edit in enumerate(EDIT_ORDER):
+                d = merged[merged.edit == edit]
+                x = d[f"model_{column}_original"]
+                y = d[f"model_{column}_edited"]
+                ax.scatter(x, y, s=6, alpha=0.5, color=f"C{k}", label=edit)
+                x_all.append(x)
+                y_all.append(y)
+            _diagonal(ax, pd.concat(x_all), pd.concat(y_all))
+            if symlog:
+                ax.set_xscale("symlog", linthresh=_KL_LINEAR_THRESHOLD)
+                ax.set_yscale("symlog", linthresh=_KL_LINEAR_THRESHOLD)
+            ax.set_xlabel(f"original normalisation: {axis_label}", fontsize=8)
+            ax.set_ylabel(f"edited normalisation: {axis_label}", fontsize=8)
+            ax.set_title(f"{label} ({len(merged)} matched rows)", fontsize=9)
+    axes[0, 0].legend(fontsize=7)
+    return _save_figure(fig, out_dir, "normalisation_effect")
+
+
+def plot_secondary_discrepancy(
+    edits: dict[str, pd.DataFrame], out_dir: str | Path
+) -> list[Path]:
+    """Figure secondary_discrepancy: boxplots of KL(oracle || model) per
+    model label, on the unedited context (secondary_kl_oracle_to_model_
+    original, one value per task and query) and on the edited contexts per
+    edit (secondary_kl_oracle_to_model_edited); log axis, values <= 0 left
+    out. Edited contexts are mislabelled, so outside the training
+    distribution: secondary only."""
+    fig, ax = plt.subplots(figsize=(3 + 2.5 * len(edits), 4.5))
+    boxes, positions, names = [], [], []
+    for m, (label, df) in enumerate(edits.items()):
+        unedited = df.drop_duplicates(["task", "T", "Y"])[
+            "secondary_kl_oracle_to_model_original"
+        ]
+        series = [("unedited", unedited)] + [
+            (edit, df.loc[df.edit == edit, "secondary_kl_oracle_to_model_edited"])
+            for edit in EDIT_ORDER
+        ]
+        for k, (name, values) in enumerate(series):
+            values = values[values > 0]
+            boxes.append(values.to_numpy())
+            positions.append(m * (len(series) + 1) + k)
+            names.append(f"{label}\n{name}")
+    ax.boxplot(boxes, positions=positions, widths=0.7, showfliers=False)
+    ax.set_xticks(positions)
+    ax.set_xticklabels(names, rotation=45, ha="right", fontsize=7)
+    ax.set_yscale("log")
+    ax.set_ylabel("KL(oracle || model), nats per query point")
+    ax.set_title("Secondary: model-vs-oracle discrepancy (edited contexts are "
+                 "out of distribution)", fontsize=9)  # fmt: skip
+    return _save_figure(fig, out_dir, "secondary_discrepancy")
+
+
+def plot_intervention_diagnostics(
+    prefixes: dict[str, str],
+    out_dir: str | Path,
+    *,
+    min_kl_standard_errors: float = 3.0,
+    n_bootstrap: int = 1000,
+    seed: int = 0,
+) -> list[Path]:
+    """Every intervention-diagnostics figure (PNG and PDF) and
+    edit_sensitivity_ratio.csv in out_dir, from labelled result prefixes
+    (`read_intervention_diagnostics`). The context-edit figures use the
+    original-normalisation run (the primary readout), except
+    normalisation_effect, which compares both runs. Figures whose inputs
+    are missing are skipped. Returns the written paths."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data = read_intervention_diagnostics(prefixes)
+    written: list[Path] = []
+    if data["probes"]:
+        written += plot_probes_by_layer(data["probes"], out_dir)
+    original = data["original"]
+    if original:
+        written += plot_edit_shift_scatter(original, out_dir)
+        written += plot_edit_shift_curve(original, out_dir)
+        table = edit_sensitivity_table(
+            original, min_kl_standard_errors=min_kl_standard_errors,
+            n_bootstrap=n_bootstrap, seed=seed,
+        )  # fmt: skip
+        csv_path = out_dir / SENSITIVITY_RATIO_CSV
+        table.to_csv(csv_path, index=False)
+        print(f"wrote {csv_path}")
+        written.append(csv_path)
+        overall = table[(table.grouping == "stratum")
+                        & (table.identifiable_from_observational == "all")]  # fmt: skip
+        for row in overall.itertuples():
+            print(f"  {row.model} {row.edit} {row.metric}: excluded "
+                  f"{row.num_excluded} of {row.num_rows} rows (oracle KL < "
+                  f"{min_kl_standard_errors:g} standard errors)")  # fmt: skip
+        written += plot_edit_sensitivity_ratio(table, out_dir)
+        written += plot_secondary_discrepancy(original, out_dir)
+    if any(label in data["edited"] for label in original):
+        written += plot_normalisation_effect(original, data["edited"], out_dir)
+    return written
