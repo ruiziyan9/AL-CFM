@@ -305,6 +305,68 @@ done
 # runs that record no training prior: add DATA_CFG=<the prior they were trained on>
 ```
 
+## Figures
+
+`plot-intervention-diagnostics` draws the figures from the result files of
+one or more runs, each given a label. It reads
+`<prefix>_intervention_probes.csv` and the per-row
+`<prefix>_context_edits_{original,edited}_normalisation.csv` (not the
+summaries), reads CSVs only (no GPU, no checkpoint) and writes every figure
+as PNG and PDF to `--out_dir`. Keep that directory outside the repository.
+Inputs that are missing are skipped with a message. The code is in
+[`plots.py`](plots.py), next to the other evaluation figures.
+
+```bash
+python -m CITNP.evaluation plot-intervention-diagnostics \
+    extra_node=<diagnostics dir>/extra_node layerwise=<diagnostics dir>/layerwise \
+    --out_dir <figures dir> [--min_kl_standard_errors 3] [--n_bootstrap 1000] [--seed 0]
+```
+
+All context-edit figures use the original-normalisation run (the primary
+readout), except `normalisation_effect`, which compares the two runs. Colours
+mark the model labels throughout.
+
+| figure | what it shows |
+| --- | --- |
+| `probes_by_layer` | one panel per probe: held-out balanced accuracy against layer (x ordered by `depth`, labelled with the probe point); solid = true labels, dashed = shuffled-label control, dotted = value baseline |
+| `edit_shift_scatter_mean_shift`, `edit_shift_scatter_kl` | one point per (task, query, edit, number of edited rows): oracle (x) against model (y), signed mean shift on linear axes, KL(original ‖ edited) on log axes; panels = edit × model; colour = `fraction_edited_rows`; dashed y = x |
+| `edit_shift_curve` | median (line) and interquartile band of the RMS mean shift and the KL against the number of edited rows (log2 axis); model solid, oracle dashed; panel per edit; "all" (`num_edited_rows == num_intervened_rows`, which differs between tasks) is a separate point on the right |
+| `edit_sensitivity_ratio` (+ `edit_sensitivity_ratio.csv`) | median of the per-row model / oracle ratio (KL, RMS mean shift) with a 95% interval from a task bootstrap (`--n_bootstrap` resamples, seeded), log axis with a line at 1; by stratum (identifiable × treatment intervened, and all rows) per edit, and for `move_target` by the new target's role at one moved row |
+| `normalisation_effect` | per row, the model's shift with the unedited context's standardisation (x) against the edited mask's standardisation (y); signed mean shift and KL; panel per model; colour = edit |
+| `secondary_discrepancy` | boxplots of KL(oracle ‖ model) on the unedited context and on the edited contexts per edit, per model (log axis, outliers hidden) |
+
+**Reading them.**
+
+- `probes_by_layer`: compare the solid lines with the dashed control of the
+  same colour. For `extra_node`, a `metadata_row_intervened` curve that falls
+  towards the control with depth, while `metadata_intervention_target` stays
+  high, is the absorption pattern this study is about. The y axis runs from
+  0.4 to 1, extended downward for the target-variable probe, whose chance
+  level is 1/D.
+- `edit_shift_scatter_*`: points on the y = x line mean the model moves as
+  much as the oracle, in the same direction. A flat cloud near y = 0 means
+  the model ignores the edited labels. The colour shows whether that depends
+  on how much of the context was edited. Rows with KL ≤ 0 (Monte Carlo
+  noise) cannot go on log axes; panel titles count them.
+- `edit_shift_curve`: a model curve that stays flat while the oracle curve
+  rises means the model is insensitive to the labels. Compare the "all"
+  points across models for the fully edited context.
+- `edit_sensitivity_ratio`: medians near 1 with intervals covering 1 mean
+  oracle-sized sensitivity; medians well below 1 mean under-reaction. It
+  leaves out rows where the oracle itself barely moves (oracle KL below
+  `--min_kl_standard_errors` Monte Carlo standard errors, default 3), since
+  their ratio is noise. The command prints, and the CSV lists, how many
+  rows were left out (`num_excluded` of `num_rows`). Median ratios that are
+  not positive cannot be shown on the log axis; look them up in the CSV.
+- `normalisation_effect`: `move_target` points lie on the line up to noise,
+  since that edit never changes the standardisation. `relabel_observational`
+  points off the line show how much of the model's response comes from
+  rescaling the values rather than from the label.
+- `secondary_discrepancy`: secondary only. Edited contexts are mislabelled
+  and outside the training distribution, so higher values there are
+  expected.
+
 Tests: `testing/test_context_states.py`, `test_embedding_geometry.py`,
 `test_intervention_probes.py`, `test_context_edits.py` (tiny random models,
-CPU; they check structure, not learned behaviour).
+CPU; they check structure, not learned behaviour), and
+`test_intervention_diagnostics_plots.py` (every figure from synthetic CSVs).
