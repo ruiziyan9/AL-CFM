@@ -33,6 +33,9 @@ class CausalInfModelConfig(BaseModelConfig):
     reg_axis_num_memory_tokens: int = 4
     reg_axis_target_flag: str = "injected"  # "injected" | "none"
     reg_axis_count_feature: bool = True
+    # layerwise encoding only: True reuses `context_intervened` as the
+    # injection code instead of a separate `flag_code` MLP.
+    share_intervention_encoder: bool = False
 
 
 @dataclass

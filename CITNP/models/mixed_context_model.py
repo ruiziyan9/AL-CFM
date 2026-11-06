@@ -49,7 +49,10 @@ from CITNP.models.regime_axis import (
     RegimeAxisMixedContextModel,  # noqa: F401  # resolvable as model_class
     RegimeAxisMixedContextMoGModel,
 )
-from CITNP.models.scale_conditioning import ScaleConditioning, check_scale_conditioning
+from CITNP.models.scale_conditioning import (
+    ScaleConditioning,
+    check_scale_conditioning,
+)
 from CITNP.utils.outputs import ModelOutput
 from CITNP.utils.utils import (
     reshape_back_node_attention,
@@ -151,12 +154,12 @@ class MixedCausalInfEncoder(CausalInfEncoder):
             intervention_indices=intervention_indices,
             context=True,
         )
+        intervened_code = None
         if context_int_mask is not None:
             # [B, Nc, D, 1]
             flag = context_int_mask.unsqueeze(-1).to(context_embed.dtype)
-            context_embed = context_embed + flag * self.context_intervened(
-                context_data
-            )
+            intervened_code = flag * self.context_intervened(context_data)
+            context_embed = context_embed + intervened_code
         target_embed = self.embed(
             data=target_data,
             outcome_indices=outcome_indices,
@@ -193,7 +196,7 @@ class MixedCausalInfEncoder(CausalInfEncoder):
             num_target=num_target,
             variable_mask=variable_mask,
             **self._extra_encoder_inputs(
-                context_data, context_int_mask, full_data
+                context_data, context_int_mask, full_data, intervened_code
             ),
         )
 
@@ -206,8 +209,12 @@ class MixedCausalInfEncoder(CausalInfEncoder):
         context_data: Tensor,
         context_int_mask: Optional[Tensor],
         full_data: Tensor,
+        intervened_code: Optional[Tensor] = None,
     ) -> dict:
-        """Extra keyword inputs for the transformer stack; none for R1."""
+        """Extra keyword inputs for the transformer stack; none for R1.
+
+        intervened_code is the masked `context_intervened` output that was
+        added to the context embedding (None without context_int_mask)."""
         return {}
 
 
@@ -309,17 +316,26 @@ class LayerwiseMixedCausalInfEncoder(MixedCausalInfEncoder):
       (InjectedCausalInfTransformerEncoder, zero-initialised).
     The upstream attention layers are reused as they are, so their parameter
     names, and therefore R1/upstream checkpoints, are unchanged.
+
+    With share_intervention_encoder=True there is no `flag_code`: the masked
+    `context_intervened` output, the same tensor that is added to the context
+    embedding, is also the injection code. Both paths then train
+    `context_intervened`. Its last layer and the injection maps both start at
+    zero, so at step 0 only the embedding path gives it gradient and the
+    injection maps get none; they start learning after the first update.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, share_intervention_encoder: bool = False, **kwargs):
         super().__init__(**kwargs)
+        self.share_intervention_encoder = bool(share_intervention_encoder)
         d_model = kwargs["d_model"]
-        self.flag_code = build_mlp(
-            dim_in=1,
-            dim_hid=d_model,
-            dim_out=d_model,
-            depth=kwargs.get("emb_depth", 1),
-        )
+        if not self.share_intervention_encoder:
+            self.flag_code = build_mlp(
+                dim_in=1,
+                dim_hid=d_model,
+                dim_out=d_model,
+                depth=kwargs.get("emb_depth", 1),
+            )
         old = self.encoder
         self.encoder = InjectedCausalInfTransformerEncoder(
             sample_layers=old.sample_layers,
@@ -328,12 +344,18 @@ class LayerwiseMixedCausalInfEncoder(MixedCausalInfEncoder):
             sample_attn_mode=old.sample_attn_mode,
         )
 
-    def _extra_encoder_inputs(self, context_data, context_int_mask, full_data):
+    def _extra_encoder_inputs(
+        self, context_data, context_int_mask, full_data, intervened_code=None
+    ):
         if context_int_mask is None:
             return {}
-        # [B, Nc, D, 1] -> code [B, Nc, D, d_model], zero off intervened cells
-        flag = context_int_mask.unsqueeze(-1).to(full_data.dtype)
-        code = flag * self.flag_code(context_data)
+        if self.share_intervention_encoder:
+            # the embedding's own masked code, not a copy: both paths train it
+            code = intervened_code
+        else:
+            # [B, Nc, D, 1] -> code [B, Nc, D, d_model], zero off intervened cells
+            flag = context_int_mask.unsqueeze(-1).to(full_data.dtype)
+            code = flag * self.flag_code(context_data)
         # target (and target-train) rows never carry a flag
         pad = code.new_zeros(
             code.shape[0], full_data.shape[1] - code.shape[1], *code.shape[2:]
@@ -375,7 +397,12 @@ class _MixedContextMixin(_MixinBase):
             sample_attn_mode=self.sample_attn_mode,
             linear_attention=self.linear_attention,
             scale_conditioning=self.scale_conditioning,
+            **self._extra_encoder_kwargs(config),
         )
+
+    def _extra_encoder_kwargs(self, config) -> dict:
+        """Encoder-specific constructor arguments; none for R1."""
+        return {}
 
     def forward(  # type: ignore[override]  # adds context_int_mask before variable_mask
         self,
@@ -436,16 +463,31 @@ class MixedContextMoGModel(_MixedContextMixin, MoGCausalInferenceModel):
     """Mixture-of-Gaussians mixed-context model (MoG predictor and loss)."""
 
 
+def _layerwise_encoder_kwargs(config) -> dict:
+    # Missing attribute (older configs) means the separate flag_code MLP.
+    return {
+        "share_intervention_encoder": bool(
+            getattr(config, "share_intervention_encoder", False)
+        )
+    }
+
+
 class LayerwiseMixedContextModel(MixedContextModel):
     """MixedContextModel with the flag re-injected before every block."""
 
     encoder_cls = LayerwiseMixedCausalInfEncoder
+
+    def _extra_encoder_kwargs(self, config) -> dict:
+        return _layerwise_encoder_kwargs(config)
 
 
 class LayerwiseMixedContextMoGModel(MixedContextMoGModel):
     """MixedContextMoGModel with the flag re-injected before every block."""
 
     encoder_cls = LayerwiseMixedCausalInfEncoder
+
+    def _extra_encoder_kwargs(self, config) -> dict:
+        return _layerwise_encoder_kwargs(config)
 
 
 class ExtraNodeMixedContextModel(_MixedContextMixin, CausalInferenceModel):
@@ -454,9 +496,7 @@ class ExtraNodeMixedContextModel(_MixedContextMixin, CausalInferenceModel):
     encoder_cls = ExtraNodeMixedCausalInfEncoder
 
 
-class ExtraNodeMixedContextMoGModel(
-    _MixedContextMixin, MoGCausalInferenceModel
-):
+class ExtraNodeMixedContextMoGModel(_MixedContextMixin, MoGCausalInferenceModel):
     """Mixture-of-Gaussians model with the extra-node intervention encoding."""
 
     encoder_cls = ExtraNodeMixedCausalInfEncoder
