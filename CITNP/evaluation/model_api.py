@@ -47,6 +47,10 @@ def load_model(
         scale_conditioning=m.get("scale_conditioning", "none"),
         # reg_axis only; absent keys keep the dataclass defaults
         **{k: m[k] for k in REG_AXIS_CONFIG_KEYS if k in m},
+        # layerwise only; absent (older runs) = separate flag_code MLP
+        share_intervention_encoder=bool(
+            m.get("share_intervention_encoder", False)
+        ),
     )
     model_cls, _ = resolve_model_class(
         m.get("intervention_encoding"), m.get("model_class")

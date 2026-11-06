@@ -16,7 +16,9 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
   intervention information enters the model (default r1). --model_class <name>
   is still accepted (legacy). reg_axis reads the optional model_config keys
   reg_axis_num_blocks, reg_axis_num_memory_tokens, reg_axis_target_flag and
-  reg_axis_count_feature (CITNP/models/regime_axis/README.md).
+  reg_axis_count_feature (CITNP/models/regime_axis/README.md). layerwise reads
+  the optional model_config key share_intervention_encoder (default false:
+  separate flag_code MLP; true: the injection reuses context_intervened).
 - --scale_conditioning {none,stats}: stats feeds each variable's standardisation
   (log std, mean / std) to the model (information parity with the oracle;
   default none: no new parameters).
@@ -137,6 +139,7 @@ MODEL_KEYS = (
     "intervention_encoding",
     "scale_conditioning",
     *REG_AXIS_CONFIG_KEYS,
+    "share_intervention_encoder",
 )
 
 # Keys that select the method: if given both on the command line and in the
@@ -273,7 +276,9 @@ def restore_full_state(trainer, path) -> None:
     for cb in trainer.callbacks:
         if isinstance(cb, CheckpointCallback) and "best_val_loss" in state:
             cb.best_val_loss = float(state["best_val_loss"])
-    print(f"Resumed from {path}: step {step}, continuing at epoch {trainer.current_epoch}")
+    print(
+        f"Resumed from {path}: step {step}, continuing at epoch {trainer.current_epoch}"
+    )
 
 
 def streaming_evaluation_dataset(
@@ -404,7 +409,9 @@ def record_presimulated_data(
         "splits": {
             split: {
                 "directory": str(directory),
-                "config_json_fingerprint": file_fingerprint(directory / "config.json"),
+                "config_json_fingerprint": file_fingerprint(
+                    directory / "config.json"
+                ),
             }
             for split, directory in directories.items()
         },
@@ -422,7 +429,9 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     chunk_directories: dict[str, Path] = {}
     if args.dataset_config:
         dataset_config = load_presimulated_dataset_config(args.dataset_config)
-        chunk_directories = check_presimulated_data(args, data_cfg, dataset_config)
+        chunk_directories = check_presimulated_data(
+            args, data_cfg, dataset_config
+        )
         train_ds, val_ds, test_ds = build_chunk_datasets(
             args, data_cfg, dataset_config, chunk_directories
         )
@@ -461,6 +470,9 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
             for k in REG_AXIS_CONFIG_KEYS
             if getattr(args, k, None) is not None
         },
+        share_intervention_encoder=bool(
+            getattr(args, "share_intervention_encoder", None) or False
+        ),
     )
     model_cls, encoding = resolve_model_class(
         args.intervention_encoding, args.model_class
@@ -473,14 +485,19 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     ]
     if stray and not is_reg_axis:
         raise ValueError(f"{stray} only apply to the reg_axis encoding")
+    is_layerwise = issubclass(
+        model_cls, (LayerwiseMixedContextModel, LayerwiseMixedContextMoGModel)
+    )
+    if getattr(args, "share_intervention_encoder", None) and not is_layerwise:
+        raise ValueError(
+            "share_intervention_encoder only applies to the layerwise encoding"
+        )
     if is_reg_axis and args.init_from_upstream:
         raise ValueError(
             "--init_from_upstream does not apply to reg_axis: its transformer "
             "parameters have no upstream counterpart; train from scratch"
         )
-    if args.init_from_r1 and not issubclass(
-        model_cls, (LayerwiseMixedContextModel, LayerwiseMixedContextMoGModel)
-    ):
+    if args.init_from_r1 and not is_layerwise:
         raise ValueError("--init_from_r1 only applies to the layerwise encoding")
     model = model_cls(model_config)
     print(f"Intervention encoding: {encoding} (model class {model_cls.__name__})")
@@ -490,7 +507,9 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         load_r1_checkpoint(model, args.init_from_r1)
         print(f"Warm-started from R1 checkpoint {args.init_from_r1}")
     if args.fine_tune_from and args.resume_full:
-        raise ValueError("--fine_tune_from (weights only) and --resume_full are exclusive")
+        raise ValueError(
+            "--fine_tune_from (weights only) and --resume_full are exclusive"
+        )
     if args.resume_full and not Path(args.resume_full).is_file():
         raise FileNotFoundError(args.resume_full)
     if args.fine_tune_from:
@@ -516,6 +535,10 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     }
     resolved["model_class"] = model_cls.__name__
     resolved["scale_conditioning"] = args.scale_conditioning or "none"
+    if is_layerwise:
+        resolved["share_intervention_encoder"] = (
+            model_config.share_intervention_encoder
+        )
     if encoding in INTERVENTION_ENCODINGS:
         resolved["intervention_encoding"] = encoding
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:

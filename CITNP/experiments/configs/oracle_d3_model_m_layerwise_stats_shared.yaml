@@ -1,0 +1,14 @@
+# oracle_d3_model_m_layerwise_stats.yaml with one change: the layer-wise
+# injection reuses the embedding MLP context_intervened instead of a separate
+# flag_code MLP. Keep every other key identical to that file
+# (checked by testing/test_layerwise_injection.py).
+d_model: 128
+nhead: 8
+num_layers_encoder: 6
+sample_attn_mode: MHCA
+dim_feedforward: 256
+emb_depth: 2
+num_mixture_components: 8
+model_class: LayerwiseMixedContextMoGModel
+scale_conditioning: stats
+share_intervention_encoder: true
