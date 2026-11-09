@@ -77,8 +77,11 @@ metadata_source_rows / metadata_other_rows; query_cells and query_metadata.
 The first six partition the valid ordinary context cells.
 """
 
+import hashlib
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator
 
 import numpy as np
@@ -393,6 +396,20 @@ def _differences_to_item0(x: torch.Tensor) -> dict[str, torch.Tensor]:
     return compute_state_differences(x[0], x)
 
 
+SUPPORTED_DTYPES = (torch.float32, torch.float64)
+
+
+def check_precision(model: torch.nn.Module) -> torch.dtype:
+    """The model's parameter dtype; only float32 and float64 are allowed
+    (no half / bfloat16 runs of this diagnostic)."""
+    dtype = next(model.parameters()).dtype
+    if dtype not in SUPPORTED_DTYPES:
+        raise ValueError(
+            f"flag-propagation runs in float32 or float64 only, got {dtype}"
+        )
+    return dtype
+
+
 @torch.inference_mode()
 def run_batch(
     model: torch.nn.Module,
@@ -402,24 +419,36 @@ def run_batch(
     *,
     device,
     layout: dict,
+    control: bool = False,
 ):
     """One forward pass: item 0 is the original-mask baseline, items 1.. are
-    `variants`. Returns ({stage: {"context"/"query": per-token norms}},
+    `variants`, and with `control` a last item repeats the original mask
+    (its difference from item 0 is the batch-rounding noise floor).
+    Automatic mixed precision is disabled for the pass.
+
+    Returns ({stage: {"context"/"query": per-token norms against item 0}},
     model output)."""
+    check_precision(model)
     input_masks = [original_mask] + [v.input_mask for v in variants]
     later_masks = [original_mask] + [v.later_injection_mask for v in variants]
+    if control:
+        input_masks.append(original_mask)
+        later_masks.append(original_mask)
     batch = build_batch_inputs(prepared, input_masks)
     needs_override = any(
         v.injection_mode != "all_injections" for v in variants
     )
     if needs_override and layout["architecture"] != "layerwise":
         raise ValueError("injection decomposition needs a layer-wise model")
-    if needs_override:
-        with later_injection_override(
-            model, torch.stack(input_masks), torch.stack(later_masks)
-        ):
-            return _record_states(model, batch, device, keep=_differences_to_item0)
-    return _record_states(model, batch, device, keep=_differences_to_item0)
+    with torch.autocast(device_type=torch.device(device).type, enabled=False):
+        if needs_override:
+            with later_injection_override(
+                model, torch.stack(input_masks), torch.stack(later_masks)
+            ):
+                return _record_states(
+                    model, batch, device, keep=_differences_to_item0
+                )
+        return _record_states(model, batch, device, keep=_differences_to_item0)
 
 
 # --------------------------------------------------------------------------- #
@@ -657,6 +686,26 @@ def _source_fields(source: FlagSource, mask: np.ndarray, labels: np.ndarray) -> 
     )
 
 
+def _token_maps(states, stages, b: int, medians: dict) -> dict[str, np.ndarray]:
+    """Per-token arrays [stages, rows, D'] of item b for the example
+    heatmaps: absolute, relative and stage-normalised differences, and the
+    baseline norms."""
+    out = {}
+    for part in ("context", "query"):
+        a = np.stack([states[s][part]["abs_l2"][b].numpy() for s in stages])
+        o = np.stack([states[s][part]["original_l2"].numpy() for s in stages])
+        m = np.array([medians[s] for s in stages])[:, None, None]
+        out[f"{part}_abs_l2"] = a
+        out[f"{part}_original_l2"] = o
+        out[f"{part}_rel_l2"] = np.where(
+            o >= DENOMINATOR_TOLERANCE, a / (o + RELATIVE_EPSILON), np.nan
+        )
+        out[f"{part}_stage_normalised_l2"] = np.where(
+            m >= DENOMINATOR_TOLERANCE, a / np.where(m > 0, m, 1.0), np.nan
+        )
+    return out
+
+
 def analyse_context(
     model: torch.nn.Module,
     item: dict,
@@ -674,14 +723,21 @@ def analyse_context(
     """Run the baseline and every perturbation of `sources` on one bank
     item and aggregate.
 
+    Every chunk of at most `max_batch_size` items holds the original-mask
+    baseline (first), up to max_batch_size - 2 perturbed items and an
+    identical-mask control (last). The control's difference from the
+    baseline, aggregated with each source's own category partition, is
+    reported as the noise floor (noise_floor_* columns).
+
     Returns dict with
     - summary: list of row dicts (one per variant / stage / category);
     - predictions: list of row dicts (one per variant / query point);
     - token_maps (if keep_token_maps): {(source_id, injection_mode):
-      {"context_abs_l2": [stages, N, D'], "context_original_l2": ...,
-      "query_abs_l2": [stages, n_q, D'], "query_original_l2": ...}}.
+      `_token_maps` arrays}.
     """
     layout = check_supported_model(model)
+    if max_batch_size < 3:
+        raise ValueError("max_batch_size must be >= 3 (baseline, control, one item)")
     mask_np = np.asarray(item["ctx_int"], dtype=bool)
     N, D = mask_np.shape
     check_variable_count(model, D)
@@ -699,16 +755,19 @@ def analyse_context(
     stages = probe_points(model)
     has_meta = layout["metadata_token"]
     d_model = int(model.d_model)
-    per_chunk = max(1, int(max_batch_size) - 1)
+    per_chunk = int(max_batch_size) - 2
 
     summary, predictions, token_maps = [], [], {}
     for start in range(0, len(variants), per_chunk):
         chunk = variants[start : start + per_chunk]
         states, out = run_batch(
-            model, prepared, chunk, original_mask, device=device, layout=layout
-        )
+            model, prepared, chunk, original_mask, device=device, layout=layout,
+            control=True,
+        )  # fmt: skip
+        B = len(chunk) + 2
+        control = B - 1
         mu, sd, logw = _mixture_on_raw_scale(
-            out, prepared["outcome_index"].repeat(len(chunk) + 1), mean, std, device
+            out, prepared["outcome_index"].repeat(B), mean, std, device
         )
         changes = compute_predictive_changes(
             (mu[0], sd[0], logw[0]), (mu[1:], sd[1:], logw[1:]),
@@ -718,6 +777,16 @@ def analyse_context(
             s: stage_reference_l2(states[s]["context"]["original_l2"][:, :D], np.ones((N, D), bool))  # fmt: skip
             for s in stages
         }
+
+        def categories(s, b, source):
+            ctx, qry = states[s]["context"], states[s]["query"]
+            return aggregate_by_category(
+                ctx["abs_l2"][b].numpy(), ctx["original_l2"].numpy(),
+                qry["abs_l2"][b].numpy(), qry["original_l2"].numpy(),
+                source, labels, is_obs, num_variables=D,
+                has_metadata=has_meta, d_model=d_model, stage_median=medians[s],
+            )  # fmt: skip
+
         for b, v in enumerate(chunk, start=1):
             fields = dict(
                 context_id=context_id,
@@ -733,19 +802,14 @@ def analyse_context(
                 num_variables=D, has_metadata=has_meta,
             )  # fmt: skip
             for si, s in enumerate(stages):
-                ctx, qry = states[s]["context"], states[s]["query"]
-                cats = aggregate_by_category(
-                    ctx["abs_l2"][b].numpy(), ctx["original_l2"].numpy(),
-                    qry["abs_l2"][b].numpy(), qry["original_l2"].numpy(),
-                    v.source, labels, is_obs, num_variables=D,
-                    has_metadata=has_meta, d_model=d_model,
-                    stage_median=medians[s],
-                )  # fmt: skip
-                for cat, metrics in cats.items():
+                floor = categories(s, control, v.source)
+                for cat, metrics in categories(s, b, v.source).items():
                     summary.append(dict(
                         fields, stage_name=s, stage_index=si, category=cat,
                         **metrics, initial_source_l2=initial,
                         source_normalised_sensitivity=source_normalised(metrics["mean_abs_l2"], initial),
+                        noise_floor_mean_abs_l2=floor[cat]["mean_abs_l2"],
+                        noise_floor_mean_stage_normalised_l2=floor[cat]["mean_stage_normalised_l2"],
                     ))  # fmt: skip
             for q in range(len(t)):
                 predictions.append(dict(
@@ -755,22 +819,17 @@ def analyse_context(
                     mean_shift=float(changes["mean_shift"][b - 1, q]),
                     std_shift=float(changes["std_shift"][b - 1, q]),
                     kl_method=changes["kl_method"],
+                    noise_floor_predictive_kl=float(changes["predictive_kl"][control - 1, q]),
                 ))  # fmt: skip
             if keep_token_maps:
-                token_maps[(v.source.source_id, v.injection_mode)] = {
-                    f"{part}_{key}": np.stack([
-                        states[s][part][key][b].numpy() if key == "abs_l2"
-                        else states[s][part][key].numpy()
-                        for s in stages
-                    ])
-                    for part in ("context", "query")
-                    for key in ("abs_l2", "original_l2")
-                }  # fmt: skip
+                token_maps[(v.source.source_id, v.injection_mode)] = _token_maps(
+                    states, stages, b, medians
+                )
     return dict(summary=summary, predictions=predictions, token_maps=token_maps)
 
 
 # --------------------------------------------------------------------------- #
-# Whole bank
+# Contexts, sources and the source manifest
 # --------------------------------------------------------------------------- #
 def select_contexts(bank: list[dict], max_contexts: int, seed: int) -> list[int]:
     """Bank indices of up to `max_contexts` distinct contexts (first item of
@@ -805,6 +864,111 @@ def select_sources(
     return out
 
 
+def context_fingerprint(item: dict) -> str:
+    """Short hash of a context's values and mask (manifest validation)."""
+    h = hashlib.sha256()
+    h.update(np.ascontiguousarray(item["ctx_x"], dtype=np.float32).tobytes())
+    h.update(np.ascontiguousarray(item["ctx_int"], dtype=bool).tobytes())
+    return h.hexdigest()[:16]
+
+
+def build_source_manifest(
+    bank: list[dict], sources_by_context: dict[int, list[FlagSource]]
+) -> pd.DataFrame:
+    """One row per source, with the context's identity, query and regime
+    structure, so another run can repeat exactly the same perturbations."""
+    rows = []
+    for context_id, sources in sources_by_context.items():
+        item = bank[context_id]
+        mask = np.asarray(item["ctx_int"], dtype=bool)
+        labels, how = regime_labels(item)
+        _, sizes = np.unique(labels, return_counts=True)
+        context = dict(
+            context_id=context_id,
+            context_fingerprint=context_fingerprint(item),
+            num_rows=mask.shape[0],
+            num_variables=mask.shape[1],
+            query_treatment=int(item["T"]),
+            query_outcome=int(item["Y"]),
+            num_intervened_cells=int(mask.sum()),
+            num_interventional_rows=int(mask.any(1).sum()),
+            num_regimes=len(sizes),
+            regime_sizes=";".join(str(int(n)) for n in sizes),
+            regime_label_source=how,
+        )
+        for s in sources:
+            rows.append(dict(
+                context,
+                source_id=s.source_id,
+                ablation_mode=s.ablation_mode,
+                source_variable=s.variable,
+                source_rows=";".join(str(r) for r in s.rows),
+                source_regime=s.regime,
+                source_regime_size=int((labels == s.regime).sum()),
+                source_is_multi_target=bool((mask[list(s.rows)].sum(1) > 1).any()),
+            ))  # fmt: skip
+    return pd.DataFrame(rows)
+
+
+def sources_from_manifest(
+    manifest: pd.DataFrame, bank: list[dict]
+) -> dict[int, list[FlagSource]]:
+    """Rebuild {context_id: sources} from a saved manifest, in manifest
+    order, after checking every entry against the bank: same context
+    (fingerprint), same question, every source cell flagged, and the
+    source's rows in its regime (all of the regime's flagged rows for the
+    variable, for regime sources). Raises ValueError on any mismatch."""
+    out: dict[int, list[FlagSource]] = {}
+    for n, row in enumerate(manifest.itertuples(index=False)):
+        where = f"manifest row {n} (context {row.context_id}, source {row.source_id})"
+        cid = int(row.context_id)
+        if not 0 <= cid < len(bank):
+            raise ValueError(f"{where}: context_id outside the bank (size {len(bank)})")
+        item = bank[cid]
+        if context_fingerprint(item) != row.context_fingerprint:
+            raise ValueError(f"{where}: the bank context differs from the manifest")
+        if (int(item["T"]), int(item["Y"])) != (int(row.query_treatment), int(row.query_outcome)):  # fmt: skip
+            raise ValueError(f"{where}: query (T, Y) differs from the bank item")
+        if row.ablation_mode not in ABLATION_MODES:
+            raise ValueError(f"{where}: unknown ablation_mode {row.ablation_mode!r}")
+        mask = np.asarray(item["ctx_int"], dtype=bool)
+        labels, _ = regime_labels(item)
+        rows = tuple(int(r) for r in str(row.source_rows).split(";"))
+        k, g = int(row.source_variable), int(row.source_regime)
+        if not (0 <= k < mask.shape[1]) or any(not 0 <= r < mask.shape[0] for r in rows):
+            raise ValueError(f"{where}: source cells outside the context")
+        if not all(mask[r, k] for r in rows):
+            raise ValueError(f"{where}: a source cell has no flag in the bank context")
+        if any(labels[r] != g for r in rows):
+            raise ValueError(f"{where}: source rows are not all in regime {g}")
+        if row.ablation_mode == "single_flag" and len(rows) != 1:
+            raise ValueError(f"{where}: a single-flag source must have one row")
+        if row.ablation_mode == "regime":
+            want = tuple(int(r) for r in np.flatnonzero((labels == g) & mask[:, k]))
+            if tuple(sorted(rows)) != want:
+                raise ValueError(f"{where}: rows are not all flagged rows of regime {g}")
+        out.setdefault(cid, []).append(
+            FlagSource(int(row.source_id), row.ablation_mode, k, rows, g)
+        )
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Whole bank
+# --------------------------------------------------------------------------- #
+def _add_net_change(summary: pd.DataFrame) -> pd.DataFrame:
+    """net_change_* = S[t] - S[t - 1] per (context, source, injection mode,
+    category); NaN at the first stage. Describes magnitude differences
+    between consecutive stages, not attention pathways."""
+    if summary.empty:
+        return summary
+    keys = ["context_id", "source_id", "injection_mode", "category"]
+    summary = summary.sort_values([*keys, "stage_index"], kind="stable")
+    for col in ("mean_abs_l2", "mean_stage_normalised_l2"):
+        summary[f"net_change_{col}"] = summary.groupby(keys, sort=False)[col].diff()
+    return summary.sort_index()
+
+
 def run_flag_propagation(
     model: torch.nn.Module,
     bank: list[dict],
@@ -819,31 +983,188 @@ def run_flag_propagation(
     max_batch_size: int = 64,
     kl_samples: int = DEFAULT_KL_SAMPLES,
     seed: int = 0,
-) -> dict[str, pd.DataFrame]:
-    """Flag-propagation diagnostic on up to `max_contexts` bank contexts.
+    source_manifest: pd.DataFrame | None = None,
+    num_examples: int = 0,
+) -> dict:
+    """Flag-propagation diagnostic on up to `max_contexts` bank contexts, or
+    exactly the contexts and sources of `source_manifest` (validated
+    against the bank; selection settings are then ignored).
 
-    Returns {"summary": per variant / stage / category rows,
-    "predictions": per variant / query point rows}. The model must be in
-    eval mode; its weights are never changed.
+    `seed` selects contexts and sources (without a manifest) and seeds the
+    Monte Carlo KL draws of each context (from (seed, context_id)); keep it
+    fixed across runs that are compared.
+
+    Returns dict with DataFrames "summary" (per variant / stage /
+    category), "predictions" (per variant / query point) and "sources"
+    (the manifest), "examples" (up to `num_examples` single-flag and regime
+    examples with all_injections token maps) and "info" (regime-label
+    sources and KL methods used). The model must be in eval mode, float32
+    or float64; its weights are never changed.
     """
     if ablation not in ("both", *ABLATION_MODES):
         raise ValueError(f"ablation must be 'both' or one of {ABLATION_MODES}")
-    check_supported_model(model)
-    summary, predictions = [], []
-    for context_id in select_contexts(bank, max_contexts, seed):
+    layout = check_supported_model(model)
+    check_precision(model)
+    if source_manifest is not None:
+        plan = sources_from_manifest(source_manifest, bank)
+    else:
+        plan = {
+            cid: select_sources(
+                bank[cid], sources_per_context=sources_per_context,
+                regime_sources_per_context=regime_sources_per_context,
+                ablation=ablation, seed=seed, context_id=cid,
+            )  # fmt: skip
+            for cid in select_contexts(bank, max_contexts, seed)
+        }
+    summary, predictions, examples = [], [], []
+    label_sources, kl_methods = set(), set()
+    for context_id, sources in plan.items():
         item = bank[context_id]
-        sources = select_sources(
-            item, sources_per_context=sources_per_context,
-            regime_sources_per_context=regime_sources_per_context,
-            ablation=ablation, seed=seed, context_id=context_id,
-        )  # fmt: skip
+        want = [s for s in sources if len(examples) < num_examples]
         res = analyse_context(
             model, item, sources, device=device, normalise=normalise,
             injection_decomposition=injection_decomposition,
             max_batch_size=max_batch_size, kl_samples=kl_samples,
             kl_seed=int(np.random.SeedSequence([seed, context_id]).generate_state(1)[0]),
-            context_id=context_id,
+            context_id=context_id, keep_token_maps=bool(want),
         )  # fmt: skip
         summary += res["summary"]
         predictions += res["predictions"]
-    return dict(summary=pd.DataFrame(summary), predictions=pd.DataFrame(predictions))
+        labels, how = regime_labels(item)
+        label_sources.add(how)
+        kl_methods.update(p["kl_method"] for p in res["predictions"])
+        seen_modes = set()
+        for s in want:  # one single-flag and one regime example per context
+            if s.ablation_mode in seen_modes or len(examples) >= num_examples:
+                continue
+            seen_modes.add(s.ablation_mode)
+            examples.append(dict(
+                context_id=context_id, source_id=s.source_id,
+                ablation_mode=s.ablation_mode,
+                original_mask=np.asarray(item["ctx_int"], dtype=bool),
+                regime_labels=labels,
+                source_cells=np.array(s.cells, dtype=np.int64),
+                has_metadata=layout["metadata_token"],
+                **res["token_maps"][(s.source_id, "all_injections")],
+            ))  # fmt: skip
+    return dict(
+        summary=_add_net_change(pd.DataFrame(summary)),
+        predictions=pd.DataFrame(predictions),
+        sources=build_source_manifest(bank, plan),
+        examples=examples,
+        info=dict(regime_label_sources=sorted(label_sources),
+                  kl_methods=sorted(kl_methods)),  # fmt: skip
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Saved outputs
+# --------------------------------------------------------------------------- #
+SUMMARY_FILE = "flag_propagation_summary.csv"
+PREDICTIONS_FILE = "flag_propagation_predictions.csv"
+SOURCES_FILE = "flag_propagation_sources.csv"
+EXAMPLES_FILE = "flag_propagation_examples.npz"
+METADATA_FILE = "flag_propagation_metadata.json"
+
+METRIC_DEFINITIONS = {
+    "abs_l2": "||h(M) - h(M-)||_2 per destination token",
+    "rms": "abs_l2 / sqrt(d_model)",
+    "rel_l2": "abs_l2 / (||h(M)||_2 + RELATIVE_EPSILON); NaN when ||h(M)||_2 < DENOMINATOR_TOLERANCE",  # fmt: skip
+    "stage_normalised_l2": "abs_l2 / median ||h(M)||_2 over the valid ordinary context cells of the stage (baseline pass); primary metric across architectures",  # fmt: skip
+    "mean_*": "mean over the destination tokens of the category (NaN if empty)",
+    "max_abs_l2": "largest abs_l2 in the category",
+    "initial_source_l2": "mean abs_l2 at 'embed' of the source cells (layer-wise) or source rows' metadata tokens (extra-node)",  # fmt: skip
+    "source_normalised_sensitivity": "category mean_abs_l2 / (initial_source_l2 + RELATIVE_EPSILON); NaN when initial_source_l2 <= DENOMINATOR_TOLERANCE; not a conserved fraction",  # fmt: skip
+    "net_change_*": "S[t] - S[t-1] per category: magnitude difference between consecutive stages, not an attention pathway",  # fmt: skip
+    "noise_floor_*": "the same category means for an identical-mask control item in the same batch (batch-rounding floor)",  # fmt: skip
+    "predictive_kl": "KL(p(.|M) || p(.|M-)) per query point; closed form for one Gaussian, else Monte Carlo from the original-mask predictive with common draws, not clipped",  # fmt: skip
+    "mean_shift / std_shift": "|difference| of the predictive mean / standard deviation (raw data scale)",  # fmt: skip
+}
+
+HOOK_LOCATION = (
+    "'embed' = input of the transformer stack (role, flag / metadata and "
+    "scale-conditioning embeddings included; before inject_sample[0] in "
+    "layer-wise models); 'block<l>/sample' and 'block<l>/node' = output of "
+    "the pre-norm sample- / node-attention layer of block l (after both "
+    "residual additions), before any later re-injection; with MHCA, context "
+    "rows from the self-attention layer, query rows from the cross-attention "
+    "layer"
+)
+
+
+def build_metadata(model: torch.nn.Module, info: dict, settings: dict) -> dict:
+    """Run description for flag_propagation_metadata.json."""
+    layout = check_supported_model(model)
+    stack = model.encoder.encoder
+    meta = dict(
+        architecture=layout["architecture"],
+        share_intervention_encoder=layout["share_intervention_encoder"],
+        metadata_token=layout["metadata_token"],
+        sample_attn_mode=layout["sample_attn_mode"],
+        d_model=int(model.d_model),
+        num_blocks=len(stack.node_layers),
+        num_nodes=int(model.num_nodes),
+        stage_names=probe_points(model),
+        dtype=str(check_precision(model)).removeprefix("torch."),
+        autocast="disabled",
+        torch_version=torch.__version__,
+        hook_location=HOOK_LOCATION,
+        regime_label_sources=info.get("regime_label_sources", []),
+        regime_note=(
+            "Regimes from the bank's ctx_regime when present, else rows with "
+            "identical intervention-target sets (two regimes sharing a target "
+            "set would be merged). On banks from tasks.build_bank every "
+            "interventional regime has one target, so a regime-level ablation "
+            "turns the whole regime into rows labelled observational: read it "
+            "as 'regime relabelled as observational'."
+        ),
+        kl_methods=info.get("kl_methods", []),
+        tolerances=dict(
+            denominator_tolerance=DENOMINATOR_TOLERANCE,
+            relative_epsilon=RELATIVE_EPSILON,
+        ),
+        metric_definitions=METRIC_DEFINITIONS,
+        **settings,
+    )
+    if layout["architecture"] == "layerwise":
+        meta["injection_sites"] = [
+            dict(name=n, group=g) for n, _m, g in layerwise_injection_sites(model)
+        ]
+        meta["injection_note"] = (
+            "First injection = every flag entry before the first attention "
+            "operation (embedding + inject_sample[0]); later = inject_sample[i], "
+            "i >= 1, and every inject_node[i]. The 'embed' stage is recorded "
+            "before inject_sample[0], so it captures only part of the first "
+            "injection."
+        )
+    return meta
+
+
+def save_flag_propagation(result: dict, out_dir, metadata: dict) -> dict[str, Path]:
+    """Write the CSVs, the examples NPZ (if any) and the metadata JSON into
+    `out_dir`; returns {kind: path}."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "summary": out / SUMMARY_FILE,
+        "predictions": out / PREDICTIONS_FILE,
+        "sources": out / SOURCES_FILE,
+        "metadata": out / METADATA_FILE,
+    }
+    result["summary"].to_csv(paths["summary"], index=False)
+    result["predictions"].to_csv(paths["predictions"], index=False)
+    result["sources"].to_csv(paths["sources"], index=False)
+    if result["examples"]:
+        paths["examples"] = out / EXAMPLES_FILE
+        arrays: dict[str, np.ndarray] = {
+            "num_examples": np.array(len(result["examples"])),
+            "stage_names": np.array(metadata["stage_names"]),
+        }
+        for i, ex in enumerate(result["examples"]):
+            for key, value in ex.items():
+                arrays[f"example{i}_{key}"] = np.asarray(value)
+        np.savez_compressed(paths["examples"], **arrays)
+    with open(paths["metadata"], "w") as f:
+        json.dump(metadata, f, indent=2, default=str)
+    return paths
+

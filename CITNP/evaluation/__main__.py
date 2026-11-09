@@ -16,6 +16,10 @@
     python -m CITNP.evaluation plot-monitoring RUN_DIR [RUN_DIR ...] --out monitoring.png
     python -m CITNP.evaluation probe-flag --ckpt ... --model_config ... \
            --bank bank.pkl --out probe.csv               # + probe.png
+    python -m CITNP.evaluation flag-propagation --ckpt ... --model_config ... \
+           --bank bank.pkl [--float64] --out results/flag_propagation
+    python -m CITNP.evaluation flag-propagation --plot_only RUN_DIR [RUN_DIR ...] \
+           [--out compare_dir]       # figures only; several runs -> comparison
 
 `kshot` evaluates ONE hand-built SCM, where the model can beat the oracle.
 ONLY `kshot-prior` gives a true oracle lower bound: every task is drawn from
@@ -27,7 +31,8 @@ task_offset, base_seed, n_y, n_mc, grid_eps) and how many graphs estimate
 the oracle's graph prior (graph_prior_samples).
 
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
-and `probe-flag` compute,
+and `probe-flag` compute, CITNP.evaluation.flag_propagation for
+`flag-propagation`,
 CITNP.evaluation.tasks.build_bank for the bank and CITNP.evaluation.plots for
 the figures.
 """
@@ -192,6 +197,51 @@ def _probe_flag_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no_normalise", action="store_true",
                    help="skip per-task standardisation (as in training)")  # fmt: skip
     p.add_argument("--out", default="probe.csv")
+    p.add_argument(
+        "--device", default=None, help="default: cuda if available, else cpu"
+    )
+
+
+def _flag_propagation_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--ckpt")
+    p.add_argument("--model_config")
+    p.add_argument("--bank", help="pickle from `python -m CITNP.evaluation bank`")
+    p.add_argument("--num_nodes", type=int, default=3,
+                   help="number of variables the model is built for (as in "
+                        "probe-flag); contexts with more variables are rejected")  # fmt: skip
+    p.add_argument("--max_contexts", type=int, default=100)
+    p.add_argument("--sources_per_context", type=int, default=3,
+                   help="single-flag sources per context")  # fmt: skip
+    p.add_argument("--regime_sources_per_context", type=int, default=1,
+                   help="regime-level sources per context")  # fmt: skip
+    p.add_argument("--ablation", choices=["both", "single_flag", "regime"],
+                   default="both")  # fmt: skip
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--kl_samples", type=int, default=1000,
+                   help="Monte Carlo draws per query point for the predictive KL")  # fmt: skip
+    p.add_argument("--max_batch_size", type=int, default=64,
+                   help="forward items per pass, including the baseline and "
+                        "the identical-mask control (>= 3)")  # fmt: skip
+    p.add_argument("--no_normalise", action="store_true",
+                   help="skip per-task standardisation (as in training)")  # fmt: skip
+    p.add_argument("--no_injection_decomposition", action="store_true",
+                   help="layer-wise models: only the all_injections mode")  # fmt: skip
+    p.add_argument("--float64", action="store_true",
+                   help="run the diagnostic in float64 (recommended for "
+                        "mechanism validation; the checkpoint is not changed)")  # fmt: skip
+    p.add_argument("--save_examples", action="store_true",
+                   help="save per-token maps for the example heatmaps (figure A)")  # fmt: skip
+    p.add_argument("--num_examples", type=int, default=4)
+    p.add_argument("--source_manifest", default=None,
+                   help="flag_propagation_sources.csv of an earlier run: use "
+                        "exactly its contexts and sources")  # fmt: skip
+    p.add_argument("--save_source_manifest", default=None,
+                   help="also write the source manifest to this path")  # fmt: skip
+    p.add_argument("--plot_only", nargs="+", default=None, metavar="RUN_DIR",
+                   help="only plot saved run(s); with several runs (same "
+                        "manifest) also the architecture comparison, into --out")  # fmt: skip
+    p.add_argument("--out", default="results/flag_propagation",
+                   help="output directory")  # fmt: skip
     p.add_argument(
         "--device", default=None, help="default: cuda if available, else cpu"
     )
@@ -569,6 +619,108 @@ def _run_probe_flag(
     _plot_probe(a.out)
 
 
+def _file_sha256(path: str) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _git_commit() -> str | None:
+    import subprocess
+    from pathlib import Path
+
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()  # fmt: skip
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _run_flag_propagation(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from CITNP.evaluation.plot_flag_propagation import (
+        plot_architecture_comparison,
+        plot_flag_propagation,
+    )
+
+    if a.plot_only:
+        if len(a.plot_only) == 1:
+            written = plot_flag_propagation(a.plot_only[0])
+        else:
+            written = plot_architecture_comparison(a.plot_only, a.out)
+        for path in written:
+            print(f"wrote {path}")
+        return
+    if not (a.ckpt and a.model_config and a.bank):
+        parser.error("--ckpt, --model_config and --bank are required")
+    if a.max_batch_size < 3:
+        parser.error("--max_batch_size must be >= 3")
+    import pickle
+    import shutil
+
+    import pandas as pd
+    import torch
+
+    from CITNP.evaluation.flag_propagation import (
+        build_metadata,
+        run_flag_propagation,
+        save_flag_propagation,
+    )
+    from CITNP.evaluation.model_api import load_model
+
+    device = a.device or _default_device()
+    model = load_model(a.ckpt, a.model_config, device, num_nodes=a.num_nodes)
+    # this diagnostic only: float32 (as loaded) or float64; never autocast
+    model = model.to(torch.float64 if a.float64 else torch.float32)
+    with open(a.bank, "rb") as f:
+        bank = pickle.load(f)["items"]
+    manifest = pd.read_csv(a.source_manifest) if a.source_manifest else None
+    result = run_flag_propagation(
+        model, bank, device=device, normalise=not a.no_normalise,
+        max_contexts=a.max_contexts, sources_per_context=a.sources_per_context,
+        regime_sources_per_context=a.regime_sources_per_context,
+        ablation=a.ablation,
+        injection_decomposition=not a.no_injection_decomposition,
+        max_batch_size=a.max_batch_size, kl_samples=a.kl_samples, seed=a.seed,
+        source_manifest=manifest,
+        num_examples=a.num_examples if a.save_examples else 0,
+    )  # fmt: skip
+    settings = dict(
+        checkpoint=a.ckpt, checkpoint_sha256=_file_sha256(a.ckpt),
+        model_config=a.model_config, bank=a.bank, device=str(device),
+        code_commit=_git_commit(), normalise=not a.no_normalise,
+        max_contexts=a.max_contexts,
+        sources_per_context=a.sources_per_context,
+        regime_sources_per_context=a.regime_sources_per_context,
+        ablation=a.ablation,
+        injection_decomposition=not a.no_injection_decomposition,
+        max_batch_size=a.max_batch_size, kl_samples=a.kl_samples, seed=a.seed,
+        source_manifest=a.source_manifest,
+        num_contexts=int(result["sources"].context_id.nunique())
+        if len(result["sources"]) else 0,
+    )  # fmt: skip
+    paths = save_flag_propagation(
+        result, a.out, build_metadata(model, result["info"], settings)
+    )
+    if a.save_source_manifest:
+        shutil.copyfile(paths["sources"], a.save_source_manifest)
+        paths["sources_copy"] = a.save_source_manifest
+    for path in paths.values():
+        print(f"wrote {path}")
+    for path in plot_flag_propagation(a.out):
+        print(f"wrote {path}")
+
+
 def _run_plot_monitoring(a: argparse.Namespace) -> None:
     import matplotlib
 
@@ -609,6 +761,11 @@ COMMANDS = {
         _probe_flag_parser,
         "linear probes: is the intervention flag still present at each depth?",
     ),
+    "flag-propagation": (
+        _flag_propagation_parser,
+        "how removing context intervention flags changes hidden states and "
+        "predictions",
+    ),
 }
 
 
@@ -640,6 +797,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_plot_kshot_prior(a, parsers["plot-kshot-prior"])
     elif a.command == "probe-flag":
         _run_probe_flag(a, parsers["probe-flag"])
+    elif a.command == "flag-propagation":
+        _run_flag_propagation(a, parsers["flag-propagation"])
     else:
         _run_plot_monitoring(a)
 

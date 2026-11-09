@@ -20,6 +20,7 @@ from CITNP.evaluation.flag_propagation import (
     aggregate_by_category,
     analyse_context,
     build_batch_inputs,
+    build_source_manifest,
     check_supported_model,
     compute_predictive_changes,
     compute_state_differences,
@@ -36,6 +37,7 @@ from CITNP.evaluation.flag_propagation import (
     select_single_flag_sources,
     select_sources,
     source_normalised,
+    sources_from_manifest,
     stage_reference_l2,
     summarise_tokens,
 )
@@ -252,7 +254,7 @@ def test_batched_baseline_equals_unbatched(models, item, arch):
     # chunking does not change the results
     sources = select_sources(item, sources_per_context=3, regime_sources_per_context=1,
                              ablation="both", seed=0, context_id=0)  # fmt: skip
-    small = analyse_context(model, item, sources, device="cpu", max_batch_size=2)
+    small = analyse_context(model, item, sources, device="cpu", max_batch_size=3)
     large = analyse_context(model, item, sources, device="cpu", max_batch_size=64)
     for a, b in zip(small["summary"], large["summary"]):
         assert a.keys() == b.keys()
@@ -593,3 +595,190 @@ def test_unsupported_architecture_and_variable_count(tmp_path, models, item):
     big.pop("ctx_regime")
     with pytest.raises(ValueError, match="num_nodes"):
         analyse_context(models["extra_node"], big, [], device="cpu")
+
+
+# Noise floor (identical-mask control item) ----------------------------------
+def _floor_run(model, item):
+    sources = select_sources(item, sources_per_context=2, regime_sources_per_context=1,
+                             ablation="both", seed=0, context_id=0)  # fmt: skip
+    res = analyse_context(model, item, sources, device="cpu", max_batch_size=4)
+    return pd.DataFrame(res["summary"]), pd.DataFrame(res["predictions"])
+
+
+@pytest.mark.parametrize("arch", ALL_ARCHS)
+def test_noise_floor_float64(models, item, arch):
+    s, p = _floor_run(models[arch], item)
+    for col in ("noise_floor_mean_abs_l2", "noise_floor_mean_stage_normalised_l2"):
+        assert s[col].notna().any()
+        assert s[col].max() <= BATCH_ROUNDING, col
+    # empty categories stay NaN in the floor as in the signal
+    assert (s.mean_abs_l2.isna() == s.noise_floor_mean_abs_l2.isna()).all()
+    assert p.noise_floor_predictive_kl.abs().max() <= 1e-9
+
+
+@pytest.mark.parametrize("arch", ALL_ARCHS)
+def test_noise_floor_float32(tmp_path, item, arch):
+    model = build_model(tmp_path, arch, dtype=torch.float32)
+    s, p = _floor_run(model, item)
+    floor = s.noise_floor_mean_stage_normalised_l2  # relative to baseline norms
+    assert np.isfinite(floor.dropna()).all() and floor.max() < 1e-4
+    assert np.isfinite(p.noise_floor_predictive_kl).all()
+    assert p.noise_floor_predictive_kl.abs().max() < 1e-2
+
+
+def test_control_item_is_last_and_counts_towards_batch_size(models, item):
+    model = models["layerwise_shared"]
+    seen = []
+
+    def spy(_mod, _args, kwargs):
+        seen.append(kwargs["context_int_mask"].clone())
+
+    sources = select_sources(item, sources_per_context=3, regime_sources_per_context=1,
+                             ablation="both", seed=0, context_id=0)  # fmt: skip
+    h = model.register_forward_pre_hook(spy, with_kwargs=True)
+    try:
+        analyse_context(model, item, sources, device="cpu", max_batch_size=5)
+    finally:
+        h.remove()
+    M = torch.as_tensor(np.asarray(item["ctx_int"]))
+    num_variants = len(sources) * 3  # three injection modes per source
+    assert len(seen) == -(-num_variants // 3)  # max_batch_size 5 = 3 variants + 2
+    for masks in seen:
+        assert len(masks) <= 5
+        assert torch.equal(masks[0], M) and torch.equal(masks[-1], M)
+    with pytest.raises(ValueError, match="max_batch_size"):
+        analyse_context(model, item, sources, device="cpu", max_batch_size=2)
+
+
+# Precision guard -------------------------------------------------------------
+def test_autocast_is_disabled_and_half_precision_rejected(tmp_path, models, item):
+    model = models["layerwise_shared"]
+    states = []
+
+    def spy(_mod, _args, out):
+        states.append((torch.is_autocast_enabled("cpu"), out.dtype))
+
+    h = model.encoder.encoder.node_layers[0].register_forward_hook(spy)
+    try:
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            analyse_context(model, item, [single_source(item, 11, 0)], device="cpu")
+    finally:
+        h.remove()
+    assert states and all(not on and dt == torch.float64 for on, dt in states)
+    bf16 = build_model(tmp_path, "extra_node", dtype=torch.bfloat16)
+    with pytest.raises(ValueError, match="float32 or float64"):
+        run_flag_propagation(bf16, bank_items(1), device="cpu")
+
+
+# 14. Manifest reproducibility -------------------------------------------------
+@pytest.mark.parametrize("arch", ["layerwise_shared", "extra_node"])
+def test_manifest_reproduces_run(models, arch):
+    bank = bank_items(3)
+    first = run_flag_propagation(models[arch], bank, device="cpu", seed=4)
+    manifest = first["sources"]
+    assert set(manifest.columns) >= {"context_id", "context_fingerprint", "regime_sizes",
+                                     "num_intervened_cells", "source_rows"}  # fmt: skip
+    plan = sources_from_manifest(manifest, bank)
+    expected = {
+        cid: select_sources(bank[cid], sources_per_context=3, regime_sources_per_context=1,
+                            ablation="both", seed=4, context_id=cid)
+        for cid in plan
+    }  # fmt: skip
+    assert plan == expected
+    # selection settings are ignored when a manifest is given; the seed still
+    # sets the Monte Carlo KL draws, so it is kept for paired runs
+    again = run_flag_propagation(models[arch], bank, device="cpu", seed=4,
+                                 max_contexts=1, sources_per_context=1,
+                                 source_manifest=manifest)  # fmt: skip
+    assert again["sources"].equals(manifest)
+    assert again["summary"].equals(first["summary"])
+    assert again["predictions"].equals(first["predictions"])
+
+
+def test_invalid_manifest_fails_clearly():
+    bank = bank_items(2)
+    plan = {0: select_sources(bank[0], sources_per_context=2, regime_sources_per_context=1,
+                              ablation="both", seed=0, context_id=0)}  # fmt: skip
+    good = build_source_manifest(bank, plan)
+    assert sources_from_manifest(good, bank) == plan
+    mask = np.asarray(bank[0]["ctx_int"])
+    unflagged = int(np.flatnonzero(~mask.any(1))[0])
+
+    def broken(**change):
+        m = good.copy()
+        for k, v in change.items():
+            m.loc[0 if k != "regime_rows" else len(m) - 1,
+                  "source_rows" if k == "regime_rows" else k] = v
+        return m
+
+    cases = [
+        (broken(context_fingerprint="0" * 16), "context differs"),
+        (broken(context_id=5), "outside the bank"),
+        (broken(query_outcome=(int(bank[0]["Y"]) + 1) % D), "query"),
+        (broken(source_rows=str(unflagged)), "no flag"),
+        (broken(ablation_mode="cells"), "unknown ablation_mode"),
+        (broken(source_regime=99), "regime 99"),
+        (broken(regime_rows=good.source_rows.iloc[-1].split(";")[0]), "all flagged rows"),
+    ]
+    for manifest, message in cases:
+        with pytest.raises(ValueError, match=message):
+            sources_from_manifest(manifest, bank)
+
+
+def test_net_change_columns(models):
+    s = run_flag_propagation(models["extra_node"], bank_items(1), device="cpu")["summary"]
+    g = s[(s.source_id == 0) & (s.category == "metadata_source_rows")].sort_values("stage_index")
+    assert np.isnan(g.net_change_mean_abs_l2.iloc[0])
+    np.testing.assert_allclose(g.net_change_mean_abs_l2.iloc[1:], np.diff(g.mean_abs_l2))
+
+
+# Smoke test: the CLI end to end ----------------------------------------------
+OUTPUT_FILES = ["flag_propagation_summary.csv", "flag_propagation_predictions.csv",
+                "flag_propagation_sources.csv", "flag_propagation_metadata.json",
+                "flag_propagation_examples.npz", "flag_propagation_A_example0.png",
+                "flag_propagation_B_curves.png", "flag_propagation_E_predictive_kl.png",
+                "flag_propagation_F_net_change.png"]  # fmt: skip
+
+
+@pytest.mark.parametrize("precision", ["float32", "float64"])
+def test_cli_smoke(tmp_path, precision):
+    import json
+
+    from flag_propagation_spec import write_bank, write_checkpoint
+
+    from CITNP.evaluation.__main__ import main
+
+    bank = write_bank(tmp_path / "bank.pkl", n_contexts=3)
+    manifest = tmp_path / "manifest.csv"
+    runs = []
+    for i, arch in enumerate(["layerwise_shared", "layerwise_separate", "extra_node"]):
+        ckpt, cfg = write_checkpoint(tmp_path, arch)
+        out = tmp_path / arch
+        args = ["flag-propagation", "--ckpt", ckpt, "--model_config", cfg,
+                "--bank", bank, "--device", "cpu", "--max_contexts", "3",
+                "--save_examples", "--num_examples", "2", "--max_batch_size", "6",
+                "--kl_samples", "200", "--out", str(out)]  # fmt: skip
+        args += ["--float64"] if precision == "float64" else []
+        args += (["--save_source_manifest", str(manifest)] if i == 0
+                 else ["--source_manifest", str(manifest)])  # fmt: skip
+        main(args)
+        for name in OUTPUT_FILES:
+            assert (out / name).exists(), (arch, name)
+        layerwise = arch.startswith("layerwise")
+        assert (out / "flag_propagation_D_injection.png").exists() == layerwise
+        meta = json.loads((out / "flag_propagation_metadata.json").read_text())
+        assert meta["dtype"] == precision and meta["autocast"] == "disabled"
+        assert meta["architecture"] == ("layerwise" if layerwise else "extra_node")
+        assert meta["share_intervention_encoder"] == (
+            {"layerwise_shared": True, "layerwise_separate": False}.get(arch)
+        )
+        s = pd.read_csv(out / "flag_propagation_summary.csv")
+        for col in ("noise_floor_mean_abs_l2", "noise_floor_mean_stage_normalised_l2",
+                    "input_mask", "later_injection_mask", "net_change_mean_abs_l2"):
+            assert col in s.columns
+        runs.append(str(out))
+    assert manifest.exists()
+    main(["flag-propagation", "--plot_only", *runs, "--out", str(tmp_path / "compare")])
+    for name in ("flag_propagation_C_architectures.png", "flag_propagation_E_predictive_kl.png"):
+        assert (tmp_path / "compare" / name).exists()
+    main(["flag-propagation", "--plot_only", runs[0]])  # single-run replot

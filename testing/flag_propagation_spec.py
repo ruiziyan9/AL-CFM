@@ -41,6 +41,20 @@ TINY_MODEL = {
 }
 
 
+# Smaller still, for the golden fixture (keeps the .pt file small).
+GOLDEN_MODEL = {"d_model": 8, "dim_feedforward": 16, "nhead": 2}
+
+
+def parameter_checksum(model: torch.nn.Module) -> torch.Tensor:
+    """float64 [num_parameters, 2]: sum and sum of squares of every
+    parameter tensor, in state-dict order."""
+    return torch.tensor(
+        [[float(p.double().sum()), float(p.double().square().sum())]
+         for p in model.state_dict().values()],
+        dtype=torch.float64,
+    )  # fmt: skip
+
+
 def write_model_yaml(
     path: Path, architecture: str, *, mode: str = "MHCA", **overrides
 ) -> str:
@@ -59,19 +73,17 @@ def perturb(model: torch.nn.Module, scale: float = 0.3) -> torch.nn.Module:
     return model
 
 
-def build_model(
+def write_checkpoint(
     tmp_dir: Path,
     architecture: str,
     *,
     mode: str = "MHCA",
     num_nodes: int = D,
     seed: int = 0,
-    dtype: torch.dtype = torch.float64,
     **overrides,
-) -> torch.nn.Module:
-    """Tiny random model of `architecture`, built by `load_model` from a YAML
-    and a saved seeded checkpoint; returned in eval mode, CPU, `dtype`."""
-    from CITNP.evaluation.model_api import load_model
+) -> tuple[str, str]:
+    """Write a YAML model config and a seeded random checkpoint of a tiny
+    `architecture` model into `tmp_dir`; returns (checkpoint, config)."""
     from CITNP.models.mixed_context_model import resolve_model_class
     from CITNP.utils.configs import CausalInfModelConfig
 
@@ -99,7 +111,28 @@ def build_model(
     torch.manual_seed(seed)
     ckpt = tmp_dir / f"{architecture}_{mode}_{seed}.pt"
     torch.save({"model_state_dict": perturb(cls(cfg)).state_dict()}, ckpt)
-    model = load_model(str(ckpt), cfg_path, "cpu", num_nodes=num_nodes)
+    return str(ckpt), cfg_path
+
+
+def build_model(
+    tmp_dir: Path,
+    architecture: str,
+    *,
+    mode: str = "MHCA",
+    num_nodes: int = D,
+    seed: int = 0,
+    dtype: torch.dtype = torch.float64,
+    **overrides,
+) -> torch.nn.Module:
+    """Tiny random model of `architecture`, built by `load_model` from a YAML
+    and a saved seeded checkpoint; returned in eval mode, CPU, `dtype`."""
+    from CITNP.evaluation.model_api import load_model
+
+    ckpt, cfg_path = write_checkpoint(
+        tmp_dir, architecture, mode=mode, num_nodes=num_nodes, seed=seed,
+        **overrides,
+    )  # fmt: skip
+    model = load_model(ckpt, cfg_path, "cpu", num_nodes=num_nodes)
     return model.to(dtype).eval()
 
 
@@ -136,3 +169,12 @@ def bank_items(n_contexts: int = 3, seed: int = 0) -> list[dict]:
                  t=np.linspace(-1.0, 1.0, 3).astype(np.float32))
         )  # fmt: skip
     return items
+
+
+def write_bank(path: Path, n_contexts: int = 4, seed: int = 0) -> str:
+    """Pickle `bank_items` in the format of `python -m CITNP.evaluation bank`."""
+    import pickle
+
+    with open(path, "wb") as f:
+        pickle.dump({"items": bank_items(n_contexts, seed)}, f)
+    return str(path)

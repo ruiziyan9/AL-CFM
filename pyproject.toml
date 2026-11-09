@@ -15,4 +15,5 @@ filterwarnings = [
 ]
 markers = [
     "slow: long-running statistical tests (deselect with -m 'not slow')",
+    "golden_exact: bit-for-bit golden comparisons, only valid on the machine that recorded the fixture (opt in with -m golden_exact)",
 ]
