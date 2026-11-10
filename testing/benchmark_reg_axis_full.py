@@ -12,7 +12,8 @@ keys have R * N positions for Nc real rows. Values are standard normal.
 
 For each encoding the script builds the model, runs one warm-up step and
 `--steps` forward + backward steps in train mode under the training dtype
-(model and batch cast to `--dtype`, as MixedContextTrainer does), and prints
+(model and batch cast to `--dtype`, as MixedContextTrainer does) and with the
+torch backend settings of mixed_train, and prints
 the median step time and the peak memory: `torch.cuda.max_memory_allocated`
 on GPU, the peak resident set size of the process on CPU. Every encoding
 runs in its own subprocess, so the peaks do not mix.
@@ -178,8 +179,24 @@ def worst_case_batch(
     )
 
 
+def use_training_backend_settings() -> None:
+    """The torch backend settings of `python -m CITNP.experiments.mixed_train`
+    (its `__main__` block), so the benchmark runs the kernels training runs.
+
+    The memory-efficient attention kernel must be off: with it, the variable
+    attention over B * (Nc + Nq) rows fails on CUDA with "invalid
+    configuration argument" once that count is large.
+    """
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.distributions.Distribution.set_default_validate_args(False)
+
+
 def run_single(args: argparse.Namespace, encoding: str) -> dict:
     """Build the model of `encoding`, time the steps and return the result."""
+    use_training_backend_settings()
     with open(args.model_config) as f:
         settings = yaml.safe_load(f)
     device = torch.device(args.device)
