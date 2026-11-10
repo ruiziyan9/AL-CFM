@@ -1,7 +1,7 @@
 """Cost of one training step of reg_axis_full on a worst-case batch, next to
 layerwise and reg_axis on the same batch. Not a pytest test.
 
-    python testing/benchmark_reg_axis_full.py \
+    PYTHONPATH=. python testing/benchmark_reg_axis_full.py \
         --model_config CITNP/experiments/configs/oracle_d3_model_m_reg_axis_full_stats.yaml \
         --batch_size 256 --num_context 256 --num_regimes 4 --device cuda
 
@@ -242,6 +242,21 @@ def run_single(args: argparse.Namespace, encoding: str) -> dict:
     }
 
 
+def _error_message(stderr: str) -> str:
+    """The exception of a failed subprocess: from the last line that starts
+    an exception ("SomeError: ...") to the end of stderr, indented. CUDA
+    errors put the cause on that first line and hints on the following ones.
+    """
+    lines = stderr.strip().splitlines() or ["no output"]
+    starts = [
+        i
+        for i, line in enumerate(lines)
+        if line[:1].isalpha() and ("Error" in line.split(":")[0])
+    ]
+    first = starts[-1] if starts else max(0, len(lines) - 10)
+    return "\n".join(f"    {line}" for line in lines[first:])
+
+
 def main(argv=None) -> None:
     argv = sys.argv[1:] if argv is None else list(argv)
     args = parse_args(argv)
@@ -298,10 +313,8 @@ def main(argv=None) -> None:
             text=True,
         )
         if done.returncode != 0:
-            stderr_lines = done.stderr.strip().splitlines()
-            print(
-                f"{encoding:<15}failed: {stderr_lines[-1] if stderr_lines else 'no output'}"
-            )
+            print(f"{encoding:<15}failed:")
+            print(_error_message(done.stderr))
             continue
         result = json.loads(done.stdout.strip().splitlines()[-1])
         assert result["R"] == R and result["N"] == N
