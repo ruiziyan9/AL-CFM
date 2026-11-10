@@ -8,7 +8,9 @@ import torch
 from CITNP.datasets.create_mixed_regime_chunks import load_config
 from CITNP.experiments.mixed_train import build_trainer, parse_args
 
-CONFIGS = Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+CONFIGS = (
+    Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+)
 
 
 def _args(tmp_path, epochs, *extra):
@@ -64,5 +66,8 @@ def test_resume_full_and_fine_tune_from_exclusive(tmp_path):
     cfg = load_config(CONFIGS / "smoke_d3.yaml")
     with pytest.raises(ValueError, match="exclusive"):
         build_trainer(
-            _args(tmp_path, 1, "--resume_full", "x.pt", "--fine_tune_from", "y.pt"), cfg
+            _args(
+                tmp_path, 1, "--resume_full", "x.pt", "--fine_tune_from", "y.pt"
+            ),
+            cfg,
         )

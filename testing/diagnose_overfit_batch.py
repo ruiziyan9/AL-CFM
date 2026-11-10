@@ -52,7 +52,9 @@ def per_task_nll(model, ctx, cint, tgt, T, Y) -> np.ndarray:
         for b in range(len(T)):
             s = slice(b, b + 1)
             o = model(ctx[s], tgt[s], T[s], Y[s], context_int_mask=cint[s])
-            out.append(model.calculate_loss(o, target=tgt[s], outcome_index=Y[s]).item())
+            out.append(
+                model.calculate_loss(o, target=tgt[s], outcome_index=Y[s]).item()
+            )
     return np.array(out) / NQ
 
 

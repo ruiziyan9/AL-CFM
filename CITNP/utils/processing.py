@@ -34,4 +34,3 @@ if __name__ == "__main__":
     print(data.mean(axis=0))
     print(normalise_variable(data, axis=0).mean(axis=0))
     print(normalise_variable(data, axis=0).std(axis=0))
-

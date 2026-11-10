@@ -428,9 +428,7 @@ def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
         _save(fig, f"{prefix}_D{D}_by_relation.png")
 
 
-def plot_kshot_prior_all(
-    csv_paths: list[str], prefix: str | None = None
-) -> None:
+def plot_kshot_prior_all(csv_paths: list[str], prefix: str | None = None) -> None:
     """Every kshot-prior figure from one or more CSV parts (array jobs over
     task_offset), concatenated. Raises if a (D, task, T, Y, design, k) row
     appears twice, i.e. parts overlap."""

@@ -55,7 +55,9 @@ def get_intvn_index(int_test: pd.DataFrame):
     return intvn_index
 
 
-def create_test_experiments(int_test: pd.DataFrame, sample_size: int, intvn_index: int):
+def create_test_experiments(
+    int_test: pd.DataFrame, sample_size: int, intvn_index: int
+):
     # Create a list of experiments
     all_intvn_test_data = []
     for i in range(sample_size):
@@ -128,9 +130,12 @@ def calculate_nlpd(model: ABCI, intvn_index: int, outcome_index: int):
 
 
 def main(
-    data_path: Path, num_datasets: int, sample_size: int, data_start: int, data_end: int
+    data_path: Path,
+    num_datasets: int,
+    sample_size: int,
+    data_start: int,
+    data_end: int,
 ):
-
     config = get_config()
 
     all_nlpd = []
@@ -179,7 +184,6 @@ def main(
 
 
 if __name__ == "__main__":
-
     data_folder = Path(
         "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp/datasets"
     )

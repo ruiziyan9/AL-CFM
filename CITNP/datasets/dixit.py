@@ -35,7 +35,9 @@ def dixit_get_samples():
     perturbation_per_cell = np.load(
         os.path.join(DIXIT_FOLDER, "perturbation_per_cell.npy")
     )
-    total_count_matrix = np.load(os.path.join(DIXIT_FOLDER, "total_count_matrix.npy"))
+    total_count_matrix = np.load(
+        os.path.join(DIXIT_FOLDER, "total_count_matrix.npy")
+    )
     total_count_matrix = np.log1p(total_count_matrix)
 
     # === GET OBSERVATIONAL DATA
@@ -52,7 +54,10 @@ def dixit_get_samples():
             iv_samples = total_count_matrix[:, iv_cell_ixs].squeeze().T
             target_gene = perturbation[2:-2]
             setting_list.append(
-                {"known_interventions": {gene2ix[target_gene]}, "samples": iv_samples}
+                {
+                    "known_interventions": {gene2ix[target_gene]},
+                    "samples": iv_samples,
+                }
             )
 
     return obs_samples, setting_list

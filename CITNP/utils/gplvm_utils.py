@@ -28,7 +28,9 @@ class ExponentialGammaKernel(nn.Module):
         self.gamma = gamma
         self.lengthscale = lengthscale
         assert self.gamma > 0, "The gamma parameter must be positive."
-        assert self.gamma <= 1, "The gamma parameter must be less than or equal to 1."
+        assert self.gamma <= 1, (
+            "The gamma parameter must be less than or equal to 1."
+        )
 
     def forward(self, x1, x2):
         """

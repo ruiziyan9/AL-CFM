@@ -1,6 +1,6 @@
 """Deprecated: moved to CITNP.prior_diagnostics.summary.
 
-    python -m CITNP.prior_diagnostics summary --config <cfg> --out prior.png
+python -m CITNP.prior_diagnostics summary --config <cfg> --out prior.png
 """
 
 import warnings

@@ -17,17 +17,16 @@ from dodiscover.toporder.nogam import NoGAM
 # Put arco in path
 arcopath = "/vol/bitbucket/ad6013/Research/bci-arco-gp"
 sys.path.append(arcopath)
-arcodibsgp_path = (
-    "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp"
-)
+arcodibsgp_path = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/arco-dibs-gp"
 sys.path.append(arcodibsgp_path)
 
 from run_arcogp import get_intvn_index, load_data, load_data_into_environment
 from src.environments.environment import Environment
 from src.environments.experiment import Experiment
 from src.mechanism_models.mechanisms import get_mechanism_key
-from src.mechanism_models.shared_data_gp_model import \
-    SharedDataGaussianProcessModel
+from src.mechanism_models.shared_data_gp_model import (
+    SharedDataGaussianProcessModel,
+)
 from src.utils.graphs import get_parents
 
 
@@ -75,7 +74,7 @@ def calculate_nlpd(
     intvn_index: int,
     graph: nx.DiGraph,
     env: Environment,
-    outcome_index: int
+    outcome_index: int,
 ):
     outcome_node = f"X{outcome_index}"
 
@@ -97,9 +96,12 @@ def calculate_nlpd(
 
 
 def main(
-    data_path: Path, num_datasets: int, sample_size: int, data_start: int, data_end: int
+    data_path: Path,
+    num_datasets: int,
+    sample_size: int,
+    data_start: int,
+    data_end: int,
 ):
-
     result_folder = (
         data_path.parent.parent.parent / "score_gp" / "results" / data_path.name
     )

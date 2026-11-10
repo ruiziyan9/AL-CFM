@@ -70,7 +70,9 @@ def sample_outcome_index(
         # outcome_index[i] = np.random.choice(
         #     np.delete(np.arange(variable_counts[i]), intvn_index)
         # )
-        outcome_index[i] = np.min(np.delete(np.arange(variable_counts[i]), intvn_index))
+        outcome_index[i] = np.min(
+            np.delete(np.arange(variable_counts[i]), intvn_index)
+        )
         # outcome_index[i] = 1 if intvn_index == 0 else 0
     return outcome_index
 
@@ -100,7 +102,8 @@ def transformer_inference_split_withpadding(
                 variable_counts,
                 masks,
             ) = [
-                stack_list_of_arrays([sample[i] for sample in batch]) for i in range(6)
+                stack_list_of_arrays([sample[i] for sample in batch])
+                for i in range(6)
             ]
             # Optionally extract the functions if we are returning them
             functions = (

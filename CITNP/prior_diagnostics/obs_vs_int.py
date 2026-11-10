@@ -120,11 +120,15 @@ def probe_task(
 
     def make(values):
         design = make_probe_design(D, t, values, n_obs, n_per_do)
-        return generate_task(cfg, key, graph=base.graph, design=design, permute=False)
+        return generate_task(
+            cfg, key, graph=base.graph, design=design, permute=False
+        )
 
     if do_values is None:
         pilot = make([0.0] * len(do_quantiles))
-        do_values = np.quantile(pilot.ctx_x[pilot.ctx_regime == 0, t], do_quantiles)
+        do_values = np.quantile(
+            pilot.ctx_x[pilot.ctx_regime == 0, t], do_quantiles
+        )
     return make(do_values), t
 
 
@@ -147,7 +151,9 @@ def plot_obs_vs_int(
     t = treatment
     D = probe.graph.shape[0]
     dist = path_lengths(probe.graph)
-    outcomes = sorted((y for y in range(D) if y != t), key=lambda y: (dist[t, y], y))
+    outcomes = sorted(
+        (y for y in range(D) if y != t), key=lambda y: (dist[t, y], y)
+    )
     outcomes = outcomes[:max_outcomes]
     x_obs = probe.ctx_x[probe.ctx_regime == 0]
     k = knn or max(50, len(x_obs) // 20)
@@ -157,7 +163,9 @@ def plot_obs_vs_int(
     nrows, ncols = len(do_vals), len(outcomes)
     fig = plt.figure(figsize=(3.4 * ncols + 4.5, 2.9 * nrows + 0.8))
     gs = fig.add_gridspec(nrows, ncols + 1, width_ratios=[1.4] + [1] * ncols)
-    plot_graph(probe, fig.add_subplot(gs[:, 0]), edge_strengths(x_obs, probe.graph))
+    plot_graph(
+        probe, fig.add_subplot(gs[:, 0]), edge_strengths(x_obs, probe.graph)
+    )
 
     for row, (r, x) in enumerate(zip(regimes, do_vals)):
         x_int = probe.ctx_x[probe.ctx_regime == r]
@@ -178,7 +186,9 @@ def plot_obs_vs_int(
             a.text(0.02, 0.97,
                    f"do−marg {g['int_shift']:+.2f} sd\ndo−cond {g['int_vs_cond']:+.2f} sd",
                    transform=a.transAxes, va="top", fontsize=7)  # fmt: skip
-            a.set_title(f"X{y} | do(X{t}={x:.2f}) [{relation(dist, t, y)}]", fontsize=8)
+            a.set_title(
+                f"X{y} | do(X{t}={x:.2f}) [{relation(dist, t, y)}]", fontsize=8
+            )
             a.set_yticks([])
             if row == 0 and col == 0:
                 a.legend(fontsize=6, loc="upper right")

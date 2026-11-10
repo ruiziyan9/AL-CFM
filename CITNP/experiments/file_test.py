@@ -10,17 +10,26 @@ from typing import Union
 import torch
 from torch.optim import Adam
 
-from CITNP.models.causalinferencemodel import (CausalInferenceModel,
-                                               LocalLatentCausalInferenceModel,
-                                               MoGCausalInferenceModel)
-from CITNP.trainer.callbacks import (CheckpointCallback, LRSchedulerCallback,
-                                     ProgressBarCallback, WandbLoggingCallback)
+from CITNP.models.causalinferencemodel import (
+    CausalInferenceModel,
+    LocalLatentCausalInferenceModel,
+    MoGCausalInferenceModel,
+)
+from CITNP.trainer.callbacks import (
+    CheckpointCallback,
+    LRSchedulerCallback,
+    ProgressBarCallback,
+    WandbLoggingCallback,
+)
 from CITNP.trainer.causalinferencetrainer import CausalInferenceTrainer
 from CITNP.utils.configs import CausalInfModelConfig, LocalLatentConfig
 from CITNP.utils.datautils import MultipleFileDataset
 from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
-from CITNP.utils.utils import (_generate_experiment_name,
-                               convert_trainerdict_to_config, set_seed)
+from CITNP.utils.utils import (
+    _generate_experiment_name,
+    convert_trainerdict_to_config,
+    set_seed,
+)
 
 
 def main(args: argparse.Namespace):
@@ -39,7 +48,9 @@ def main(args: argparse.Namespace):
     # Get the test datasets
     test_dir = data_dir / "test"
     test_files = list(test_dir.iterdir())
-    test_dataset = MultipleFileDataset([i for i in test_files if i.suffix == ".hdf5"])
+    test_dataset = MultipleFileDataset(
+        [i for i in test_files if i.suffix == ".hdf5"]
+    )
     # Set the train and validation datasets as the test one during testing---they are not used
     train_dataset = test_dataset
     val_dataset = test_dataset

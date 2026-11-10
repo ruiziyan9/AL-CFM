@@ -22,7 +22,10 @@ import torch.nn as nn
 from torch import Tensor
 
 from CITNP.models.causaltransformercomponents import CausalInfEncoder
-from CITNP.models.scale_conditioning import ScaleConditioning, check_scale_conditioning
+from CITNP.models.scale_conditioning import (
+    ScaleConditioning,
+    check_scale_conditioning,
+)
 
 INDEX_EMBEDDING_INIT_STD = 0.02
 

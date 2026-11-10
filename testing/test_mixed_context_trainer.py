@@ -144,7 +144,8 @@ def test_normalisation_raises_without_enough_observational_rows():
     cint[:, 10:, 0] = True
     cint[1, 9, 1] = True  # task 1 keeps only 9 observational rows
     with pytest.raises(
-        ValueError, match=r"1 task\(s\) have fewer than 10 observational .*\(min 9\)"
+        ValueError,
+        match=r"1 task\(s\) have fewer than 10 observational .*\(min 9\)",
     ):
         _normalisation_stats(ctx, cint)
     # The old fallback cases (every row intervened; a single row) now raise.

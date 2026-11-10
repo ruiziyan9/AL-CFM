@@ -1055,7 +1055,10 @@ def _fix_small_cfg(**kw):
 
 def test_per_row_task_hashes_unchanged():
     cfg = MixedRegimeConfig(
-        "linearnonidentifiable", [2, 3, 4, 5], ["ER"], _FIX_DEGREES,
+        "linearnonidentifiable",
+        [2, 3, 4, 5],
+        ["ER"],
+        _FIX_DEGREES,
         n_obs_min=0,
     )
     got = [

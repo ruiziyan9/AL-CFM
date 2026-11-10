@@ -36,7 +36,9 @@ class BasePredictor(nn.Module):
             depth=depth,
         )
 
-        total_output_dim = self.num_heads * num_outcome_nodes * num_mixture_components
+        total_output_dim = (
+            self.num_heads * num_outcome_nodes * num_mixture_components
+        )
         self.output_layer = nn.Linear(d_model, total_output_dim)
         self._init_weights()
 
@@ -46,7 +48,9 @@ class BasePredictor(nn.Module):
         self.output_layer.weight.data *= 0.01
 
     def forward(self, x):
-        raise NotImplementedError("Use a subclass like Predictor or MoGPredictor.")
+        raise NotImplementedError(
+            "Use a subclass like Predictor or MoGPredictor."
+        )
 
 
 class Predictor(BasePredictor):
@@ -64,7 +68,9 @@ class Predictor(BasePredictor):
         D = self.num_outcome_nodes
 
         out = self.output_layer(act_out)  # [B, N, 2 * D]
-        out = einops.rearrange(out, "... n (h d) -> h ... n d", h=self.num_heads, d=D)
+        out = einops.rearrange(
+            out, "... n (h d) -> h ... n d", h=self.num_heads, d=D
+        )
         mean, pre_std = out[0], out[1]
         std = F.softplus(pre_std)  # [B, N, D]
         return mean, std
@@ -141,10 +147,20 @@ class FlashMHCA(nn.Module):
         value = self.layernormV(value)
 
         q = (
-            self.q_proj(query).view(B, T_q, self.nhead, self.head_dim).transpose(1, 2)
+            self.q_proj(query)
+            .view(B, T_q, self.nhead, self.head_dim)
+            .transpose(1, 2)
         )  # [B, H, T, D]
-        k = self.k_proj(key).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.v_proj(value).view(B, T_k, self.nhead, self.head_dim).transpose(1, 2)
+        k = (
+            self.k_proj(key)
+            .view(B, T_k, self.nhead, self.head_dim)
+            .transpose(1, 2)
+        )
+        v = (
+            self.v_proj(value)
+            .view(B, T_k, self.nhead, self.head_dim)
+            .transpose(1, 2)
+        )
 
         attn_output = F.scaled_dot_product_attention(
             q, k, v, is_causal=False
@@ -205,7 +221,6 @@ class MHCA(nn.Module):
 
 
 class SineActivation(nn.Module):
-
     def __init__(self, omega=2.0):
         super().__init__()
         self.omega = omega
@@ -224,7 +239,12 @@ class ResidualEncoderBlock(nn.Module):
     """
 
     def __init__(
-        self, input_dim, hidden_dim, output_dim, zero_init=True, random_activation=False
+        self,
+        input_dim,
+        hidden_dim,
+        output_dim,
+        zero_init=True,
+        random_activation=False,
     ):
         super(ResidualEncoderBlock, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -237,7 +257,9 @@ class ResidualEncoderBlock(nn.Module):
 
         if random_activation:
             # Choose from multiple activations
-            choice = np.random.choice(["relu", "leaky_relu", "gelu", "sine", "swish"])
+            choice = np.random.choice(
+                ["relu", "leaky_relu", "gelu", "sine", "swish"]
+            )
 
             if choice == "relu":
                 self.activation = F.relu

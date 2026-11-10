@@ -76,7 +76,9 @@ def _benchmark_dataloader(dataset, num_workers_list, num_batches=20):
         if batch_times:
             avg_time = sum(batch_times) / len(batch_times)
             results[num_workers] = avg_time
-            print(f"Average batch time with {num_workers} workers: {avg_time:.4f}s")
+            print(
+                f"Average batch time with {num_workers} workers: {avg_time:.4f}s"
+            )
         else:
             results[num_workers] = None
             print(f"No batches processed with {num_workers} workers")
@@ -85,7 +87,6 @@ def _benchmark_dataloader(dataset, num_workers_list, num_batches=20):
 
 
 def measure_dataloader_time(datagenerator):
-
     # Test with different worker counts
     dataset = datagenerator
     worker_counts = [0, 1]  # Adjust based on your CPU

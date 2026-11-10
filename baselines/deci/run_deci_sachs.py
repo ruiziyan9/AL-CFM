@@ -13,8 +13,7 @@ import torch
 from causica.datasets.causica_dataset_format import Variable
 from causica.datasets.tensordict_utils import expand_td_with_batch_shape
 from causica.distributions import ContinuousNoiseDist
-from causica.lightning.data_modules.basic_data_module import \
-    BasicDECIDataModule
+from causica.lightning.data_modules.basic_data_module import BasicDECIDataModule
 from causica.lightning.modules.deci_module import DECIModule
 from causica.sem.distribution_parameters_sem import DistributionParametersSEM
 from causica.training.auglag import AugLagLRConfig
@@ -89,10 +88,9 @@ def apply_to_dict(func, dict):
 def calculate_neg_log_prob(log_prob):
     graph_sample_size = log_prob.shape[0]
     all_sample_log_prob = log_prob.sum(1)
-    log_sum_exp = logsumexp(
-        all_sample_log_prob,
-        axis=0
-    ) - np.log(graph_sample_size)
+    log_sum_exp = logsumexp(all_sample_log_prob, axis=0) - np.log(
+        graph_sample_size
+    )
 
     return -1 * log_sum_exp
 
@@ -119,7 +117,6 @@ def calculate_intvn_dist(
     for sem_idx, sem in tqdm(enumerate(sem_list), total=len(sem_list)):
         all_var_log_prob = {}
         for idx, curr_int in enumerate(int_values):
-
             int_dict = TensorDict(
                 {f"X{intvn_indices.item()}": curr_int}, batch_size=tuple()
             )
@@ -138,14 +135,16 @@ def calculate_intvn_dist(
             # Gives out log prob of var in order of 0, 1, 2
             # but skips the intventioned variable
             # So we can safely take the first one
-            var_log_prob = (
-                per_variable_log_prob(int_data_dict[idx : idx + 1], do_sem)
+            var_log_prob = per_variable_log_prob(
+                int_data_dict[idx : idx + 1], do_sem
             )
             all_var_log_prob
 
             append_to_dict(all_var_log_prob, var_log_prob)
 
-        final_dict = apply_to_dict(partial(np.concatenate, axis=0), all_var_log_prob)
+        final_dict = apply_to_dict(
+            partial(np.concatenate, axis=0), all_var_log_prob
+        )
 
         append_to_dict(all_scm_log_prob, final_dict)
 
@@ -162,9 +161,10 @@ def main(
     data_start: int = 0,
     data_end: int = 100,
 ):
-
     result_folder = (
-        Path("/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines")
+        Path(
+            "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines"
+        )
         / "deci"
         / "results"
         / data_path_name
@@ -187,7 +187,9 @@ def main(
         obs_data, mean_obs, std_obs = normalise_variable(
             obs_data, axis=0, return_stats=True
         )
-        int_data = normalise_variable(int_data, axis=0, mean=mean_obs, std=std_obs)
+        int_data = normalise_variable(
+            int_data, axis=0, mean=mean_obs, std=std_obs
+        )
 
         data_pd = convert_data_to_pd(obs_data)
         data_module = BasicDECIDataModule(
@@ -255,15 +257,25 @@ def main(
 
         # Plot the interventional data and samples
         outcome_idx = 1 if intvn_indices == 0 else 0
-        plt.scatter(int_data[:, intvn_indices], int_data[:, outcome_idx], label="outcome")
+        plt.scatter(
+            int_data[:, intvn_indices], int_data[:, outcome_idx], label="outcome"
+        )
         for sample_idx in range(all_samples.shape[0]):
             if sample_idx == 0:
                 label = "sample"
             else:
                 label = None
-            plt.scatter(int_data[:, intvn_indices], all_samples[sample_idx, :], label=label, alpha=0.05, color="red")
+            plt.scatter(
+                int_data[:, intvn_indices],
+                all_samples[sample_idx, :],
+                label=label,
+                alpha=0.05,
+                color="red",
+            )
             plt.legend()
-        plt.savefig(f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/deci/sachs_{data_start}.png")
+        plt.savefig(
+            f"/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines/deci/sachs_{data_start}.png"
+        )
         plt.close()
 
         # Save the results

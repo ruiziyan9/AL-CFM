@@ -11,8 +11,7 @@ import torch
 from causica.datasets.causica_dataset_format import Variable
 from causica.datasets.tensordict_utils import expand_td_with_batch_shape
 from causica.distributions import ContinuousNoiseDist
-from causica.lightning.data_modules.basic_data_module import \
-    BasicDECIDataModule
+from causica.lightning.data_modules.basic_data_module import BasicDECIDataModule
 from causica.lightning.modules.deci_module import DECIModule
 from causica.sem.distribution_parameters_sem import DistributionParametersSEM
 from causica.training.auglag import AugLagLRConfig
@@ -112,10 +111,7 @@ def calculate_intvn_dist(
 
     graph_sample_size = all_scm_log_prob.shape[0]
     all_sample = all_scm_log_prob.sum(1)
-    log_sum_exp = logsumexp(
-        all_sample,
-        axis=0
-    ) - np.log(graph_sample_size)
+    log_sum_exp = logsumexp(all_sample, axis=0) - np.log(graph_sample_size)
     return -1 * log_sum_exp
 
 
@@ -126,9 +122,10 @@ def main(
     data_start: int = 0,
     data_end: int = 100,
 ):
-
     result_folder = (
-        Path("/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines")
+        Path(
+            "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/baselines"
+        )
         / "deci"
         / "results"
         / data_path_name
@@ -145,7 +142,9 @@ def main(
     all_obs_data, mean_obs, std_obs = normalise_variable(
         all_obs_data, axis=0, return_stats=True
     )
-    all_int_data = normalise_variable(all_int_data, axis=0, mean=mean_obs, std=std_obs)
+    all_int_data = normalise_variable(
+        all_int_data, axis=0, mean=mean_obs, std=std_obs
+    )
 
     all_obs_data = all_obs_data[:, :sample_size]
     all_int_data = all_int_data[:, :sample_size]

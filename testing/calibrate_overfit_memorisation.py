@@ -73,7 +73,11 @@ def _sd_stats(out) -> tuple[float, int, int]:
     mu = out.pred_mean.detach()
     finite = sd[torch.isfinite(sd)]
     min_sd = float(finite.min()) if finite.numel() else float("nan")
-    return min_sd, int((~torch.isfinite(mu)).sum()), int((~torch.isfinite(sd)).sum())
+    return (
+        min_sd,
+        int((~torch.isfinite(mu)).sum()),
+        int((~torch.isfinite(sd)).sum()),
+    )
 
 
 def _checkpoint(model, batch):

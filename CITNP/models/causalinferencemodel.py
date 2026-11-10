@@ -245,7 +245,8 @@ class MoGCausalInferenceModel(CausalInferenceModel):
             num_mixture_components=config.num_mixture_components,
         )
         assert self.predictor.output_heads == ("mean", "std", "weights"), (
-            "MixtureGaussianLoss requires predictor to output " "mean, std and weights"
+            "MixtureGaussianLoss requires predictor to output "
+            "mean, std and weights"
         )
 
 
@@ -316,7 +317,9 @@ class LocalLatentCausalInferenceModel(BaseCausalInference):
             (num_z_samples, batch_size, num_trgt, d_model) containing the
             merged representation of the outcome and z samples.
         """
-        num_samples = self.num_z_samples if self.training else self.num_z_samples_eval
+        num_samples = (
+            self.num_z_samples if self.training else self.num_z_samples_eval
+        )
         merged_rep, _, _ = self.train_z_sampler(
             outcome_rep=outcome_rep, trgt_rep=trgt_rep, num_samples=num_samples
         )

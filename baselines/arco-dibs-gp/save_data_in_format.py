@@ -64,7 +64,9 @@ def format_obs_data(unformatted_obs_data: np.ndarray, header: list):
     return obs_data
 
 
-def format_int_data(unformatted_int_data: np.ndarray, header: list, intvn_index: int):
+def format_int_data(
+    unformatted_int_data: np.ndarray, header: list, intvn_index: int
+):
     """
     Creates a dataframe with header as column headers.
     """
@@ -87,7 +89,7 @@ def main(
 ):
     # Load data
     data = load_data(data_path)
-    num_vars = data["variable_counts"].item() -1
+    num_vars = data["variable_counts"].item() - 1
 
     header = create_header(num_vars)
 
@@ -96,9 +98,10 @@ def main(
     save_path = save_folder / data_path.parent.parent.name
 
     for dataset in range(num_datasets):
-
         # Causal graph
-        unformatted_causal_graph = data["causal_graphs"][dataset][:num_vars, :num_vars]
+        unformatted_causal_graph = data["causal_graphs"][dataset][
+            :num_vars, :num_vars
+        ]
         causal_graph = format_obs_data(
             unformatted_causal_graph,
             header,
@@ -118,7 +121,6 @@ def main(
 
 
 if __name__ == "__main__":
-
     data_folder = "/vol/bitbucket/ad6013/Research/CausalInferenceNeuralProcess/CITNP/datasets/synth_training_data/sachs/test"
     data_path = Path(data_folder) / "data_idx0.hdf5"
 

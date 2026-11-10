@@ -19,7 +19,9 @@ from CITNP.models.scale_conditioning import SCALE_PARAM_PREFIX
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_mixed_context_trainer import D, grouped_batch, prep, tiny_model_config
 
-CONFIGS = Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+CONFIGS = (
+    Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
+)
 ENCODINGS = sorted(INTERVENTION_ENCODINGS)  # r1, layerwise, extra_node
 
 
@@ -79,10 +81,14 @@ def test_no_normalisation_gives_zeros():
 def test_zero_init_matches_none_model(encoding):
     none, stats = _models(encoding)
     p = prep(grouped_batch(G=2, B=4), normalise=True)
-    scale = torch.randn_like(p["context_scale"])  # arbitrary, deliberately not real
+    scale = torch.randn_like(
+        p["context_scale"]
+    )  # arbitrary, deliberately not real
     with torch.no_grad():
         a, b = _forward(none, p), _forward(stats, p, scale)
-    for x, y in zip((a.pred_mean, a.pred_std, a.weights), (b.pred_mean, b.pred_std, b.weights)):
+    for x, y in zip(
+        (a.pred_mean, a.pred_std, a.weights), (b.pred_mean, b.pred_std, b.weights)
+    ):
         torch.testing.assert_close(x, y, rtol=0, atol=1e-6)
 
 
@@ -115,7 +121,10 @@ def test_scale_path_is_live_after_one_step(encoding):
     opt = torch.optim.Adam(stats.parameters(), lr=1e-2)
     out = _forward(stats, p, s1)
     loss = stats.calculate_loss(
-        model_output=out, target=p["target"], outcome_index=p["outcome_index"], test=False
+        model_output=out,
+        target=p["target"],
+        outcome_index=p["outcome_index"],
+        test=False,
     )
     loss.backward()
     opt.step()
@@ -146,8 +155,12 @@ def test_predict_mixture_with_stats_model():
     assert mu.shape[:2] == (1, 4) and torch.isfinite(mu).all() and (sd > 0).all()
 
 
-@pytest.mark.parametrize("name", sorted(p.name for p in CONFIGS.glob("*_stats.yaml")))
+@pytest.mark.parametrize(
+    "name", sorted(p.name for p in CONFIGS.glob("*_stats.yaml"))
+)
 def test_stats_configs_are_valid(name):
-    args = argparse.Namespace(**{k: None for k in MODEL_KEYS}, model_config=CONFIGS / name)
+    args = argparse.Namespace(
+        **{k: None for k in MODEL_KEYS}, model_config=CONFIGS / name
+    )
     apply_model_config(args)
     assert args.scale_conditioning == "stats"

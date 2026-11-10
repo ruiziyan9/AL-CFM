@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+
 """
 Trainer for the mixed-context model (design R1).
 
@@ -51,10 +52,10 @@ def _normalisation_stats(
     Requires at least `min_rows` observational rows per task (guaranteed by the
     generator's n_obs_min); raises otherwise instead of silently mis-scaling.
     """
-    x = ctx_x.double()                                     # [B, Nc, D]
-    obs_row = ~ctx_int.any(dim=-1, keepdim=True)           # [B, Nc, 1]
-    m = obs_row.double().expand_as(x)                      # same rows for every variable
-    n = m.sum(1)                                           # [B, D], equal across D
+    x = ctx_x.double()  # [B, Nc, D]
+    obs_row = ~ctx_int.any(dim=-1, keepdim=True)  # [B, Nc, 1]
+    m = obs_row.double().expand_as(x)  # same rows for every variable
+    n = m.sum(1)  # [B, D], equal across D
     if (n < min_rows).any():
         raise ValueError(
             f"{int((n[:, 0] < min_rows).sum())} task(s) have fewer than {min_rows} "
@@ -283,22 +284,44 @@ class MixedContextTrainer(CausalInferenceTrainer):
         self.optimizer.zero_grad(set_to_none=True)
         loss = self._forward_pass(batch)["loss"]
         if not th.isfinite(loss):
-            return {"loss": float("nan"), "grad_norm": float("nan"), "skipped": 1.0}
+            return {
+                "loss": float("nan"),
+                "grad_norm": float("nan"),
+                "skipped": 1.0,
+            }
         loss.backward()
         clip = self.trainingconfig.gradient_clip_val
-        grad_norm = float(th.nn.utils.clip_grad_norm_(
-            self.model.parameters(), clip if clip is not None else float("inf")))
+        grad_norm = float(
+            th.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                clip if clip is not None else float("inf"),
+            )
+        )
         if not math.isfinite(grad_norm):
             self.optimizer.zero_grad(set_to_none=True)
             return {"loss": loss.item(), "grad_norm": grad_norm, "skipped": 1.0}
         if grad_norm > 1000 and getattr(self, "n_spikes_saved", 0) < 5:
             self.n_spikes_saved = getattr(self, "n_spikes_saved", 0) + 1
-            path = Path(self.loggingconfig.save_dir) / f"spike_step_{self.global_step}.pt"
-            th.save({"batch": {k: v.detach().cpu() if th.is_tensor(v) else v
-                               for k, v in batch.items()},
-                     "loss": loss.item(), "grad_norm": grad_norm,
-                     "step": self.global_step}, path)
-            print(f"[spike] step {self.global_step} grad_norm {grad_norm:.0f}", flush=True)
+            path = (
+                Path(self.loggingconfig.save_dir)
+                / f"spike_step_{self.global_step}.pt"
+            )
+            th.save(
+                {
+                    "batch": {
+                        k: v.detach().cpu() if th.is_tensor(v) else v
+                        for k, v in batch.items()
+                    },
+                    "loss": loss.item(),
+                    "grad_norm": grad_norm,
+                    "step": self.global_step,
+                },
+                path,
+            )
+            print(
+                f"[spike] step {self.global_step} grad_norm {grad_norm:.0f}",
+                flush=True,
+            )
         self.optimizer.step()
         return {"loss": loss.item(), "grad_norm": grad_norm, "skipped": 0.0}
 

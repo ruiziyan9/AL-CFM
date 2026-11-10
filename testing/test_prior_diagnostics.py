@@ -91,7 +91,9 @@ def test_plot_task_panels():
 # ---------------------------------------------------------------- obs_vs_int
 def test_probe_fixed_values_and_quantiles():
     base = generate_task(CFG, make_key(SOURCE_ADHOC, 0, 0, 0))
-    probe, t = ovi.probe_task(CFG, 0, do_values=(-1.5, 2.0), n_obs=300, n_per_do=200)
+    probe, t = ovi.probe_task(
+        CFG, 0, do_values=(-1.5, 2.0), n_obs=300, n_per_do=200
+    )
     assert np.array_equal(probe.graph, base.graph)  # labels kept
     for r, x in [(1, -1.5), (2, 2.0)]:
         rows = probe.ctx_regime == r
@@ -104,7 +106,18 @@ def test_probe_fixed_values_and_quantiles():
 # ----------------------------------------------------------------------- CLI
 def test_cli_examples(tmp_path, cfg_file):
     out = tmp_path / "ex.pdf"
-    cli.main(["examples", "--config", cfg_file, "--num_tasks", "2", "--out", str(out), "--png"])
+    cli.main(
+        [
+            "examples",
+            "--config",
+            cfg_file,
+            "--num_tasks",
+            "2",
+            "--out",
+            str(out),
+            "--png",
+        ]
+    )
     assert out.exists() and (tmp_path / "ex_001.png").exists()
 
 
@@ -124,7 +137,9 @@ def test_cli_stats(tmp_path, cfg_file):
 
 def test_cli_summary(tmp_path, cfg_file):
     out = tmp_path / "prior.png"
-    cli.main(["summary", "--config", cfg_file, "--num_tasks", "20", "--out", str(out)])
+    cli.main(
+        ["summary", "--config", cfg_file, "--num_tasks", "20", "--out", str(out)]
+    )
     assert out.exists()
 
 

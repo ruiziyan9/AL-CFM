@@ -41,7 +41,9 @@ class ScaleConditioning(nn.Module):
 
     def __init__(self, d_model: int, emb_depth: int = 1):
         super().__init__()
-        self.mlp = build_mlp(dim_in=2, dim_hid=d_model, dim_out=d_model, depth=emb_depth)
+        self.mlp = build_mlp(
+            dim_in=2, dim_hid=d_model, dim_out=d_model, depth=emb_depth
+        )
         last = [m for m in self.mlp.modules() if isinstance(m, nn.Linear)][-1]
         nn.init.zeros_(last.weight)
         nn.init.zeros_(last.bias)
@@ -57,8 +59,12 @@ class ScaleConditioning(nn.Module):
         emb = self(context_scale.to(full_data.dtype))  # [B, D, d_model]
         D = emb.shape[1]
         if D > full_data.shape[2]:
-            raise ValueError(f"context_scale has {D} variables, data {full_data.shape[2]}")
+            raise ValueError(
+                f"context_scale has {D} variables, data {full_data.shape[2]}"
+            )
         if D < full_data.shape[2]:
-            pad = emb.new_zeros(emb.shape[0], full_data.shape[2] - D, emb.shape[2])
+            pad = emb.new_zeros(
+                emb.shape[0], full_data.shape[2] - D, emb.shape[2]
+            )
             emb = torch.cat([emb, pad], dim=1)
         return full_data + emb[:, None]

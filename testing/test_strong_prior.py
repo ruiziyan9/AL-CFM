@@ -28,7 +28,9 @@ BASE = dict(
 
 def test_strong_config_loads():
     cfg = load_config(STRONG)
-    assert cfg.weight_scale == 4.0 and cfg.p_k0 == 0.15 and "ER_CC" in cfg.graph_type
+    assert (
+        cfg.weight_scale == 4.0 and cfg.p_k0 == 0.15 and "ER_CC" in cfg.graph_type
+    )
 
 
 def test_explicit_defaults_are_identical():
@@ -40,12 +42,17 @@ def test_explicit_defaults_are_identical():
 
 def test_p_k0_share_of_observation_only_contexts():
     cfg = load_config(STRONG)
-    K = [generate_task(cfg, make_key(SOURCE_ADHOC, 0, 0, i)).meta["K"] for i in range(600)]
+    K = [
+        generate_task(cfg, make_key(SOURCE_ADHOC, 0, 0, i)).meta["K"]
+        for i in range(600)
+    ]
     assert abs(np.mean(np.array(K) == 0) - 0.15) < 0.05
 
 
 def test_er_cc_graphs_have_a_common_cause():
-    cfg = MixedRegimeConfig(**{**BASE, "graph_type": ["ER_CC"], "graph_degrees": {3: [2, 3]}})
+    cfg = MixedRegimeConfig(
+        **{**BASE, "graph_type": ["ER_CC"], "graph_degrees": {3: [2, 3]}}
+    )
     for i in range(100):
         g = generate_task(cfg, make_key(SOURCE_ADHOC, 0, 0, i)).graph
         assert g.sum(axis=1).max() >= 2
@@ -58,13 +65,17 @@ def test_er_cc_rejects_too_few_edges():
 
 def test_weight_scale_reaches_mechanisms():
     cfg = load_config(STRONG)
-    _, debug = generate_task(cfg, make_key(SOURCE_ADHOC, 0, 0, 1), return_debug=True)
+    _, debug = generate_task(
+        cfg, make_key(SOURCE_ADHOC, 0, 0, 1), return_debug=True
+    )
     assert all(r["mechanism"].eta == 4.0 for r in debug["mechanisms"].values())
 
 
 def test_weight_scale_rejected_for_other_families():
     with pytest.raises(ValueError):
-        MixedRegimeConfig(**{**BASE, "function_generator": "linearfixedstd"}, weight_scale=2.0)
+        MixedRegimeConfig(
+            **{**BASE, "function_generator": "linearfixedstd"}, weight_scale=2.0
+        )
 
 
 def test_oracle_eta_default_unchanged_and_used():
