@@ -117,6 +117,43 @@ separately, pools it into memory tokens and lets regimes and queries interact
 through those memories; see
 [`CITNP/models/regime_axis/README.md`](../models/regime_axis/README.md).
 
+## Alternative encoding: `reg_axis_full`
+
+`--intervention_encoding reg_axis_full` keeps the regime structure of
+`reg_axis` but does not compress regimes into memory tokens: every context
+cell and every query cell attends to each regime's full set of rows, one
+regime at a time, and then combines the per-regime results with a second
+attention over regimes; see
+[`CITNP/models/regime_axis_full/README.md`](../models/regime_axis_full/README.md).
+Train it with `--same_numregimes_per_batch` (below). Configs:
+`smoke_d3_model_reg_axis_full.yaml`, `oracle_d3_model_m_reg_axis_full_stats.yaml`.
+
+## Same number of regimes per batch
+
+`--same_numregimes_per_batch` (default off) gives every task of a batch the
+same number of context regimes R = has_obs + K. It applies to the training
+and validation datasets, for on-the-fly and pre-simulated data; test batches
+keep the per-task draw. The option is independent of the encoding and is
+recorded as `same_numregimes_per_batch` in the run's
+`resolved_model_config.yaml`.
+
+R is drawn once per batch from its exact prior, and each task then draws its
+regimes from the prior conditional on R, so the distribution of tasks is
+unchanged and only the grouping of tasks into batches changes
+([`MIXED_REGIME_README.md`](../datasets/MIXED_REGIME_README.md#same-number-of-regimes-per-batch)).
+The batch-level loss is therefore more variable between batches: a batch now
+holds only R = 1 tasks, or only R = 2 tasks, and so on.
+
+With `--dataset_config`, generate the chunks with the same flag
+(`create_mixed_regime_chunks.py --same_numregimes_per_batch`). Chunks written
+without it still give one R per batch for training, with a warning (the tasks
+are bucketed by R at load time); the validation split then has partial
+batches and no exact length, so `mixed_train` stops with an error asking for
+regenerated chunks.
+
+On BMRC set `SAME_NUMREGIMES_PER_BATCH=1` for both
+`generate_presimulated_data.sh` and `train.sh` (default 0).
+
 ## Scale conditioning (information parity with the oracle)
 
 Per-task standardisation removes each variable's scale from the context, but

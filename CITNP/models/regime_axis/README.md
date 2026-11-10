@@ -10,6 +10,8 @@ read the fused memories. Everything else is reused unchanged: the six role
 MLPs, the target masking, the prediction head, the losses, the trainer, the
 data, scale conditioning and evaluation.
 
+See also [`reg_axis_full`](../regime_axis_full/README.md), the variant without memory tokens: readers attend to every regime's full set of rows.
+
 Notation: B = tasks × query groups (the flattened batch), Nc context rows,
 Nq query rows, D variables, d = `d_model`, H = `nhead`, K memory tokens,
 R = R_max regime slots in the batch.

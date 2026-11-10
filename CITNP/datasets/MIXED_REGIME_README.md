@@ -144,12 +144,12 @@ PyTorch convention: `True` means padded.
 Both datasets yield **already-collated batches**, so use
 `DataLoader(ds, batch_size=None)`.
 
-- `MixedRegimeTaskDataset(cfg, batch_size, base_seed, same_variablenum_per_batch=True, iterations_per_epoch=None, split="train", fresh_each_epoch=True, same_nctx_per_batch=True)`
+- `MixedRegimeTaskDataset(cfg, batch_size, base_seed, same_variablenum_per_batch=True, iterations_per_epoch=None, split="train", fresh_each_epoch=True, same_nctx_per_batch=True, same_numregimes_per_batch=False)`
   generates on the fly. Task key =
   `make_key(SOURCE_STREAM, split_id, base_seed, epoch, worker_id, counter)`.
   GP and NN mechanisms move tensors to CUDA when it is available, so for those
   families use `num_workers=0` or pre-generated chunks.
-- `MixedRegimeChunkDataset(chunk_dir, batch_size, shuffle=True, seed=0, same_variablenum_per_batch=True, drop_last=False, pad_D=None, num_workers=0)`
+- `MixedRegimeChunkDataset(chunk_dir, batch_size, shuffle=True, seed=0, same_variablenum_per_batch=True, drop_last=False, pad_D=None, num_workers=0, iterations_per_epoch=None, same_numregimes_per_batch=False)`
   streams chunk files, shards them across workers, shuffles through a buffer
   and buckets by the exact shape (D, N_ctx). Chunks are loaded with `torch.load(weights_only=False)`, so
   only load chunks you generated. It warns if `config.json` says the chunks
@@ -184,7 +184,8 @@ embedding needs a treatment. The outcome Y_g is chosen later by the trainer.
   targets.
 - Batches have one G: the streaming dataset draws it per batch after D and
   N_ctx; the chunk writer draws it per shape group after D and N_ctx; the
-  chunk dataset buckets grouped tasks by (D, N_ctx, G).
+  chunk dataset buckets grouped tasks by (D, N_ctx, G) (plus R with
+  `same_numregimes_per_batch`).
 - Grouped mode is purely additive: per-row generation, batches and chunks are
   byte-identical to before (regression tests), and chunks written before this
   mode existed still load (`qry_group` defaults to −1).
@@ -216,6 +217,57 @@ one N_qry and one D across its tasks. N_qry is always `cfg.n_qry`.
   generation is byte-identical to earlier versions.
 - `MixedRegimeConfig` requires `n_ctx_range[0] >= min(k_max, max(num_variables)) + 1`,
   so the floor of N_ctx at the number of regimes never changes a fixed N_ctx.
+
+## Same number of regimes per batch
+
+`same_numregimes_per_batch` (default off) gives every task of a batch the
+same number of context regimes R = has_obs + K, where has_obs says whether
+the context has an observational regime and K is its number of interventional
+regimes. It does not remove padding (rows are flat either way); it is for
+models that process the context regime by regime, such as `reg_axis_full`,
+whose cost per task grows with the largest R of the batch. With the flag off,
+tasks, batches and chunks are bit-identical to before.
+
+**The prior is unchanged.** The option extends the batch-shape mechanism of
+the previous section:
+
+1. `regime_count_probs(cfg, D)` is the exact prior P(R = r) implied by
+   `sample_design`: has_obs is certain when `n_obs_min > 0` and Bernoulli
+   (`p_obs`) otherwise; K is truncated geometric on {0..min(`k_max`, D)}
+   (`p_geom`), with P(K = 0) = `p_k0` if set; the empty context
+   (has_obs = 0, K = 0) is rejected and the rest renormalised.
+2. `draw_batch_shape(..., draw_num_regimes=True)` draws R from these
+   probabilities, **last**, after D, N_ctx and G, so those three are the same
+   with and without the flag. `BatchShape.num_regimes` holds R (None with the
+   flag off).
+3. `generate_task(..., num_regimes=R)` → `sample_design(..., num_regimes=R)`
+   draws (has_obs, K) from the prior **conditional on has_obs + K = R**: at
+   most two outcomes, (1, R − 1) and (0, R), with their prior weights. Drawing
+   R from its marginal and then the pair from the conditional reproduces the
+   joint prior of (has_obs, K) exactly; everything after that draw (targets,
+   regime sizes, do-values, queries) is as before.
+
+The prior of R depends on D through min(`k_max`, D), so R can only be drawn
+per batch when the batch has one D: with `same_variablenum_per_batch=True`
+(default) or a single value in `num_variables`; otherwise `ValueError`.
+
+- **Streaming:** `MixedRegimeTaskDataset(..., same_numregimes_per_batch=True)`
+  draws R per batch from the batch's `SOURCE_STREAM_D` key.
+- **Chunks:** `create_mixed_regime_chunks.py --same_numregimes_per_batch`
+  draws R per shape group from the group's key (`group_shape` returns
+  (D, N_ctx, G, R)). It needs `--shape_group_size > 0`, works in direct and
+  dataset mode, and is stored as `same_numregimes_per_batch` in `config.json`.
+  It is one of the generation settings: writing into a directory generated
+  with the other value is refused (a `config.json` from before the flag
+  existed counts as off).
+- **Loading chunks:** `MixedRegimeChunkDataset(..., same_numregimes_per_batch=True)`
+  adds the task's R to the bucket key, (D, N_ctx[, G], R). For a directory
+  written with the flag every shape group has one R, so batches are whole and
+  `len` is exact as before. For a directory written without it the tasks are
+  still bucketed by R, so every batch has one R, but each shape group splits
+  into several buckets: the dataset warns once that many partial buckets are
+  expected, and `len` raises `TypeError` unless `iterations_per_epoch` is set
+  (then buckets persist across passes and every batch is full).
 
 ## Seeding
 
@@ -346,7 +398,7 @@ streams differ, so the same key would give different GP/NN tasks on GPU and CPU
 nodes. `--allow_cuda` lets GP/NN mechanisms use the GPU; tasks are then
 reproducible only on the same device type. The writer refuses to run if CUDA is
 visible without `--allow_cuda`. `config.json` records the config, split,
-`split_id`, `base_seed`, `shape_group_size`, git commit, `device`, `torch_version`,
+`split_id`, `base_seed`, `shape_group_size`, `same_numregimes_per_batch`, git commit, `device`, `torch_version`,
 `numpy_version` and `python_version`; each task's `meta["device"]` records the
 device its mechanisms ran on (`"cpu"` for the CPU-only families
 `CPU_ONLY_FAMILIES`: `linearfixedstd`, `linearnonidentifiable`, `uniformlinear`,

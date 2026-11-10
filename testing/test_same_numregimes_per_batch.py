@@ -3,6 +3,7 @@ per batch, without changing the prior over tasks
 (CITNP/datasets/mixed_regime_generator.py, create_mixed_regime_chunks.py)."""
 
 import json
+import sys
 import warnings
 from collections import Counter
 from pathlib import Path
@@ -30,6 +31,9 @@ from CITNP.datasets.mixed_regime_generator import (
 )
 from CITNP.experiments.mixed_train import build_trainer, parse_args
 from CITNP.models.regime_axis import group_regimes
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import test_presimulated_data as presimulated
 
 TASK_ARRAYS = ("ctx_x", "ctx_int", "ctx_regime", "qry_x", "qry_int", "graph")
 BATCH_SIZE = 4
@@ -473,3 +477,56 @@ def test_mixed_train_passes_the_flag(tmp_path, flag):
     if flag:
         for batch in trainer.train_dataset:
             assert group_regimes(batch["ctx_int"]).slot_present.all()
+
+
+# --------------------------------------------------------------------------- #
+# Training from pre-simulated chunks
+# --------------------------------------------------------------------------- #
+
+
+def _presimulated(tmp_path, monkeypatch, *writer_flags):
+    """Write the three splits of a tiny dataset; returns the build_trainer
+    arguments for training from it with --same_numregimes_per_batch."""
+    prior_path = presimulated.write_yaml(
+        tmp_path / "tiny_prior.yaml", presimulated.TINY_PRIOR
+    )
+    dataset_config_path = presimulated.write_yaml(
+        tmp_path / "tiny__v1.yaml",
+        presimulated.dataset_config_content(prior_path),
+    )
+    data_root = tmp_path / "data_root"
+    for split in ("train", "validation", "test"):
+        presimulated.generate_split(
+            monkeypatch, dataset_config_path, data_root, split, *writer_flags
+        )
+    return presimulated.training_args(
+        tmp_path, dataset_config_path, data_root, prior_path,
+        "--same_numregimes_per_batch", epochs=1,
+    )  # fmt: skip
+
+
+def test_training_from_chunks_written_with_the_flag(tmp_path, monkeypatch):
+    args = _presimulated(tmp_path, monkeypatch, "--same_numregimes_per_batch")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)  # no partial-bucket warning
+        trainer, _ = build_trainer(
+            args, MixedRegimeConfig(**presimulated.TINY_PRIOR)
+        )
+    assert trainer.train_dataset.same_numregimes_per_batch
+    assert trainer.validation_dataset.same_numregimes_per_batch
+    assert not trainer.test_dataset.same_numregimes_per_batch
+    for dataset in (trainer.train_dataset, trainer.validation_dataset):
+        for batch in dataset:
+            assert batch["ctx_x"].shape[0] == presimulated.BATCH_SIZE
+            assert group_regimes(batch["ctx_int"]).slot_present.all()
+    trainer.train()
+    assert trainer.global_step == 2
+
+
+def test_training_from_chunks_written_without_the_flag(tmp_path, monkeypatch):
+    """Training chunks would work (bucketed by R, with a warning), but the
+    validation split has no exact length: a clear error."""
+    args = _presimulated(tmp_path, monkeypatch)
+    with pytest.warns(UserWarning, match="partial buckets"):
+        with pytest.raises(TypeError, match="--same_numregimes_per_batch"):
+            build_trainer(args, MixedRegimeConfig(**presimulated.TINY_PRIOR))
