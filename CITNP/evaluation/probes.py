@@ -108,11 +108,11 @@ def fit_linear_probe(
         )
         scores[te] = (Xte @ w + b).numpy()
         fold_aucs.append(roc_auc(scores[te], y[te]))
-    fold_aucs = np.array([a for a in fold_aucs if np.isfinite(a)])
+    finite_aucs = np.array([a for a in fold_aucs if np.isfinite(a)])
     return dict(
         auc=roc_auc(scores, y),
-        auc_se=float(fold_aucs.std(ddof=1) / np.sqrt(len(fold_aucs)))
-        if len(fold_aucs) > 1
+        auc_se=float(finite_aucs.std(ddof=1) / np.sqrt(len(finite_aucs)))
+        if len(finite_aucs) > 1
         else float("nan"),
         bal_acc=balanced_accuracy(scores, y),
         n=int(len(y)),

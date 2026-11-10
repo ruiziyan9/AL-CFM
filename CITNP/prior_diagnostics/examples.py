@@ -72,7 +72,9 @@ def sample_example_tasks(
     """Draw `num_tasks` tasks with keys make_key(SOURCE_ADHOC, 0, base_seed, i)."""
     return [
         generate_task(
-            cfg, make_key(SOURCE_ADHOC, 0, base_seed, i), num_variables=num_variables
+            cfg,
+            make_key(SOURCE_ADHOC, 0, base_seed, i),
+            num_variables=num_variables,
         )
         for i in range(num_tasks)
     ]
@@ -98,6 +100,7 @@ def plot_graph(
         if wmax is None:
             lw, color = 1.2, "#333333"
         else:
+            assert edge_weights is not None  # wmax is only set from edge_weights
             w = float(edge_weights[i, j])
             lw = 0.6 + 4.4 * abs(w) / wmax
             color = POS_EDGE_COLOR if w >= 0 else NEG_EDGE_COLOR
@@ -140,7 +143,9 @@ def _pair_title(graph: np.ndarray, i: int, j: int) -> str:
     return f"X{i}, X{j} (no edge)"
 
 
-def plot_task(task: Task, max_pairs: int = 6, task_id: int | None = None) -> Figure:
+def plot_task(
+    task: Task, max_pairs: int = 6, task_id: int | None = None
+) -> Figure:
     """One figure: the graph, then up to `max_pairs` variable pairs (edges
     first). Context rows are dots coloured by regime; query rows (true values,
     do-cells hold the do-value) are black crosses."""
