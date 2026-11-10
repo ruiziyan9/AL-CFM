@@ -1290,7 +1290,7 @@ class ResNeuralGPLVMFunctionGenerator(DataGenerator):
             parents_of_i = causal_graph[:, i]
             num_parents = int(np.sum(parents_of_i))
 
-            function: SimpleGPLVMFunctions | NeuralNetFunctions
+            function: SimpleGPLVMFunctions | ResNeuralNetFunctions
             # Randomly choose between GPLVM and NeuralNet
             if np.random.rand() > 0.5:
                 function = SimpleGPLVMFunctions(num_parents=num_parents)

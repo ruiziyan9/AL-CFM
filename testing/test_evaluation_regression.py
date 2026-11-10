@@ -38,6 +38,11 @@ RTOL, ATOL = 1e-5, 1e-7
 # densities, PIT, effective components) are now computed in float64 from the
 # same float32 model outputs: allow float32 rounding, ~1e-6 absolute.
 F32_ATOL = 1e-5
+# Oracle log densities in the bank are float64 results of numpy linear algebra
+# (LAPACK / BLAS). They are deterministic on one machine but differ in the
+# last bits between machines and library builds (about 1e-12 relative was
+# seen), so they are compared to this relative tolerance, not bit for bit.
+BANK_F64_RTOL = 1e-9
 
 pytestmark = pytest.mark.skipif(
     not (GOLDEN / "tiny_model.pt").exists(),
@@ -139,7 +144,9 @@ def assert_frames_match(new: pd.DataFrame, old: pd.DataFrame) -> None:
 
 
 def assert_values_equal(new, old, path: str = "") -> None:
-    """Exact, recursive equality of bank contents."""
+    """Recursive equality of bank contents: exact, except float64 arrays
+    (computed oracle values), which must agree to BANK_F64_RTOL. The
+    generated data (float32, bool, int, str) must be identical."""
     assert type(new) is type(old), path
     if isinstance(old, dict):
         assert list(new) == list(old), path
@@ -151,7 +158,12 @@ def assert_values_equal(new, old, path: str = "") -> None:
             assert_values_equal(n, o, f"{path}[{i}]")
     elif isinstance(old, np.ndarray):
         assert new.dtype == old.dtype and new.shape == old.shape, path
-        np.testing.assert_array_equal(new, old, err_msg=path)
+        if old.dtype == np.float64:
+            np.testing.assert_allclose(
+                new, old, rtol=BANK_F64_RTOL, atol=0, err_msg=path
+            )
+        else:
+            np.testing.assert_array_equal(new, old, err_msg=path)
     else:
         assert new == old, path
 
