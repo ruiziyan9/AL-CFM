@@ -454,18 +454,28 @@ def main():
     else:
         missing = [
             f"--{name}"
-            for name in ("config", "num_tasks", "chunk_size", "out_dir", "base_seed")
+            for name in (
+                "config",
+                "num_tasks",
+                "chunk_size",
+                "out_dir",
+                "base_seed",
+            )
             if getattr(args, name) is None
         ]
         if missing:
-            parser.error(f"{', '.join(missing)} required without --dataset_config")
+            parser.error(
+                f"{', '.join(missing)} required without --dataset_config"
+            )
         if args.data_root is not None:
             parser.error("--data_root needs --dataset_config")
         if args.split not in SPLIT_IDS:
             parser.error(f"--split must be one of {list(SPLIT_IDS)}")
         if args.base_seed < 0:
             parser.error("--base_seed must be >= 0")
-        shape_group_size = 256 if args.shape_group_size is None else args.shape_group_size
+        shape_group_size = (
+            256 if args.shape_group_size is None else args.shape_group_size
+        )
         if shape_group_size < 0:
             parser.error("--shape_group_size must be >= 0")
         if shape_group_size > 0:
@@ -514,7 +524,9 @@ def main():
         start = k * chunk_size
         expected = min(start + chunk_size, num_tasks) - start
         existing = out_dir / f"chunk_{k:05d}.pt"
-        if args.skip_existing_files and chunk_file_is_complete(existing, expected):
+        if args.skip_existing_files and chunk_file_is_complete(
+            existing, expected
+        ):
             print(f"Skipped {existing} (exists)")
             continue
         path = write_chunk(
