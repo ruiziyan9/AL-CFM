@@ -741,11 +741,121 @@ def _qry_type_weights(cfg: MixedRegimeConfig, n_seen: int, n_unseen: int):
     return w / w.sum()
 
 
+def _interventional_count_probs(cfg: MixedRegimeConfig, D: int) -> np.ndarray:
+    """P(K = k) for one draw of the number of interventional regimes,
+    k = 0..min(k_max, D): truncated geometric, with P(K = 0) = p_k0 if set.
+
+    Returns:
+    ----------
+    np.ndarray
+        [min(k_max, D) + 1] float64, sums to one.
+    """
+    # K ~ truncated geometric on {0, ..., min(k_max, D)}.
+    k_cap = max(0, min(cfg.k_max, D))
+    # larger p_geom makes K=0 more likely
+    k_probs = (1.0 - cfg.p_geom) ** np.arange(k_cap + 1)
+    if cfg.p_k0 is not None and k_cap > 0:
+        # P(K = 0) = p_k0; K >= 1 keeps the geometric shape.
+        k_probs[0] = 0.0
+        k_probs = (1.0 - cfg.p_k0) * k_probs / k_probs.sum()
+        k_probs[0] = cfg.p_k0
+    return k_probs / k_probs.sum()
+
+
+def _observational_prob(cfg: MixedRegimeConfig) -> float:
+    """P(has_obs) for one draw: 1 when n_obs_min > 0, else p_obs."""
+    return 1.0 if cfg.n_obs_min > 0 else float(cfg.p_obs)
+
+
+def _regime_count_weights(cfg: MixedRegimeConfig, D: int) -> np.ndarray:
+    """Joint prior of (has_obs, K) after the "resample until non-empty" rule.
+
+    Returns:
+    ----------
+    np.ndarray
+        [2, min(k_max, D) + 1] float64, entry [h, k] = P(has_obs = h, K = k);
+        sums to one and [0, 0] (the empty context) is zero.
+    """
+    k_probs = _interventional_count_probs(cfg, D)
+    p_obs = _observational_prob(cfg)
+    joint = np.stack([(1.0 - p_obs) * k_probs, p_obs * k_probs])
+    # Rejecting the empty context renormalises the remaining outcomes.
+    joint[0, 0] = 0.0
+    return joint / joint.sum()
+
+
+def regime_count_probs(cfg: MixedRegimeConfig, D: int) -> np.ndarray:
+    """Exact prior of the number of context regimes R = has_obs + K.
+
+    Accounts for every rule of `sample_design`: `n_obs_min` (the observational
+    regime is then always present), `p_obs`, the truncated geometric over K
+    (`k_max`, `p_geom`, capped at D), `p_k0`, and resampling until the
+    context is non-empty.
+
+    Args:
+    ----------
+    cfg : MixedRegimeConfig
+        Prior hyperparameters.
+
+    D : int
+        Number of variables (K is capped at D).
+
+    Returns:
+    ----------
+    np.ndarray
+        [min(k_max, D) + 2] float64, entry r = P(R = r); entry 0 is zero and
+        the array sums to one.
+    """
+    joint = _regime_count_weights(cfg, D)
+    probs = np.zeros(joint.shape[1] + 1)
+    probs[:-1] += joint[0]  # no observational regime: R = K
+    probs[1:] += joint[1]  # observational regime: R = K + 1
+    return probs
+
+
+def _draw_regime_counts(
+    cfg: MixedRegimeConfig, D: int, num_regimes: int | None = None
+) -> tuple[bool, int]:
+    """Draw (has_obs, K): whether the context has an observational regime and
+    its number of interventional regimes. Uses the global numpy RNG.
+
+    With `num_regimes=None` this is the prior's own draw (resample until the
+    context is non-empty) and consumes the RNG exactly as `sample_design`
+    always did. With `num_regimes=R` the pair is drawn from the prior
+    conditional on has_obs + K = R (one uniform draw), so drawing R from
+    `regime_count_probs` first gives the same joint distribution.
+    """
+    if num_regimes is None:
+        k_probs = _interventional_count_probs(cfg, D)
+        # Resample until the context is non-empty (obs regime and/or K >= 1).
+        while True:
+            has_obs = cfg.n_obs_min > 0 or bool(np.random.rand() < cfg.p_obs)
+            K = int(np.random.choice(len(k_probs), p=k_probs))
+            if has_obs or K > 0:
+                return has_obs, K
+    R = int(num_regimes)
+    joint = _regime_count_weights(cfg, D)
+    k_cap = joint.shape[1] - 1
+    # The two ways to have R regimes: (no obs, K = R) and (obs, K = R - 1).
+    without_obs = joint[0, R] if 1 <= R <= k_cap else 0.0
+    with_obs = joint[1, R - 1] if 1 <= R <= k_cap + 1 else 0.0
+    total = without_obs + with_obs
+    if not total > 0:
+        raise ValueError(
+            f"num_regimes={num_regimes} has probability zero under the prior "
+            f"for D={D} (regime_count_probs: "
+            f"{regime_count_probs(cfg, D).round(4).tolist()})"
+        )
+    has_obs = bool(np.random.rand() * total < with_obs)
+    return has_obs, (R - 1 if has_obs else R)
+
+
 def sample_design(
     cfg: MixedRegimeConfig,
     D: int,
     n_ctx: int | None = None,
     n_groups: int | None = None,
+    num_regimes: int | None = None,
 ) -> Design:
     """Sample which regimes the context contains, their sizes, the do-value
     distribution and the query targets (spec section 6.1).
@@ -768,27 +878,17 @@ def sample_design(
         Grouped mode only: number of question groups G. None draws it from
         cfg.qry_groups (after all context-design draws).
 
+    num_regimes : int | None
+        Total number of context regimes R = has_obs + K. None keeps the
+        prior's draw and its exact RNG consumption; given, (has_obs, K) is
+        drawn from the prior conditional on R (see `_draw_regime_counts`).
+
     Returns:
     ----------
     Design
         In unpermuted variable indices.
     """
-    # K ~ truncated geometric on {0, ..., min(k_max, D)}.
-    k_cap = max(0, min(cfg.k_max, D))
-    # larger p_geom makes K=0 more likely
-    k_probs = (1.0 - cfg.p_geom) ** np.arange(k_cap + 1)
-    if cfg.p_k0 is not None and k_cap > 0:
-        # P(K = 0) = p_k0; K >= 1 keeps the geometric shape.
-        k_probs[0] = 0.0
-        k_probs = (1.0 - cfg.p_k0) * k_probs / k_probs.sum()
-        k_probs[0] = cfg.p_k0
-    k_probs = k_probs / k_probs.sum()
-    # Resample until the context is non-empty (obs regime and/or K >= 1).
-    while True:
-        has_obs = cfg.n_obs_min > 0 or bool(np.random.rand() < cfg.p_obs)
-        K = int(np.random.choice(k_cap + 1, p=k_probs))
-        if has_obs or K > 0:
-            break
+    has_obs, K = _draw_regime_counts(cfg, D, num_regimes)
 
     # K distinct single-node targets; the observational regime (if any) is first.
     targets = np.random.choice(D, size=K, replace=False).tolist() if K else []
@@ -1017,6 +1117,7 @@ def _generate_once(
     num_variables: int | None,
     n_ctx_override: int | None = None,
     n_groups: int | None = None,
+    num_regimes: int | None = None,
 ):
     """One generation attempt in unpermuted variable order.
 
@@ -1070,7 +1171,13 @@ def _generate_once(
     topo = topological_order(graph)
 
     if design is None:
-        design = sample_design(cfg, D, n_ctx=n_ctx_override, n_groups=n_groups)
+        design = sample_design(
+            cfg,
+            D,
+            n_ctx=n_ctx_override,
+            n_groups=n_groups,
+            num_regimes=num_regimes,
+        )
 
     # intervention_range_multiplier is unused here: do-values come from the
     # design's do_dist instead.
@@ -1217,6 +1324,7 @@ def generate_task(
     n_ctx: int | None = None,
     n_groups: int | None = None,
     permute: bool = True,
+    num_regimes: int | None = None,
 ):
     """
     Generate one task. `graph` / `design` are sampled if not given;
@@ -1266,6 +1374,12 @@ def generate_task(
         Randomly permute the variables (default). False keeps the input
         labels, so an explicit graph/design is returned in its own indices.
 
+    num_regimes : int | None
+        Fixes the number of context regimes R = has_obs + K (e.g. one R per
+        batch); (has_obs, K) is then drawn from the prior conditional on R.
+        Only valid when `design` is not given. None keeps the prior's draw
+        and its exact RNG consumption.
+
     Returns:
     ----------
     Task, or (Task, debug_dict) if return_debug=True. debug_dict holds the
@@ -1291,10 +1405,21 @@ def generate_task(
             raise ValueError(
                 "Pass either an explicit design or n_groups, not both"
             )
+    if design is not None and num_regimes is not None:
+        raise ValueError(
+            "Pass either an explicit design or num_regimes, not both"
+        )
 
     for attempt in range(cfg.max_resample_attempts + 1):
         res = _generate_once(
-            cfg, key + (attempt,), graph, design, num_variables, n_ctx, n_groups
+            cfg,
+            key + (attempt,),
+            graph,
+            design,
+            num_variables,
+            n_ctx,
+            n_groups,
+            num_regimes,
         )
         X = res[0]
         # The bound keeps values far below the float32 max, so the cast at the
@@ -1492,13 +1617,14 @@ class BatchShape(NamedTuple):
     """Shape shared by all tasks of one batch (streaming) or shape group (chunks).
 
     A field is None when it is left to the prior: per-task draw for
-    `num_variables` and `context_size`, and per-row mode (no question groups)
-    for `num_question_groups`.
+    `num_variables`, `context_size` and `num_regimes`, and per-row mode (no
+    question groups) for `num_question_groups`.
     """
 
     num_variables: int | None
     context_size: int | None
     num_question_groups: int | None
+    num_regimes: int | None = None
 
 
 def draw_batch_shape(
@@ -1507,6 +1633,7 @@ def draw_batch_shape(
     *,
     draw_num_variables: bool = True,
     draw_context_size: bool = True,
+    draw_num_regimes: bool = False,
 ) -> BatchShape:
     """Draw the shape of one batch (or shape group) from `rng`.
 
@@ -1519,10 +1646,17 @@ def draw_batch_shape(
     leave the field None (the streaming dataset's same_variablenum_per_batch /
     same_nctx_per_batch flags). Streaming and chunk writing both call this
     function, so they sample batch shapes identically.
+
+    `draw_num_regimes=True` (the same_numregimes_per_batch flag) also draws
+    the number of context regimes R from `regime_count_probs`. R is drawn
+    last, after G, so the other fields are the same with and without it. Its
+    prior depends on D through min(k_max, D), so D must be known: either drawn
+    here or unique in cfg.num_variables; otherwise ValueError.
     """
     num_variables = None
     context_size = None
     num_question_groups = None
+    num_regimes = None
     if draw_num_variables:
         num_variables = int(rng.choice(cfg.num_variables))
     if draw_context_size:
@@ -1530,7 +1664,32 @@ def draw_batch_shape(
         context_size = int(rng.integers(lo, hi + 1))
     if cfg.qry_mode == "grouped":
         num_question_groups = int(rng.choice(cfg.qry_groups))
-    return BatchShape(num_variables, context_size, num_question_groups)
+    if draw_num_regimes:
+        probs = regime_count_probs(
+            cfg, _num_variables_for_regime_prior(cfg, num_variables)
+        )
+        num_regimes = int(rng.choice(len(probs), p=probs))
+    return BatchShape(
+        num_variables, context_size, num_question_groups, num_regimes
+    )
+
+
+def _num_variables_for_regime_prior(
+    cfg: MixedRegimeConfig, num_variables: int | None
+) -> int:
+    """D that the prior of R is computed for: the batch's D if it has one,
+    else the single value of cfg.num_variables; ValueError if D varies
+    within the batch."""
+    if num_variables is not None:
+        return num_variables
+    if len(set(cfg.num_variables)) == 1:
+        return cfg.num_variables[0]
+    raise ValueError(
+        "same_numregimes_per_batch needs one D per batch: the prior of the "
+        "number of regimes depends on D through min(k_max, D), but D is "
+        f"drawn per task from num_variables={cfg.num_variables}. Use "
+        "same_variablenum_per_batch=True or a single num_variables value"
+    )
 
 
 def generate_task_with_shape(
@@ -1545,6 +1704,7 @@ def generate_task_with_shape(
         num_variables=shape.num_variables,
         n_ctx=shape.context_size,
         n_groups=shape.num_question_groups,
+        num_regimes=shape.num_regimes,
     )
 
 
@@ -1605,6 +1765,15 @@ class MixedRegimeTaskDataset(IterableDataset):
     same_nctx_per_batch : bool
         Use one context size per batch (no context-row padding).
 
+    same_numregimes_per_batch : bool
+        Use one number of context regimes R = has_obs + K per batch. R is
+        drawn per batch from `regime_count_probs` (after D, N_ctx and G, so
+        those are unchanged), and each task draws (has_obs, K) from the prior
+        conditional on R, so the prior over tasks is unchanged; only which
+        tasks share a batch changes. Needs one D per batch
+        (same_variablenum_per_batch, or a single value in cfg.num_variables).
+        Default False: tasks are generated exactly as without the option.
+
     Fresh tasks per epoch (fresh_each_epoch=True) work in all three DataLoader setups:
     - persistent workers (what CausalInferenceTrainer uses when num_workers > 0):
       each worker's copy keeps its counters, so later epochs continue with new keys;
@@ -1624,14 +1793,18 @@ class MixedRegimeTaskDataset(IterableDataset):
         split: str = "train",
         fresh_each_epoch: bool = True,
         same_nctx_per_batch: bool = True,
+        same_numregimes_per_batch: bool = False,
     ):
         if base_seed < 0:
             raise ValueError("base_seed must be >= 0")
+        if same_numregimes_per_batch and not same_variablenum_per_batch:
+            _num_variables_for_regime_prior(cfg, None)  # raises if D varies
         self.cfg = cfg
         self.batch_size = batch_size
         self.base_seed = base_seed
         self.same_variablenum_per_batch = same_variablenum_per_batch
         self.same_nctx_per_batch = same_nctx_per_batch
+        self.same_numregimes_per_batch = same_numregimes_per_batch
         self.iterations_per_epoch = iterations_per_epoch
         self.split_id = SPLIT_IDS[split]
         self.fresh_each_epoch = fresh_each_epoch
@@ -1673,6 +1846,7 @@ class MixedRegimeTaskDataset(IterableDataset):
             if (
                 self.same_variablenum_per_batch
                 or self.same_nctx_per_batch
+                or self.same_numregimes_per_batch
                 or self.cfg.qry_mode == "grouped"
             ):
                 # Separate key source for the batch shape so it does not reuse
@@ -1690,6 +1864,7 @@ class MixedRegimeTaskDataset(IterableDataset):
                     np.random.default_rng(list(shape_key)),
                     draw_num_variables=self.same_variablenum_per_batch,
                     draw_context_size=self.same_nctx_per_batch,
+                    draw_num_regimes=self.same_numregimes_per_batch,
                 )
             tasks = []
             for _ in range(self.batch_size):
@@ -1728,7 +1903,9 @@ class MixedRegimeChunkDataset(IterableDataset):
     shuffled per epoch and tasks pass through a shuffle buffer. With
     same_variablenum_per_batch=True, batches are bucketed by the exact shape
     (D, N_ctx), so they are padding-free when the chunks were written with
-    --shape_group_size (N_qry is always cfg.n_qry).
+    --shape_group_size (N_qry is always cfg.n_qry). With
+    same_numregimes_per_batch=True the bucket also includes the task's number
+    of context regimes R, so every batch has one R.
 
     Requirements for full, padding-free batches and an exact len():
     - chunks written with shape groups, i.e. shape_group_size > 0 with
@@ -1760,6 +1937,15 @@ class MixedRegimeChunkDataset(IterableDataset):
 
     same_variablenum_per_batch : bool
         Only batch tasks with the same shape (D, N_ctx) together.
+
+    same_numregimes_per_batch : bool
+        Only batch tasks with the same number of context regimes R together.
+        Whole batches (and an exact len()) need chunks written with
+        --same_numregimes_per_batch, where every shape group has one R. For
+        other chunk directories the tasks are still bucketed by R, with one
+        warning: each shape group then splits into several buckets, most of
+        them partial, and len() is no longer exact without
+        iterations_per_epoch. Default False.
 
     shuffle_buffer_size : int
         Number of tasks held in the shuffle buffer.
@@ -1815,6 +2001,7 @@ class MixedRegimeChunkDataset(IterableDataset):
         pad_D: int | None = None,
         num_workers: int = 0,
         iterations_per_epoch: int | None = None,
+        same_numregimes_per_batch: bool = False,
     ):
         if iterations_per_epoch is not None and iterations_per_epoch <= 0:
             raise ValueError("iterations_per_epoch must be positive or None")
@@ -1823,6 +2010,9 @@ class MixedRegimeChunkDataset(IterableDataset):
         self.shuffle = shuffle
         self.seed = seed
         self.same_variablenum_per_batch = same_variablenum_per_batch
+        self.same_numregimes_per_batch = same_numregimes_per_batch
+        # True if every shape group of the chunk directory holds one R.
+        self._written_with_same_numregimes = False
         self.shuffle_buffer_size = shuffle_buffer_size
         self.drop_last = drop_last
         self.pad_D = pad_D
@@ -1852,6 +2042,9 @@ class MixedRegimeChunkDataset(IterableDataset):
             self._num_tasks = info.get("num_tasks")
             self._chunk_size = info.get("chunk_size")
             self._group = info.get("shape_group_size")
+            self._written_with_same_numregimes = bool(
+                info.get("same_numregimes_per_batch", False)
+            )
             group = self._group or 0
             if same_variablenum_per_batch and group == 0:
                 warnings.warn(
@@ -1867,6 +2060,21 @@ class MixedRegimeChunkDataset(IterableDataset):
                     "batch",
                     stacklevel=2,
                 )
+        if same_numregimes_per_batch and not self._written_with_same_numregimes:
+            warnings.warn(
+                f"{chunk_dir}: chunks were not written with "
+                "--same_numregimes_per_batch; tasks are still bucketed by "
+                "their number of regimes, but each shape group then splits "
+                "into several buckets, so many partial buckets are expected",
+                stacklevel=2,
+            )
+
+    def _bucket(self, t: Task) -> tuple[int, ...]:
+        """Bucket of a task: tasks are batched only within one bucket."""
+        key = _bucket_key(t) if self.same_variablenum_per_batch else (0, 0)
+        if self.same_numregimes_per_batch:
+            key = (*key, _num_regimes(t))
+        return key
 
     def __len__(self) -> int:
         """Number of batches per epoch (summed over DataLoader workers).
@@ -1874,7 +2082,9 @@ class MixedRegimeChunkDataset(IterableDataset):
         Exact when the chunks were written with shape groups (chunk_size and
         num_tasks multiples of shape_group_size, enforced by the writer) and
         shape_group_size % batch_size == 0: every group then lies in one chunk,
-        is read by one worker, and splits into whole batches.
+        is read by one worker, and splits into whole batches. With
+        same_numregimes_per_batch the chunks must also have been written with
+        --same_numregimes_per_batch.
 
         With same_variablenum_per_batch=False (one bucket, padding allowed) the
         count is per worker (see num_workers), using this epoch's assignment of
@@ -1890,6 +2100,15 @@ class MixedRegimeChunkDataset(IterableDataset):
                 f"len() needs num_tasks and shape_group_size from "
                 f"{self.chunk_dir}/config.json; regenerate the chunks with "
                 "create_mixed_regime_chunks.py"
+            )
+        if self.same_numregimes_per_batch and not (
+            self._written_with_same_numregimes
+        ):
+            raise TypeError(
+                f"len() is not exact for {self.chunk_dir}: with "
+                "same_numregimes_per_batch the chunks must be written with "
+                "--same_numregimes_per_batch (or pass iterations_per_epoch); "
+                "otherwise partial batches make the count depend on the data"
             )
         if not self.same_variablenum_per_batch:
             return sum(
@@ -1977,7 +2196,7 @@ class MixedRegimeChunkDataset(IterableDataset):
             paths = self._worker_paths(worker_id, num_workers, pass_index)
             yielded = 0
             for t in self._task_stream(rng, paths):
-                key = _bucket_key(t) if self.same_variablenum_per_batch else (0, 0)
+                key = self._bucket(t)
                 buckets[key].append(t)
                 if len(buckets[key]) == self.batch_size:
                     yielded += 1
@@ -2015,10 +2234,11 @@ class MixedRegimeChunkDataset(IterableDataset):
         self.epoch += 1
 
         # One bucket per exact shape (D, N_ctx), plus G in grouped mode (or a
-        # single bucket); emit a batch when one is full.
+        # single bucket), plus R with same_numregimes_per_batch; emit a batch
+        # when one is full.
         buckets: dict[tuple[int, ...], list[Task]] = defaultdict(list)
         for t in self._task_stream(rng, paths):
-            key = _bucket_key(t) if self.same_variablenum_per_batch else (0, 0)
+            key = self._bucket(t)
             buckets[key].append(t)
             if len(buckets[key]) == self.batch_size:
                 yield collate_tasks(buckets.pop(key), pad_D=self.pad_D)
@@ -2033,6 +2253,12 @@ def _bucket_key(t: Task) -> tuple[int, ...]:
     if n_groups:
         return (t.ctx_x.shape[1], t.ctx_x.shape[0], n_groups)
     return (t.ctx_x.shape[1], t.ctx_x.shape[0])
+
+
+def _num_regimes(t: Task) -> int:
+    """Number of context regimes R of a task: its distinct intervention-target
+    sets among the context rows (what the model's regime grouping sees)."""
+    return len(np.unique(t.ctx_int, axis=0))
 
 
 def num_chunks(num_tasks: int, chunk_size: int) -> int:

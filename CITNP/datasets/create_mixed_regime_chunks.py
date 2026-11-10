@@ -8,7 +8,8 @@ train / val / test (different --split) never share tasks.
 Consecutive groups of --shape_group_size tasks (default 256) share one
 (D, N_ctx), so MixedRegimeChunkDataset can form padding-free batches. Groups
 are keyed by global group index, so this is also independent of the split
-into jobs.
+into jobs. With --same_numregimes_per_batch the tasks of a group also share
+one number of context regimes R (default off: R is drawn per task).
 
 chunk_size and num_tasks must be multiples of shape_group_size; shape_group_size
 should be a multiple of the training batch size.
@@ -112,7 +113,11 @@ GENERATION_SETTINGS = (
     "base_seed",
     "split",
     "shape_group_size",
+    "same_numregimes_per_batch",
 )
+# Value of a generation setting in a config.json written before the setting
+# existed (the behaviour at that time).
+GENERATION_SETTING_DEFAULTS = {"same_numregimes_per_batch": False}
 
 
 def load_config(path: str | Path) -> MixedRegimeConfig:
@@ -173,6 +178,7 @@ def write_config(
     shape_group_size: int = 0,
     dataset_name: str | None = None,
     prior_config_file: str | Path | None = None,
+    same_numregimes_per_batch: bool = False,
 ) -> None:
     """Write config.json: the config, split and seed, git commit and runtime.
 
@@ -188,7 +194,9 @@ def write_config(
             None if prior_config_file is None else str(prior_config_file)
         ),
         "prior_config_fingerprint": (
-            None if prior_config_file is None else file_fingerprint(prior_config_file)
+            None
+            if prior_config_file is None
+            else file_fingerprint(prior_config_file)
         ),
         "generation_procedure": GENERATION_PROCEDURE,
         "config": dataclasses.asdict(cfg),
@@ -198,6 +206,7 @@ def write_config(
         "split": split,
         "split_id": SPLIT_IDS[split],
         "shape_group_size": shape_group_size,
+        "same_numregimes_per_batch": bool(same_numregimes_per_batch),
         "git_commit": _git_commit(),
         "git_has_uncommitted_changes": _git_has_uncommitted_changes(),
         # Tasks are reproducible only on the same device type and versions.
@@ -224,7 +233,11 @@ def _check_matches_existing(path: Path, info: dict) -> None:
         existing = json.load(f)
     # Compare as JSON, so tuples and lists agree.
     new = json.loads(json.dumps(info))
-    different = [k for k in GENERATION_SETTINGS if existing.get(k) != new[k]]
+    different = [
+        k
+        for k in GENERATION_SETTINGS
+        if existing.get(k, GENERATION_SETTING_DEFAULTS.get(k)) != new[k]
+    ]
     if different:
         raise ValueError(
             f"{path} was written with different generation settings "
@@ -240,20 +253,42 @@ def _check_matches_existing(path: Path, info: dict) -> None:
 
 
 def group_shape(
-    cfg: MixedRegimeConfig, split_id: int, base_seed: int, group_index: int
-) -> tuple[int, int, int | None]:
-    """(D, n_ctx, n_groups) shared by all tasks of one shape group.
+    cfg: MixedRegimeConfig,
+    split_id: int,
+    base_seed: int,
+    group_index: int,
+    same_numregimes_per_batch: bool = False,
+) -> tuple[int, int, int | None, int | None]:
+    """(D, n_ctx, n_groups, num_regimes) shared by all tasks of one shape group.
 
     Drawn from its own key (i2 = 1 keeps it apart from task keys, whose i2 is
     0) by draw_batch_shape, the same draw the streaming dataset makes per batch.
-    n_groups is None in per-row mode.
+    n_groups is None in per-row mode. num_regimes (R) is None unless
+    same_numregimes_per_batch; it is drawn last, so the other three entries
+    do not depend on the flag.
     """
     rng = np.random.default_rng(
         list(make_key(SOURCE_CHUNK, split_id, base_seed, group_index, 1, 0))
     )
-    shape = draw_batch_shape(cfg, rng)
+    shape = draw_batch_shape(cfg, rng, draw_num_regimes=same_numregimes_per_batch)
     assert shape.num_variables is not None and shape.context_size is not None
-    return shape.num_variables, shape.context_size, shape.num_question_groups
+    return (
+        shape.num_variables,
+        shape.context_size,
+        shape.num_question_groups,
+        shape.num_regimes,
+    )
+
+
+def check_same_numregimes(
+    same_numregimes_per_batch: bool, shape_group_size: int
+) -> None:
+    """Raise ValueError if one R per shape group is requested without shape
+    groups (R would then be drawn per task, as without the flag)."""
+    if same_numregimes_per_batch and shape_group_size <= 0:
+        raise ValueError(
+            "same_numregimes_per_batch needs shape groups (shape_group_size > 0)"
+        )
 
 
 def check_group_alignment(
@@ -285,6 +320,7 @@ def write_chunk(
     split: str,
     shape_group_size: int = 0,
     show_progress: bool = False,
+    same_numregimes_per_batch: bool = False,
 ) -> Path:
     """Generate tasks [chunk_index * chunk_size, ...) and save them as one chunk.
 
@@ -292,9 +328,11 @@ def write_chunk(
     share one (D, n_ctx), drawn from the group's own key; G = 0 samples the
     shape per task. chunk_size and num_tasks must then be multiples of G, so
     no group straddles two chunk files (files are sharded across DataLoader
-    workers, which would split the group).
+    workers, which would split the group). With same_numregimes_per_batch
+    (needs G > 0) the tasks of a group also share one number of regimes R.
     """
     check_group_alignment(num_tasks, chunk_size, shape_group_size)
+    check_same_numregimes(same_numregimes_per_batch, shape_group_size)
     split_id = SPLIT_IDS[split]
     start = chunk_index * chunk_size
     end = min(start + chunk_size, num_tasks)
@@ -306,7 +344,13 @@ def write_chunk(
         key = make_key(SOURCE_CHUNK, split_id, base_seed, idx)
         if shape_group_size > 0:
             shape = BatchShape(
-                *group_shape(cfg, split_id, base_seed, idx // shape_group_size)
+                *group_shape(
+                    cfg,
+                    split_id,
+                    base_seed,
+                    idx // shape_group_size,
+                    same_numregimes_per_batch,
+                )
             )
         else:
             shape = BatchShape(None, None, None)
@@ -391,6 +435,15 @@ def main():
     )
     parser.add_argument("--num_jobs", type=int, default=None)
     parser.add_argument(
+        "--same_numregimes_per_batch",
+        action="store_true",
+        help="All tasks of a shape group share one number of context regimes "
+        "R (drawn per group from the prior of R; each task then draws its "
+        "regimes conditional on R, so the prior over tasks is unchanged). "
+        "Needs shape groups. Stored in config.json; both direct and dataset "
+        "mode.",
+    )
+    parser.add_argument(
         "--skip_existing_files",
         action="store_true",
         help="Skip chunk files that already exist and load (writes are atomic, "
@@ -454,18 +507,28 @@ def main():
     else:
         missing = [
             f"--{name}"
-            for name in ("config", "num_tasks", "chunk_size", "out_dir", "base_seed")
+            for name in (
+                "config",
+                "num_tasks",
+                "chunk_size",
+                "out_dir",
+                "base_seed",
+            )
             if getattr(args, name) is None
         ]
         if missing:
-            parser.error(f"{', '.join(missing)} required without --dataset_config")
+            parser.error(
+                f"{', '.join(missing)} required without --dataset_config"
+            )
         if args.data_root is not None:
             parser.error("--data_root needs --dataset_config")
         if args.split not in SPLIT_IDS:
             parser.error(f"--split must be one of {list(SPLIT_IDS)}")
         if args.base_seed < 0:
             parser.error("--base_seed must be >= 0")
-        shape_group_size = 256 if args.shape_group_size is None else args.shape_group_size
+        shape_group_size = (
+            256 if args.shape_group_size is None else args.shape_group_size
+        )
         if shape_group_size < 0:
             parser.error("--shape_group_size must be >= 0")
         if shape_group_size > 0:
@@ -490,6 +553,10 @@ def main():
             args.base_seed,
         )
 
+    try:
+        check_same_numregimes(args.same_numregimes_per_batch, shape_group_size)
+    except ValueError as e:
+        parser.error(str(e))
     out_dir.mkdir(parents=True, exist_ok=True)
     write_config(
         cfg,
@@ -501,6 +568,7 @@ def main():
         shape_group_size=shape_group_size,
         dataset_name=dataset_name,
         prior_config_file=prior_config_file,
+        same_numregimes_per_batch=args.same_numregimes_per_batch,
     )
 
     n = num_chunks(num_tasks, chunk_size)
@@ -514,7 +582,9 @@ def main():
         start = k * chunk_size
         expected = min(start + chunk_size, num_tasks) - start
         existing = out_dir / f"chunk_{k:05d}.pt"
-        if args.skip_existing_files and chunk_file_is_complete(existing, expected):
+        if args.skip_existing_files and chunk_file_is_complete(
+            existing, expected
+        ):
             print(f"Skipped {existing} (exists)")
             continue
         path = write_chunk(
@@ -527,6 +597,7 @@ def main():
             split=split,
             shape_group_size=shape_group_size,
             show_progress=True,
+            same_numregimes_per_batch=args.same_numregimes_per_batch,
         )
         print(f"Wrote {path}")
 

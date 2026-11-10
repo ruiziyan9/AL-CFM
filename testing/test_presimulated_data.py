@@ -225,7 +225,8 @@ def test_stream_and_writer_use_the_same_generation_call(monkeypatch, tmp_path):
         assert isinstance(key, tuple) and len(key) == 6
         assert all(isinstance(k, int) for k in key)
         assert isinstance(shape, BatchShape)
-        assert all(isinstance(v, int) for v in shape)
+        assert all(isinstance(v, int) for v in shape[:3])
+        assert shape.num_regimes is None  # same_numregimes_per_batch is off
         return (type(config), tuple(type(v) for v in shape))
 
     assert {signature(c) for c in calls["stream"]} == {

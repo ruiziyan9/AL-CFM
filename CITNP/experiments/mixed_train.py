@@ -29,6 +29,11 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --init_from_upstream <ckpt>: warm start from an upstream MACE-TNP
   checkpoint (only the new intervened-flag embedding starts from zero).
 - --val_iterations / --test_iterations: fixed validation / test batches.
+- --same_numregimes_per_batch: every training and validation batch holds tasks
+  with one number of context regimes R (default off). The prior over tasks is
+  unchanged (CITNP/datasets/MIXED_REGIME_README.md); recommended for the
+  reg_axis_full encoding. With --dataset_config, generate the chunks with the
+  same flag.
 - --dataset_config <yaml> [--data_root DIR]: train from pre-simulated chunk files
   (see CITNP/datasets/dataset_config.py) instead of generating tasks on the fly.
   The model receives the same inputs; --data_config must be the dataset's prior.
@@ -191,6 +196,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="directory of simulated datasets (default: environment variable "
         "ALCFM_DATA_ROOT)",
     )
+    extra.add_argument(
+        "--same_numregimes_per_batch",
+        action="store_true",
+        help="one number of context regimes per training / validation batch "
+        "(default: off, drawn per task)",
+    )
     extra.add_argument("--val_iterations", type=int, default=20)
     extra.add_argument("--test_iterations", type=int, default=20)
     extra.add_argument(
@@ -284,7 +295,10 @@ def restore_full_state(trainer, path) -> None:
 def streaming_evaluation_dataset(
     args: argparse.Namespace, data_cfg: MixedRegimeConfig, split: str
 ) -> MixedRegimeTaskDataset:
-    """Validation ("val") or test dataset generated on the fly."""
+    """Validation ("val") or test dataset generated on the fly.
+
+    --same_numregimes_per_batch applies to validation only; test batches keep
+    the prior's per-task number of regimes."""
     iterations = args.val_iterations if split == "val" else args.test_iterations
     return MixedRegimeTaskDataset(
         data_cfg,
@@ -293,6 +307,9 @@ def streaming_evaluation_dataset(
         split=split,
         iterations_per_epoch=iterations,
         fresh_each_epoch=False,
+        same_numregimes_per_batch=(
+            split == "val" and args.same_numregimes_per_batch
+        ),
     )
 
 
@@ -365,6 +382,7 @@ def build_chunk_datasets(
         seed=args.seed,
         iterations_per_epoch=args.iterations_per_epoch,
         num_workers=args.num_workers,
+        same_numregimes_per_batch=args.same_numregimes_per_batch,
     )
     unique_tasks = dataset_config.splits["train"].num_tasks
     consumed = args.epochs * args.iterations_per_epoch * args.batch_size
@@ -386,6 +404,9 @@ def build_chunk_datasets(
                 shuffle=False,
                 seed=args.seed,
                 num_workers=args.num_workers,
+                same_numregimes_per_batch=(
+                    split == "validation" and args.same_numregimes_per_batch
+                ),
             )
             print(
                 f"{split}: chunk files in {directories[split]}, {len(ds)} "
@@ -442,6 +463,7 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
             base_seed=args.seed,
             split="train",
             iterations_per_epoch=args.iterations_per_epoch,
+            same_numregimes_per_batch=args.same_numregimes_per_batch,
         )
         # Validation / test repeat the same tasks on every pass.
         val_ds, test_ds = (
@@ -541,6 +563,8 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         )
     if encoding in INTERVENTION_ENCODINGS:
         resolved["intervention_encoding"] = encoding
+    # A data option, recorded with the run; model_api.load_model ignores it.
+    resolved["same_numregimes_per_batch"] = bool(args.same_numregimes_per_batch)
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
         yaml.safe_dump(resolved, f, sort_keys=False)
 

@@ -22,6 +22,9 @@
 #   EPOCHS      default 500 (x 200 iterations)
 #   SEED        default 0
 #   EXTRA_ARGS  further mixed_train arguments
+#   SAME_NUMREGIMES_PER_BATCH=1  pass --same_numregimes_per_batch (one number
+#               of context regimes per batch; default 0 = off). With
+#               DATASET_CONFIG, generate the data with the same variable.
 #   BANK_ARGS   further arguments of the oracle-bank build (e.g. --per_bucket 5)
 #   DRY_RUN=1   print the resolved variables and the exact commands, then
 #               exit. Loads no module, activates no conda env, imports no
@@ -58,6 +61,7 @@ MODEL_CFG=${MODEL_CFG:?set MODEL_CFG, e.g. CITNP/experiments/configs/oracle_d3_m
 EPOCHS=${EPOCHS:-500}
 SEED=${SEED:-0}
 EXTRA_ARGS=${EXTRA_ARGS:-}
+SAME_NUMREGIMES_PER_BATCH=${SAME_NUMREGIMES_PER_BATCH:-0}
 BANK_ARGS=${BANK_ARGS:-}
 DRY_RUN=${DRY_RUN:-0}
 FORCE_RESUME=${FORCE_RESUME:-0}
@@ -126,6 +130,7 @@ else
 fi
 
 read -ra EXTRA <<< "$EXTRA_ARGS"
+if [ "$SAME_NUMREGIMES_PER_BATCH" = 1 ]; then EXTRA+=(--same_numregimes_per_batch); fi
 read -ra BANK_EXTRA <<< "$BANK_ARGS"
 read -ra RESUME_ARGS <<< "$RESUME"
 BANK_CMD=(python -m CITNP.evaluation.oracle_bank

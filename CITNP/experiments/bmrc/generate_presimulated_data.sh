@@ -12,6 +12,8 @@
 #   SPLIT       required: train, validation or test
 #   NUM_JOBS    number of array jobs (default 50; must equal the array size)
 #   DATA_ROOT   where datasets are written (default $OUT/data, outside the checkout)
+#   SAME_NUMREGIMES_PER_BATCH=1  pass --same_numregimes_per_batch (one number
+#               of context regimes per shape group; default 0 = off)
 #   DRY_RUN=1   print the resolved variables and the command, then exit. Loads
 #               no module, activates no conda env and imports no Python, so it
 #               runs with plain `bash` on the login node.
@@ -35,6 +37,7 @@ DATASET_CONFIG=${DATASET_CONFIG:?set DATASET_CONFIG, e.g. CITNP/experiments/conf
 SPLIT=${SPLIT:?set SPLIT to train, validation or test}
 NUM_JOBS=${NUM_JOBS:-50}
 DRY_RUN=${DRY_RUN:-0}
+SAME_NUMREGIMES_PER_BATCH=${SAME_NUMREGIMES_PER_BATCH:-0}
 JOB_INDEX=${SLURM_ARRAY_TASK_ID:-0}
 
 # Same defaults as common_env.sh, resolved here so DRY_RUN needs no module.
@@ -48,6 +51,7 @@ if [ -d "$REPO" ]; then cd "$REPO"; fi
 GENERATE_CMD=(python -u -m CITNP.datasets.create_mixed_regime_chunks
   --dataset_config "$DATASET_CONFIG" --split "$SPLIT" --data_root "$DATA_ROOT"
   --job_index "$JOB_INDEX" --num_jobs "$NUM_JOBS" --skip_existing_files)
+if [ "$SAME_NUMREGIMES_PER_BATCH" = 1 ]; then GENERATE_CMD+=(--same_numregimes_per_batch); fi
 
 if [ "$DRY_RUN" = 1 ]; then
   echo "# DRY RUN: nothing is loaded or generated"
