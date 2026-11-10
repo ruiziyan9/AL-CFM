@@ -135,7 +135,8 @@ same number of context regimes R = has_obs + K. It applies to the training
 and validation datasets, for on-the-fly and pre-simulated data; test batches
 keep the per-task draw. The option is independent of the encoding and is
 recorded as `same_numregimes_per_batch` in the run's
-`resolved_model_config.yaml`.
+`resolved_data_options.yaml`, next to `resolved_model_config.yaml` (which
+holds model keys only and can be passed back as `--model_config`).
 
 R is drawn once per batch from its exact prior, and each task then draws its
 regimes from the prior conditional on R, so the distribution of tasks is

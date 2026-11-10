@@ -52,7 +52,7 @@ def test_reg_axis_full_run_resolved_yaml_loads(tmp_path, same_numregimes):
     assert resolved["model_class"] == "RegimeAxisFullMixedContextMoGModel"
     assert resolved["reg_axis_count_feature"] is True
     assert "reg_axis_num_memory_tokens" not in resolved
-    assert resolved["same_numregimes_per_batch"] is same_numregimes
+    assert "same_numregimes_per_batch" not in resolved  # a data option
     model = load_model(
         str(run / "last_model.pt"), str(run / "resolved_model_config.yaml"), "cpu"
     )

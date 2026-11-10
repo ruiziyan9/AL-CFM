@@ -158,6 +158,17 @@ MODEL_KEYS = (
 # model YAML, they must agree.
 SELECTION_KEYS = ("model_class", "intervention_encoding", "scale_conditioning")
 
+# Run-level data options (how tasks are batched; not part of the prior or of
+# the model), written next to resolved_model_config.yaml.
+RESOLVED_DATA_OPTIONS_FILE = "resolved_data_options.yaml"
+
+
+def resolved_data_options(args: argparse.Namespace) -> dict:
+    """The run's data options, as written to RESOLVED_DATA_OPTIONS_FILE."""
+    return {
+        "same_numregimes_per_batch": bool(args.same_numregimes_per_batch),
+    }
+
 
 def parse_args(argv=None) -> argparse.Namespace:
     """Mixed-training arguments plus every upstream default argument."""
@@ -585,10 +596,12 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         )
     if encoding in INTERVENTION_ENCODINGS:
         resolved["intervention_encoding"] = encoding
-    # A data option, recorded with the run; model_api.load_model ignores it.
-    resolved["same_numregimes_per_batch"] = bool(args.same_numregimes_per_batch)
+    # Model keys only (all in MODEL_KEYS), so the file can be passed back as
+    # --model_config; run-level data options go to their own file.
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
         yaml.safe_dump(resolved, f, sort_keys=False)
+    with open(model_save_dir / RESOLVED_DATA_OPTIONS_FILE, "w") as f:
+        yaml.safe_dump(resolved_data_options(args), f, sort_keys=False)
 
     if args.dataset_config:
         record_presimulated_data(args, chunk_directories, model_save_dir)

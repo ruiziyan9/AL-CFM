@@ -29,7 +29,11 @@ from CITNP.datasets.mixed_regime_generator import (
     regime_count_probs,
     sample_design,
 )
-from CITNP.experiments.mixed_train import build_trainer, parse_args
+from CITNP.experiments.mixed_train import (
+    RESOLVED_DATA_OPTIONS_FILE,
+    build_trainer,
+    parse_args,
+)
 from CITNP.models.regime_axis import group_regimes
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -470,10 +474,10 @@ def test_mixed_train_passes_the_flag(tmp_path, flag):
     assert trainer.train_dataset.same_numregimes_per_batch is flag
     assert trainer.validation_dataset.same_numregimes_per_batch is flag
     assert trainer.test_dataset.same_numregimes_per_batch is False
-    resolved = yaml.safe_load(
-        (tmp_path / "results" / "r" / "resolved_model_config.yaml").read_text()
+    options = yaml.safe_load(
+        (tmp_path / "results" / "r" / RESOLVED_DATA_OPTIONS_FILE).read_text()
     )
-    assert resolved["same_numregimes_per_batch"] is flag
+    assert options["same_numregimes_per_batch"] is flag
     if flag:
         for batch in trainer.train_dataset:
             assert group_regimes(batch["ctx_int"]).slot_present.all()
