@@ -148,9 +148,10 @@ holds only R = 1 tasks, or only R = 2 tasks, and so on.
 With `--dataset_config`, generate the chunks with the same flag
 (`create_mixed_regime_chunks.py --same_numregimes_per_batch`). Chunks written
 without it still give one R per batch for training, with a warning (the tasks
-are bucketed by R at load time); the validation split then has partial
-batches and no exact length, so `mixed_train` stops with an error asking for
-regenerated chunks.
+are bucketed by R at load time). A validation split written without it
+cannot be split into whole same-R batches, so `mixed_train` raises a
+`ValueError` that names the directory and asks to regenerate it with the
+flag.
 
 On BMRC set `SAME_NUMREGIMES_PER_BATCH=1` for both
 `generate_presimulated_data.sh` and `train.sh` (default 0).

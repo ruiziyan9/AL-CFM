@@ -527,10 +527,34 @@ def test_training_from_chunks_written_with_the_flag(tmp_path, monkeypatch):
     assert trainer.global_step == 2
 
 
-def test_training_from_chunks_written_without_the_flag(tmp_path, monkeypatch):
-    """Training chunks would work (bucketed by R, with a warning), but the
-    validation split has no exact length: a clear error."""
+def test_validation_chunks_written_without_the_flag(tmp_path, monkeypatch):
+    """A clear error that names the directory and says how to regenerate it."""
     args = _presimulated(tmp_path, monkeypatch)
+    directory = tmp_path / "data_root" / "tiny__v1" / "validation"
+    with pytest.raises(ValueError) as error:
+        build_trainer(args, MixedRegimeConfig(**presimulated.TINY_PRIOR))
+    message = str(error.value)
+    assert str(directory) in message
+    assert "regenerate" in message and "--same_numregimes_per_batch" in message
+    assert not (tmp_path / "results_root").exists()  # raised before the run dir
+
+
+def test_only_training_chunks_written_without_the_flag(tmp_path, monkeypatch):
+    """Validation written with the flag, training without: training works,
+    bucketed by R at load time, with the partial-bucket warning."""
+    args = _presimulated(tmp_path, monkeypatch)
+    directory = tmp_path / "data_root" / "tiny__v1" / "validation"
+    for path in directory.iterdir():
+        path.unlink()
+    presimulated.generate_split(
+        monkeypatch, Path(args.dataset_config), tmp_path / "data_root",
+        "validation", "--same_numregimes_per_batch",
+    )  # fmt: skip
     with pytest.warns(UserWarning, match="partial buckets"):
-        with pytest.raises(TypeError, match="--same_numregimes_per_batch"):
-            build_trainer(args, MixedRegimeConfig(**presimulated.TINY_PRIOR))
+        trainer, _ = build_trainer(
+            args, MixedRegimeConfig(**presimulated.TINY_PRIOR)
+        )
+    for dataset in (trainer.train_dataset, trainer.validation_dataset):
+        for batch in dataset:
+            assert batch["ctx_x"].shape[0] == presimulated.BATCH_SIZE
+            assert group_regimes(batch["ctx_int"]).slot_present.all()

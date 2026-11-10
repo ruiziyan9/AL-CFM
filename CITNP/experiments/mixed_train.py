@@ -343,8 +343,10 @@ def check_presimulated_data(
     """Directories of the dataset's splits that exist on disk, keyed by split
     name ("train", "validation", "test"). Raises if the training split is
     missing, if any directory was written for another prior than `data_cfg`,
-    if two directories share tasks, or if the shape groups do not split into
-    whole batches."""
+    if two directories share tasks, if the shape groups do not split into
+    whole batches, or if --same_numregimes_per_batch is set but the
+    validation chunks were written without it (validation needs whole batches
+    and an exact length, which bucketing by R at load time cannot give)."""
     if "train" not in dataset_config.splits:
         raise ValueError(f"{args.dataset_config} has no train split")
     # --data_config and the dataset's prior must be the same prior: the loaded
@@ -379,6 +381,19 @@ def check_presimulated_data(
             raise ValueError(
                 f"{directory} was generated from a different prior than "
                 f"--data_config {args.data_config}"
+            )
+        if (
+            split == "validation"
+            and args.same_numregimes_per_batch
+            and not stored.get("same_numregimes_per_batch", False)
+        ):
+            raise ValueError(
+                f"--same_numregimes_per_batch: the validation chunks in "
+                f"{directory} were written without the flag, so they cannot "
+                "be split into whole batches with one number of regimes each; "
+                "regenerate that directory with --same_numregimes_per_batch "
+                "(create_mixed_regime_chunks.py, or "
+                "SAME_NUMREGIMES_PER_BATCH=1 generate_presimulated_data.sh)"
             )
         directories[split] = directory
     assert_disjoint_splits(*(str(d) for d in directories.values()))
