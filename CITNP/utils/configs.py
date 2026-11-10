@@ -27,10 +27,11 @@ class CausalInfModelConfig(BaseModelConfig):
     num_mixture_components: Optional[int] = 1
     # "none" | "stats": see CITNP.models.scale_conditioning (mixed-context models).
     scale_conditioning: str = "none"
-    # reg_axis encoding only (CITNP/models/regime_axis/README.md); ignored by
-    # the other models. None blocks = num_layers_encoder // 2.
+    # reg_axis and reg_axis_full encodings only (CITNP/models/regime_axis/
+    # README.md, CITNP/models/regime_axis_full/README.md); ignored by the
+    # other models. None blocks = num_layers_encoder // 2.
     reg_axis_num_blocks: Optional[int] = None
-    reg_axis_num_memory_tokens: int = 4
+    reg_axis_num_memory_tokens: int = 4  # reg_axis only
     reg_axis_target_flag: str = "injected"  # "injected" | "none"
     reg_axis_count_feature: bool = True
     # layerwise encoding only: True reuses `context_intervened` as the

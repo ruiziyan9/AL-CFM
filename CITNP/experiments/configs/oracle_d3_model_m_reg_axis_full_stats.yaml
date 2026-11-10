@@ -1,0 +1,12 @@
+# D=3 oracle-prior model, size m, full regime-axis encoding, with scale conditioning (stats)
+d_model: 128
+nhead: 8
+num_layers_encoder: 6
+sample_attn_mode: MHCA
+dim_feedforward: 256
+emb_depth: 2
+num_mixture_components: 8
+intervention_encoding: reg_axis_full
+scale_conditioning: stats
+reg_axis_target_flag: injected
+reg_axis_count_feature: true

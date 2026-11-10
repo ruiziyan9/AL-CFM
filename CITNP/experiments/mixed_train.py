@@ -12,11 +12,13 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
 - --model_config <yaml>: optional; overrides model arguments (d_model, nhead,
   num_layers_encoder, sample_attn_mode, dim_feedforward, emb_depth,
   num_mixture_components, ...).
-- --intervention_encoding {r1,layerwise,extra_node,reg_axis}: how
+- --intervention_encoding {r1,layerwise,extra_node,reg_axis,reg_axis_full}: how
   intervention information enters the model (default r1). --model_class <name>
   is still accepted (legacy). reg_axis reads the optional model_config keys
   reg_axis_num_blocks, reg_axis_num_memory_tokens, reg_axis_target_flag and
-  reg_axis_count_feature (CITNP/models/regime_axis/README.md). layerwise reads
+  reg_axis_count_feature (CITNP/models/regime_axis/README.md). reg_axis_full
+  reads the same keys except reg_axis_num_memory_tokens, which it rejects
+  (CITNP/models/regime_axis_full/README.md). layerwise reads
   the optional model_config key share_intervention_encoder (default false:
   separate flag_code MLP; true: the injection reuses context_intervened).
 - --scale_conditioning {none,stats}: stats feeds each variable's standardisation
@@ -80,6 +82,11 @@ from CITNP.models.regime_axis import (
     REG_AXIS_CONFIG_KEYS,
     RegimeAxisMixedContextModel,
     RegimeAxisMixedContextMoGModel,
+)
+from CITNP.models.regime_axis_full import (
+    REG_AXIS_FULL_CONFIG_KEYS,
+    RegimeAxisFullMixedContextModel,
+    RegimeAxisFullMixedContextMoGModel,
 )
 from CITNP.models.scale_conditioning import SCALE_CONDITIONING_OPTIONS
 
@@ -486,7 +493,8 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         dtype=args.dtype,
         num_mixture_components=args.num_mixture_components,
         scale_conditioning=args.scale_conditioning or "none",
-        # reg_axis keys absent from the model YAML keep the dataclass defaults
+        # reg_axis / reg_axis_full keys absent from the model YAML keep the
+        # dataclass defaults
         **{
             k: getattr(args, k)
             for k in REG_AXIS_CONFIG_KEYS
@@ -502,11 +510,24 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     is_reg_axis = issubclass(
         model_cls, (RegimeAxisMixedContextModel, RegimeAxisMixedContextMoGModel)
     )
+    is_reg_axis_full = issubclass(
+        model_cls,
+        (RegimeAxisFullMixedContextModel, RegimeAxisFullMixedContextMoGModel),
+    )
     stray = [
         k for k in REG_AXIS_CONFIG_KEYS if getattr(args, k, None) is not None
     ]
-    if stray and not is_reg_axis:
-        raise ValueError(f"{stray} only apply to the reg_axis encoding")
+    if stray and not (is_reg_axis or is_reg_axis_full):
+        raise ValueError(
+            f"{stray} only apply to the reg_axis and reg_axis_full encodings"
+        )
+    unsupported = [k for k in stray if k not in REG_AXIS_FULL_CONFIG_KEYS]
+    if unsupported and is_reg_axis_full:
+        raise ValueError(
+            f"{unsupported} do not apply to the reg_axis_full encoding: it has "
+            "no memory tokens (readers attend to every regime's rows); remove "
+            "the key or use intervention_encoding: reg_axis"
+        )
     is_layerwise = issubclass(
         model_cls, (LayerwiseMixedContextModel, LayerwiseMixedContextMoGModel)
     )
@@ -514,10 +535,11 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         raise ValueError(
             "share_intervention_encoder only applies to the layerwise encoding"
         )
-    if is_reg_axis and args.init_from_upstream:
+    if (is_reg_axis or is_reg_axis_full) and args.init_from_upstream:
         raise ValueError(
-            "--init_from_upstream does not apply to reg_axis: its transformer "
-            "parameters have no upstream counterpart; train from scratch"
+            f"--init_from_upstream does not apply to {encoding}: its "
+            "transformer parameters have no upstream counterpart; train from "
+            "scratch"
         )
     if args.init_from_r1 and not is_layerwise:
         raise ValueError("--init_from_r1 only applies to the layerwise encoding")

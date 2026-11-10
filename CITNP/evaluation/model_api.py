@@ -45,7 +45,8 @@ def load_model(
         dtype="float32",
         num_mixture_components=m["num_mixture_components"],
         scale_conditioning=m.get("scale_conditioning", "none"),
-        # reg_axis only; absent keys keep the dataclass defaults
+        # reg_axis / reg_axis_full only; absent keys keep the dataclass
+        # defaults
         **{k: m[k] for k in REG_AXIS_CONFIG_KEYS if k in m},
         # layerwise only; absent (older runs) = separate flag_code MLP
         share_intervention_encoder=bool(

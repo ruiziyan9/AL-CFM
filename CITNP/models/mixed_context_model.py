@@ -26,6 +26,10 @@ layer-wise parameters, adds variable-index embeddings and a metadata-type
 embedding, and drops the extra position before the prediction head. Its new
 parameters are not zero-initialised, so it does not reproduce upstream at
 initialisation.
+
+The regime-axis encodings live in their own packages and are only registered
+here: `reg_axis` (CITNP/models/regime_axis) and `reg_axis_full`
+(CITNP/models/regime_axis_full).
 """
 
 from os import PathLike
@@ -48,6 +52,10 @@ from CITNP.models.nncomponents import build_mlp
 from CITNP.models.regime_axis import (
     RegimeAxisMixedContextModel,  # noqa: F401  # resolvable as model_class
     RegimeAxisMixedContextMoGModel,
+)
+from CITNP.models.regime_axis_full import (
+    RegimeAxisFullMixedContextModel,  # noqa: F401  # resolvable as model_class
+    RegimeAxisFullMixedContextMoGModel,
 )
 from CITNP.models.scale_conditioning import (
     ScaleConditioning,
@@ -513,6 +521,7 @@ INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
     "layerwise": LayerwiseMixedContextMoGModel,
     "extra_node": ExtraNodeMixedContextMoGModel,
     "reg_axis": RegimeAxisMixedContextMoGModel,
+    "reg_axis_full": RegimeAxisFullMixedContextMoGModel,
 }
 
 
