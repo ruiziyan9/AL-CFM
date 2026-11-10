@@ -134,6 +134,54 @@ before the transformer stack. It works with all three encodings; with
 `extra_node` the INT_META column gets nothing. With `none` no parameters are
 created, so existing checkpoints load strictly. Configs: `*_stats.yaml`.
 
+## Config inheritance
+
+A data or model config may name the file(s) it builds on with the top-level
+key `extends` and state only what differs
+([`configs/oracle_d5_iw_a15.yaml`](configs/oracle_d5_iw_a15.yaml)):
+
+```yaml
+extends: oracle_d3_iw_a15.yaml
+num_variables: [5]
+graph_degrees: {5: [2, 4, 6, 8]}
+```
+
+- `extends` is one path or a list of paths, relative to the directory of the
+  file that names them.
+- Parents are resolved recursively. The files are merged in the order parents
+  (as listed), then the file itself; a later file wins.
+- Top-level keys are replaced whole. Nothing is merged below the top level: the
+  child's `graph_degrees` above fully replaces the parent's dictionary.
+- A cycle (a file that reaches itself through the files it extends) is an
+  error.
+- The `extends` key is not part of the resolved config, and a file without
+  `extends` loads exactly as before.
+- **Single line.** `extends` must be written on one line, `extends: a.yaml` or
+  `extends: [a.yaml, b.yaml]`, with paths free of spaces. `bmrc/train.sh` reads
+  that line as text (its dry run needs no Python), so a list spread over
+  several lines is rejected when the config is loaded.
+- **Fingerprints cover the whole chain.** The fingerprint `bmrc/train.sh` uses
+  for the oracle bank name and the resume guard is the sha1 of every file the
+  config is built from, parents first, the file last. Editing a parent changes
+  the fingerprint of every config that extends it: the oracle bank is rebuilt
+  and an existing run of such a config is not resumed. The fingerprint of a
+  file without `extends` is unchanged. `DRY_RUN=1` lists the files of a config
+  that uses `extends`. The `prior_config_fingerprint` recorded in a data
+  directory's `config.json` is computed the same way (`config_fingerprint`).
+- **YAML only.** `extends` inside a `.json` config is an error, because
+  `bmrc/train.sh` could not see it and the fingerprint would miss the parents.
+- **Unique base names.** Run names and oracle bank names derive from the file
+  name without its directory (`<data>__<model>__s<SEED>`,
+  `banks/<data>__<fingerprint>.pkl`), so two config files must not share a base
+  name, even in different directories.
+
+All Python code reads configs through `load_config_mapping` in
+`CITNP/utils/config_files.py` (`config_file_chain` lists the files a config is
+built from). A run directory records what was actually used:
+`resolved_model_config.yaml` and `resolved_data_config.yaml` (the data config
+after inheritance, with defaults filled in). Dataset configs in
+`configs/datasets/` do not support `extends`.
+
 ## Training from pre-simulated datasets
 
 Instead of generating tasks on the fly, a run can read tasks that were

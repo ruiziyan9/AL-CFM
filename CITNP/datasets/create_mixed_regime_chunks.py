@@ -84,7 +84,6 @@ import torch
 from tqdm import trange
 
 from CITNP.datasets.dataset_config import (
-    file_fingerprint,
     generator_split_name,
     load_presimulated_dataset_config,
     prior_config_path,
@@ -101,6 +100,7 @@ from CITNP.datasets.mixed_regime_generator import (
     make_key,
     num_chunks,
 )
+from CITNP.utils.config_files import config_fingerprint, load_config_mapping
 
 GENERATION_PROCEDURE = "generate_task_with_shape"
 # config.json entries that decide which tasks a directory holds; a directory
@@ -116,15 +116,10 @@ GENERATION_SETTINGS = (
 
 
 def load_config(path: str | Path) -> MixedRegimeConfig:
-    path = Path(path)
-    with open(path) as f:
-        if path.suffix in (".yaml", ".yml"):
-            import yaml  # type: ignore[import-untyped]
-
-            raw = yaml.safe_load(f)
-        else:
-            raw = json.load(f)
-    return MixedRegimeConfig(**raw)
+    """The prior described by the config file at `path` (`.yaml`, `.yml` or
+    `.json`), including everything it inherits through `extends`
+    (CITNP/utils/config_files.py)."""
+    return MixedRegimeConfig(**load_config_mapping(path))
 
 
 def _git_has_uncommitted_changes() -> bool | None:
@@ -180,7 +175,10 @@ def write_config(
     (GENERATION_SETTINGS) must equal the new ones, otherwise ValueError: tasks
     of different settings are never mixed in one directory. A different git
     commit only warns. `prior_config_file` is the file `cfg` was loaded from;
-    its path and fingerprint are recorded.
+    its path and fingerprint are recorded. The fingerprint covers every file
+    the config is built from through `extends` (`config_fingerprint`), as in
+    bmrc/train.sh; it is a record only and is not compared with an existing
+    config.json.
     """
     info = {
         "dataset_name": dataset_name,
@@ -188,7 +186,9 @@ def write_config(
             None if prior_config_file is None else str(prior_config_file)
         ),
         "prior_config_fingerprint": (
-            None if prior_config_file is None else file_fingerprint(prior_config_file)
+            None
+            if prior_config_file is None
+            else config_fingerprint(prior_config_file)
         ),
         "generation_procedure": GENERATION_PROCEDURE,
         "config": dataclasses.asdict(cfg),

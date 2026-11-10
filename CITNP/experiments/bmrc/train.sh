@@ -32,13 +32,26 @@
 #               started before this script existed), then record the current
 #               hashes. A hash mismatch is never overridden.
 #
-# The oracle bank is $OUT/banks/<data>__<sha1 of the data config>.pkl and is
-# built when missing, so editing a data config never reuses a stale bank.
-# Resume guard: the first launch of a RUN writes the sha1 of its data and
-# model configs to $OUT/run_hashes/$RUN.txt (not inside results/$RUN:
+# Config fingerprints. A config file may build on other files with a line
+#   extends: parent.yaml        or        extends: [first.yaml, second.yaml]
+# (paths relative to the file that names them; see the "Config inheritance"
+# section of CITNP/experiments/MIXED_TRAINING_README.md). The fingerprint of a
+# config is the first 10 characters of the sha1 of all the files it is built
+# from, joined in order: parents first, the file itself last. Editing a parent
+# therefore changes the fingerprint of every config that extends it. For a
+# file without `extends` this is the sha1 of that file alone, as before.
+# This script finds the parents by reading the `extends:` line as text, so
+# the line must be written on a single line and the paths must not contain
+# spaces (the Python loader rejects a config that breaks this rule).
+#
+# The oracle bank is $OUT/banks/<data>__<fingerprint of the data config>.pkl
+# and is built when missing, so editing a data config, or any file it
+# extends, never reuses a stale bank.
+# Resume guard: the first launch of a RUN writes the fingerprints of its data
+# and model configs to $OUT/run_hashes/$RUN.txt (not inside results/$RUN:
 # mixed_train.py refuses to start in an existing run directory). If last_model.pt
-# exists the run resumes only when both hashes still match; otherwise the
-# script aborts. Mail options go on the sbatch command line.
+# exists the run resumes only when both fingerprints still match; otherwise
+# the script aborts. Mail options go on the sbatch command line.
 #SBATCH --job-name=alcfm_train
 #SBATCH --account=gpu_cebam.prj
 #SBATCH --partition=gpu_a100_80gb
@@ -72,8 +85,62 @@ DATA_ROOT=${DATA_ROOT:-$OUT/data}
 if [ -d "$REPO" ]; then cd "$REPO"; fi
 
 hash10() { sha1sum "$1" | cut -c1-10; }
-DATA_HASH=$(hash10 "$DATA_CFG")
-MODEL_HASH=$(hash10 "$MODEL_CFG")
+
+# Print every file the config $1 is built from, one per line: the files named
+# on its `extends:` line first (each followed recursively, in the listed
+# order), then $1 itself. A file without an `extends:` line prints only
+# itself. The remaining arguments are the files whose `extends:` lines led
+# here; meeting one of them again is a cycle and fails.
+# (Every step is checked explicitly: `set -e` is off inside $(...).)
+config_file_chain() {
+  local config_file=$1; shift
+  local resolved_path file_being_resolved parent_names parent_name
+  if [ ! -f "$config_file" ]; then
+    echo "ABORT: config file not found: $config_file" >&2
+    return 1
+  fi
+  resolved_path=$(realpath "$config_file") || return 1
+  for file_being_resolved in "$@"; do
+    if [ "$file_being_resolved" = "$resolved_path" ]; then
+      echo "ABORT: 'extends' cycle: $config_file is reached again from itself" >&2
+      return 1
+    fi
+  done
+  # The text after `extends:`, without the comment, brackets, commas and
+  # quotes: the parent paths separated by spaces.
+  parent_names=$(sed -n 's/^extends:\(.*\)$/\1/p' "$config_file" \
+    | sed 's/#.*//' | tr "[],'\"" '     ') || return 1
+  for parent_name in $parent_names; do
+    case $parent_name in
+      /*) ;;  # an absolute path is used as it is
+      *) parent_name=$(dirname "$config_file")/$parent_name ;;
+    esac
+    config_file_chain "$parent_name" "$@" "$resolved_path" || return 1
+  done
+  printf '%s\n' "$config_file"
+}
+
+# First 10 characters of the sha1 of the files of `config_file_chain $1`,
+# joined in that order. Without `extends` this equals `hash10 $1`.
+config_fingerprint() {
+  local chain_listing chain_files
+  chain_listing=$(config_file_chain "$1") || return 1
+  mapfile -t chain_files <<< "$chain_listing"
+  cat "${chain_files[@]}" | sha1sum | cut -c1-10
+}
+
+# In a dry run, list the files a config with `extends` is built from.
+print_config_file_chain() {
+  local chain_listing
+  chain_listing=$(config_file_chain "$1") || return 1
+  if [ "$chain_listing" != "$1" ]; then
+    echo "#   built from, in merge order (the fingerprint covers all of them):"
+    printf '%s\n' "$chain_listing" | sed 's/^/#     /'
+  fi
+}
+
+DATA_HASH=$(config_fingerprint "$DATA_CFG")
+MODEL_HASH=$(config_fingerprint "$MODEL_CFG")
 BANK=$OUT/banks/$(basename "$DATA_CFG" .yaml)__$DATA_HASH.pkl
 RUN_DIR=$OUT/results/$RUN
 CKPT=$RUN_DIR/last_model.pt
@@ -160,8 +227,10 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "REPO=$REPO"
   echo "OUT=$OUT"
   echo "RUN=$RUN"
-  echo "DATA_CFG=$DATA_CFG (sha1 $DATA_HASH)"
-  echo "MODEL_CFG=$MODEL_CFG (sha1 $MODEL_HASH)"
+  echo "DATA_CFG=$DATA_CFG (fingerprint $DATA_HASH)"
+  print_config_file_chain "$DATA_CFG"
+  echo "MODEL_CFG=$MODEL_CFG (fingerprint $MODEL_HASH)"
+  print_config_file_chain "$MODEL_CFG"
   if [ -n "$DATASET_CONFIG" ]; then
     echo "DATASET_CONFIG=$DATASET_CONFIG"
     echo "DATA_ROOT=$DATA_ROOT"

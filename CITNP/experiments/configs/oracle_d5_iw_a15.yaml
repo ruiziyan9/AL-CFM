@@ -1,0 +1,10 @@
+# D=5 inverse-Wishart (IW) prior, alpha0 = 1.5: oracle_d3_iw_a15.yaml with
+# five variables instead of three. Everything not stated here (the IW prior,
+# graph types, context and query sizes) is inherited from that file; see the
+# "Config inheritance" section of CITNP/experiments/MIXED_TRAINING_README.md.
+#
+# graph_degrees replaces the parent's dictionary whole (it is not merged), so
+# it lists only D = 5.
+extends: oracle_d3_iw_a15.yaml
+num_variables: [5]
+graph_degrees: {5: [2, 4, 6, 8]}
