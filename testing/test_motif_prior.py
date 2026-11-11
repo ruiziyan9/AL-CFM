@@ -107,8 +107,9 @@ def test_sample_graph_matches_closed_form():
 
 
 def _legacy_oracle_d3_prior():
-    """Exact graph prior of oracle_d3.yaml (ER, s0 uniform in {1, 2, 3}): single
-    1/3, complete 1/3, and the three 2-edge classes 1/9 each; uniform in class."""
+    """Exact graph prior of testing/fixtures/oracle_d3.yaml (ER, s0 uniform in
+    {1, 2, 3}): single 1/3, complete 1/3, and the three 2-edge classes 1/9
+    each; uniform in class."""
     probs = dict(
         single=1 / 3, chain=1 / 9, fork=1 / 9, collider=1 / 9, complete=1 / 3
     )

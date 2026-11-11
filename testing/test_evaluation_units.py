@@ -185,7 +185,7 @@ def test_run_scm_suite_direct(model):
     from CITNP.evaluation.experiments import run_scm_suite
     from CITNP.evaluation.model_api import mixture_logpdf, predict_mixture
 
-    data_cfg = load_config(str(REPO / "CITNP/experiments/configs/oracle_d3.yaml"))
+    data_cfg = load_config(str(REPO / "testing/fixtures/oracle_d3.yaml"))
     df = run_scm_suite(
         model, data_cfg, device="cpu", n_seeds=1, n_query=8, n_mc=10
     )

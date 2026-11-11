@@ -11,7 +11,7 @@ plus the standardised mean gaps of stats.effect_gaps. The graph panel
 shows edge widths from stats.edge_strengths on the observational rows.
 
     python -m CITNP.prior_diagnostics obs-vs-int \
-        --config CITNP/experiments/configs/oracle_d3.yaml \
+        --config CITNP/experiments/configs/oracle_d3_iw_a15.yaml \
         --num_tasks 4 --out obs_vs_int.pdf [--png] \
         [--treatment 0] [--do_quantiles 0.1,0.5,0.9 | --do_values=-2,0,2]
 

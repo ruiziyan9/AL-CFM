@@ -17,9 +17,13 @@ import yaml  # type: ignore[import-untyped]
 REPO = Path(__file__).resolve().parents[1]
 GOLDEN = REPO / "testing" / "golden"
 
-# Relative to REPO; the bank pickle stores the data-config string verbatim,
-# so always run from REPO with these exact strings.
-DATA_CFG = "CITNP/experiments/configs/oracle_d3.yaml"
+# Relative to REPO: always run from REPO with these exact strings. DATA_CFG is
+# the older prior (linearnonidentifiable), kept as a test fixture only; it is
+# not an experiment config.
+DATA_CFG = "testing/fixtures/oracle_d3.yaml"
+# The bank pickle stores the data-config string verbatim. The golden bank was
+# recorded when the file was still at this path; its contents are unchanged.
+RECORDED_BANK_DATA_CFG = "CITNP/experiments/configs/oracle_d3.yaml"
 TINY_CFG = "CITNP/experiments/configs/oracle_d3_model_s.yaml"
 TRAINED_CFG = "CITNP/experiments/configs/oracle_d3_model_m.yaml"
 TRAINED_ENV = "ALCFM_TRAINED_CKPT"

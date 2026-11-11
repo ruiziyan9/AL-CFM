@@ -23,6 +23,7 @@ from golden_spec import (
     DATA_CFG,
     GOLDEN,
     KSHOT_ARGS,
+    RECORDED_BANK_DATA_CFG,
     REPO,
     SUITE_ARGS,
     TINY_CFG,
@@ -202,6 +203,10 @@ def test_bank(tmp_path):
         new = pickle.load(f)
     with open(GOLDEN / "bank.pkl", "rb") as f:
         old = pickle.load(f)
+    # the bank stores the path of its data config; the config has since moved
+    # to the test fixtures, with the same contents
+    assert new.pop("data_config") == DATA_CFG
+    assert old.pop("data_config") == RECORDED_BANK_DATA_CFG
     assert_values_equal(new, old)
 
 
