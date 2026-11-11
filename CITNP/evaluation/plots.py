@@ -17,6 +17,10 @@ written by `kshot-prior` (ONLY these show a true oracle lower bound; per D):
                                    over tasks, pairs averaged within a task first
     <prefix>_D{D}_by_relation.png  excess KL by question class (the bound need
                                    not hold within a class)
+  after a run without the oracle (`kshot-prior --no_oracle`: the oracle's
+  columns are entirely missing) the same two files show the model only:
+    <prefix>_D{D}_main.png         KL(truth || model) against k, per design
+    <prefix>_D{D}_by_relation.png  KL(truth || model) by question class
 Training monitoring, from oracle_gap.csv / train_stats.csv in run directories:
     plot_monitoring(run_dirs, out)
 Flag probe, from <prefix>.csv written by `probe-flag`:
@@ -361,6 +365,18 @@ def _prior_curve(df: pd.DataFrame, design: str, cols: list[str]):
     return seed_curve(with_k0(df, design), cols, unit="task")
 
 
+# Oracle scores the kshot-prior figures draw: entirely missing after a run
+# without the oracle.
+_PRIOR_ORACLE_COLUMNS = ["kl_truth_oracle", "excess_kl_truth", "kl_oracle_model"]
+
+
+def _has_oracle_scores(df: pd.DataFrame) -> bool:
+    """Whether kshot-prior rows hold any oracle score: False for a run
+    without the oracle, which leaves the oracle's columns entirely missing."""
+    present = [c for c in _PRIOR_ORACLE_COLUMNS if c in df]
+    return bool(df[present].notna().any().any())
+
+
 def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
     """One figure <prefix>_D{D}_main.png per D, from kshot-prior rows.
 
@@ -368,9 +384,27 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
     (b) excess KL(truth) = KL(truth || model) - KL(truth || oracle), +/- s.e.
     over tasks (>= 0 in expectation: the oracle is a lower bound);
     (c) KL(oracle || model), which equals (b) in expectation.
+
+    Without oracle scores (a run without the oracle) the figure has one
+    panel: KL(truth || model) against k per design, +/- s.e. over tasks.
     """
     for D, dd in df.groupby("D"):
         ks = sorted(dd.k.unique())
+        if not _has_oracle_scores(dd):
+            fig, ax = plt.subplots(figsize=(7, 5))
+            for d, c in PRIOR_COLORS.items():
+                mu, se = _prior_curve(dd, d, ["kl_truth_model"])
+                band(ax, mu["kl_truth_model"], se["kl_truth_model"], c,
+                     label=d)  # fmt: skip
+            ax.axhline(0, color="k", lw=0.5)
+            finish(
+                ax, ks,
+                f"D={D}: KL(truth || model), model only (oracle not run)",
+                "KL(truth || model), nats per query point",
+            )  # fmt: skip
+            ax.legend(fontsize=7)
+            _save(fig, f"{prefix}_D{D}_main.png")
+            continue
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         for d in PRIOR_COLORS:
             c = PRIOR_COLORS[d]
@@ -403,8 +437,25 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
 def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
     """One figure <prefix>_D{D}_by_relation.png per D: excess KL(truth) by
     design, one panel per question class. The lower bound holds on average
-    over the whole prior, not within a class, so a facet may dip below 0."""
+    over the whole prior, not within a class, so a facet may dip below 0.
+
+    Without oracle scores (a run without the oracle) the panels show
+    KL(truth || model) in place of the excess."""
     for D, dd in df.groupby("D"):
+        if _has_oracle_scores(dd):
+            col = "excess_kl_truth"
+            ylabel = "excess KL(truth), nats per query point"
+            title = (
+                f"D={D}: excess KL by question class (the bound >= 0 need "
+                "not hold within a class)"
+            )
+        else:
+            col = "kl_truth_model"
+            ylabel = "KL(truth || model), nats per query point"
+            title = (
+                f"D={D}: KL(truth || model) by question class, model only "
+                "(oracle not run)"
+            )
         rels = sorted(dd["relation"].unique())
         ks = sorted(dd.k.unique())
         fig, axes = plt.subplots(
@@ -414,17 +465,13 @@ def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
         for ax, rel in zip(axes[0], rels):
             sub = dd[dd["relation"] == rel]
             for d, c in PRIOR_COLORS.items():
-                mu, se = _prior_curve(sub, d, ["excess_kl_truth"])
-                band(ax, mu["excess_kl_truth"], se["excess_kl_truth"], c,
-                     label=d)  # fmt: skip
+                mu, se = _prior_curve(sub, d, [col])
+                band(ax, mu[col], se[col], c, label=d)
             ax.axhline(0, color="k", lw=0.5)
             finish(ax, ks, rel)
-        axes[0][0].set_ylabel("excess KL(truth), nats per query point")
+        axes[0][0].set_ylabel(ylabel)
         axes[0][0].legend(fontsize=7)
-        fig.suptitle(
-            f"D={D}: excess KL by question class (the bound >= 0 need not "
-            "hold within a class)"
-        )
+        fig.suptitle(title)
         _save(fig, f"{prefix}_D{D}_by_relation.png")
 
 
@@ -433,7 +480,8 @@ def plot_kshot_prior_all(
 ) -> None:
     """Every kshot-prior figure from one or more CSV parts (array jobs over
     task_offset), concatenated. Raises if a (D, task, T, Y, design, k) row
-    appears twice, i.e. parts overlap."""
+    appears twice, i.e. parts overlap. Parts of a run without the oracle
+    give the model-only versions of the figures."""
     df = pd.concat([pd.read_csv(p) for p in csv_paths], ignore_index=True)
     if df.duplicated(_ID_COLS).any():
         raise ValueError("overlapping parts: duplicate rows")

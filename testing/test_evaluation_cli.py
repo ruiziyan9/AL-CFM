@@ -381,3 +381,66 @@ def test_plot_kshot_prior_writes_figures(tmp_path):
     main(["plot-kshot-prior", str(csv)])
     for s in ("main", "by_relation"):
         assert (tmp_path / f"kp_D3_{s}.png").stat().st_size > 0
+
+
+def test_plot_kshot_prior_model_only(tmp_path, monkeypatch):
+    """Figures from a CSV written without the oracle: its columns are there
+    but entirely missing, and the figures say that they show the model."""
+    import itertools
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from CITNP.evaluation import plots
+    from CITNP.evaluation.__main__ import main
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for task, (T, Y) in itertools.product(range(3), [(0, 1), (1, 2)]):
+        for design, k in [("obs", 0)] + [
+            (d, k) for d in ("random", "do(T)", "do(Y)", "do(other)")
+            for k in (1, 3)
+        ]:  # fmt: skip
+            rows.append({
+                "D": 5, "task": task, "T": T, "Y": Y,
+                "relation": "reverse" if task else "unrelated",
+                "design": design, "k": k,
+                "kl_truth_model": float(rng.uniform(0.1, 0.7)),
+                "kl_truth_oracle": np.nan, "kl_oracle_model": np.nan,
+                "excess_kl_truth": np.nan,
+            })  # fmt: skip
+    csv = tmp_path / "kp_part0.csv"
+    pd.DataFrame(rows).to_csv(csv, index=False)
+    (tmp_path / "kp_part0_meta.json").write_text(
+        json.dumps({"data_config": {"sha256": "a" * 64}, "with_oracle": False})
+    )
+
+    figures = {}  # file name -> (titles, y labels, lines per panel)
+    save = plots._save
+
+    def save_and_record(fig, path, dpi=150):
+        title = fig._suptitle.get_text() if fig._suptitle else ""
+        figures[Path(path).name] = (
+            " | ".join([title, *(ax.get_title() for ax in fig.axes)]),
+            [ax.get_ylabel() for ax in fig.axes],
+            [len(ax.get_lines()) for ax in fig.axes],
+        )
+        save(fig, path, dpi)
+
+    monkeypatch.setattr(plots, "_save", save_and_record)
+    main(["plot-kshot-prior", str(csv)])
+    for s in ("main", "by_relation"):
+        assert (tmp_path / f"kp_D5_{s}.png").stat().st_size > 0
+
+    titles, ylabels, lines = figures["kp_D5_main.png"]
+    assert len(ylabels) == 1  # one panel: no oracle, excess or identity panel
+    assert "KL(truth || model)" in titles and "oracle not run" in titles
+    assert "KL(truth || model)" in ylabels[0]
+    assert lines[0] == 4 + 1  # one curve per design and the line at 0
+
+    titles, ylabels, lines = figures["kp_D5_by_relation.png"]
+    assert "KL(truth || model) by question class" in titles
+    assert "excess" not in titles and "excess" not in ylabels[0]
+    assert "KL(truth || model)" in ylabels[0]
+    assert lines == [5, 5]  # two question classes
