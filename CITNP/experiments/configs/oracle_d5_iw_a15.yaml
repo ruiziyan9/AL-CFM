@@ -1,21 +1,32 @@
-# D=5 inverse-Wishart (IW) prior, alpha0 = 1.5: oracle_d3_iw_a15.yaml with
-# five variables instead of three, and the context, query and intervention
-# sizes scaled up to match (k_max, n_ctx_range, n_qry, qry_groups). The IW
-# prior itself (function_generator, alpha0, normalise) is inherited from that
-# file; see the "Config inheritance" section of
-# CITNP/experiments/MIXED_TRAINING_README.md.
+# D=5 inverse-Wishart (IW) prior, alpha0 = 1.5: the five-variable counterpart
+# of oracle_d3_iw_a15.yaml. The IW prior itself (function_generator, alpha0,
+# normalise) is inherited from that file; see the "Config inheritance" section
+# of CITNP/experiments/MIXED_TRAINING_README.md. Everything else is set here.
+#
+# Graphs (0 to 10 edges are possible with five variables). graph_type is drawn
+# uniformly from the list, so ER has probability 1/2 and SF and FC 1/4 each:
+#   ER  3, 5, 8 or 9 edges (the graph_degrees value)
+#   SF  4 edges for the degrees 3 and 5, 7 edges for 8 and 9
+#   FC  always complete (10 edges)
+# About a quarter of the graphs are complete, a quarter have 3 or 4 edges and
+# the rest have 5 to 9; the mean is 7 edges.
+#
+# Contexts: p_k0 0.25 makes a quarter of the contexts observation-only;
+# otherwise there are 1 to 5 interventional regimes, with p_geom 0.3 so that
+# several regimes are common (about 1.8 per task on average).
 #
 # graph_degrees replaces the parent's dictionary whole (it is not merged), so
-# it lists only D = 5. graph_type, qry_mode and n_obs_min restate the parent's
-# values.
+# it lists only D = 5. qry_mode and n_obs_min restate the parent's values.
 #
 # The exact oracle does not support five variables yet: train with
 # SKIP_ORACLE_BANK=1 (CITNP/experiments/bmrc/train.sh).
 extends: oracle_d3_iw_a15.yaml
 num_variables: [5]
-graph_degrees: {5: [2, 4, 6, 8]}
-graph_type: [ER, SF, FC]
+graph_type: [ER, ER, SF, FC]
+graph_degrees: {5: [3, 5, 8, 9]}
 k_max: 5
+p_k0: 0.25
+p_geom: 0.3
 n_ctx_range: [64, 360]
 n_qry: 60
 qry_mode: grouped

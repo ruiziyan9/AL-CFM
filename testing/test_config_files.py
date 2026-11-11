@@ -236,28 +236,33 @@ def test_five_variable_config_differs_from_its_parent_in_stated_fields_only():
     assert yaml.safe_load(CHILD.read_text()) == {
         "extends": "oracle_d3_iw_a15.yaml",
         "num_variables": [5],
-        "graph_degrees": {5: [2, 4, 6, 8]},
-        "graph_type": ["ER", "SF", "FC"],
+        "graph_type": ["ER", "ER", "SF", "FC"],
+        "graph_degrees": {5: [3, 5, 8, 9]},
         "k_max": 5,
+        "p_k0": 0.25,
+        "p_geom": 0.3,
         "n_ctx_range": [64, 360],
         "n_qry": 60,
         "qry_mode": "grouped",
         "qry_groups": [1, 2, 3, 4, 5],
         "n_obs_min": 32,
     }
-    # graph_type, qry_mode and n_obs_min restate the parent's values.
+    # qry_mode and n_obs_min restate the parent's values.
     differing = {key for key in child if child[key] != parent[key]}
     assert differing == {
         "num_variables",
+        "graph_type",
         "graph_degrees",
         "k_max",
+        "p_k0",
+        "p_geom",
         "n_ctx_range",
         "n_qry",
         "qry_groups",
     }
     assert list(child["num_variables"]) == [5]
     assert {int(d): list(v) for d, v in child["graph_degrees"].items()} == {
-        5: [2, 4, 6, 8]
+        5: [3, 5, 8, 9]
     }
     assert config_file_chain(CHILD) == [PARENT, CHILD]
 
