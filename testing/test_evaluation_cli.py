@@ -115,6 +115,66 @@ def test_kshot_prior_smoke(tmp_path):
     assert sum(v["n_tasks"] for v in meta["do_dist_summary"].values()) == 2
 
 
+# A five-variable data config (built on its parent through `extends`): more
+# variables than the exact oracle supports.
+DATA_CFG_FIVE_VARIABLES = "CITNP/experiments/configs/oracle_d5_iw_a15.yaml"
+
+
+@pytest.mark.skipif(
+    not (GOLDEN / "tiny_model.pt").exists(), reason="golden files not recorded"
+)
+def test_kshot_prior_no_oracle_five_variables(tmp_path, capsys):
+    import json
+
+    import pandas as pd
+
+    from CITNP.evaluation.__main__ import main
+    from CITNP.utils.config_files import config_fingerprint
+
+    data_cfg = str(REPO / DATA_CFG_FIVE_VARIABLES)
+    out = tmp_path / "kp.csv"
+    args = [
+        "kshot-prior", "--ckpt", str(GOLDEN / "tiny_model.pt"),
+        "--model_config", str(REPO / TINY_CFG), "--data_config", data_cfg,
+        "--n_tasks", "2", "--k_list", "0,1", "--n_y", "16",
+        "--device", "cpu", "--out", str(out),
+    ]  # fmt: skip
+    # with the oracle, five variables are refused, naming the way out
+    with pytest.raises(ValueError, match="--no_oracle"):
+        main(args)
+    assert not out.exists()
+
+    main([*args, "--no_oracle"])
+    df = pd.read_csv(out)
+    assert set(df["D"]) == {5} and set(df["task"]) == {0, 1}
+    assert df["kl_truth_model"].notna().all()
+    oracle_columns = [
+        "kl_truth_oracle", "kl_oracle_model", "excess_kl_truth",
+        "slope_oracle", "var_ratio_model_oracle", "log_prior_true_graph",
+        "true_graph_in_prior",
+    ]  # fmt: skip
+    assert df[oracle_columns].isna().all().all()
+    by_t = pd.read_csv(tmp_path / "kp_by_t.csv")
+    assert by_t["kl_truth_model"].notna().all()
+    assert by_t[["kl_truth_oracle", "mean_oracle"]].isna().all().all()
+
+    meta = json.loads((tmp_path / "kp_meta.json").read_text())
+    assert meta["with_oracle"] is False
+    assert meta["graph_prior_samples"] is None
+    # the fingerprint covers the parent named by `extends`
+    assert meta["data_config"]["fingerprint"] == config_fingerprint(data_cfg)
+    assert len(meta["data_config"]["sha256"]) == 64
+    assert meta["model_config"]["fingerprint"] == config_fingerprint(
+        REPO / TINY_CFG
+    )
+
+    # the summary skips the oracle's columns, which are entirely missing
+    summary = capsys.readouterr().out
+    assert "kl_truth_model" in summary and "the oracle was not run" in summary
+    assert "kl_truth_oracle" not in summary
+    assert "identity check" not in summary
+
+
 def test_kshot_prior_rejects_foreign_num_variables(tmp_path):
     from CITNP.evaluation.__main__ import main
 
@@ -178,6 +238,95 @@ def test_meta_mismatches_reports_ckpt_and_k_list():
     assert set(diff) == {"ckpt", "k_list", "oracle_budget"}
     assert diff["ckpt"] == {"p0": "model.pt", "p1": "other.pt"}
     assert diff["k_list"] == {"p0": [0, 1, 3], "p1": [0, 1]}
+
+
+def _part_meta_with_mode(with_oracle: bool, **over):
+    """A meta file as written since `--no_oracle` exists: `_part_meta` plus
+    `with_oracle` and the config fingerprints."""
+    meta = _part_meta(with_oracle=with_oracle)
+    meta["data_config"] = {**meta["data_config"], "fingerprint": "c" * 10}
+    meta["model_config"] = {**meta["model_config"], "fingerprint": "d" * 10}
+    if not with_oracle:
+        meta["graph_prior_samples"] = None
+    meta.update(over)
+    return meta
+
+
+def test_meta_mismatches_refuses_oracle_and_model_only_parts():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    diff = _meta_mismatches({
+        "p0": _part_meta_with_mode(True),
+        "p1": _part_meta_with_mode(False),
+    })  # fmt: skip
+    assert diff["with_oracle"] == {"p0": True, "p1": False}
+    # a part written before `with_oracle` existed ran the oracle
+    old = _part_meta()
+    assert "with_oracle" not in old
+    assert "with_oracle" in _meta_mismatches({
+        "p0": old, "p1": _part_meta_with_mode(False),
+    })  # fmt: skip
+
+
+def test_meta_mismatches_accepts_parts_from_before_with_oracle():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    old = _part_meta()
+    assert "with_oracle" not in old and "fingerprint" not in old["data_config"]
+    assert _meta_mismatches({"p0": old, "p1": _part_meta()}) == {}
+    # ... and with a part written now, with the oracle
+    assert _meta_mismatches({"p0": old, "p1": _part_meta_with_mode(True)}) == {}
+
+
+def test_meta_mismatches_compares_config_fingerprints():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    # same named file (same sha256), but a parent it extends has changed
+    other = _part_meta_with_mode(True)
+    other["data_config"] = {**other["data_config"], "fingerprint": "e" * 10}
+    diff = _meta_mismatches({"p0": _part_meta_with_mode(True), "p1": other})
+    assert set(diff) == {"data_config fingerprint"}
+    # an old part records no fingerprint: only the others are compared
+    parts = {"old": _part_meta(), "p0": _part_meta_with_mode(True)}
+    assert _meta_mismatches(parts) == {}
+    assert set(_meta_mismatches({**parts, "p1": other})) == {
+        "data_config fingerprint"
+    }
+
+
+def test_meta_mismatches_ignores_oracle_settings_of_model_only_parts():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    args = {"base_seed": 9101, "n_mc": 50, "grid_eps": 0.02}
+    parts = {
+        "p0": _part_meta_with_mode(False),
+        "p1": _part_meta_with_mode(False, args=args, oracle_budget="per_dag"),
+    }
+    assert _meta_mismatches(parts) == {}
+    # the same difference matters as soon as the oracle was run
+    parts = {
+        "p0": _part_meta_with_mode(True),
+        "p1": _part_meta_with_mode(True, args=args),
+    }
+    assert set(_meta_mismatches(parts)) == {"n_mc"}
+
+
+def test_plot_kshot_prior_refuses_oracle_and_model_only_parts(tmp_path, capsys):
+    import json
+
+    from CITNP.evaluation.__main__ import main
+
+    paths = []
+    for i, with_oracle in enumerate([True, False]):
+        csv = tmp_path / f"p_part{i}.csv"
+        csv.write_text("D\n3\n")
+        (tmp_path / f"p_part{i}_meta.json").write_text(
+            json.dumps(_part_meta_with_mode(with_oracle))
+        )
+        paths.append(str(csv))
+    with pytest.raises(SystemExit):
+        main(["plot-kshot-prior", *paths])
+    assert "with_oracle" in capsys.readouterr().err
 
 
 def test_plot_kshot_prior_refuses_mismatched_ckpt(tmp_path, capsys):

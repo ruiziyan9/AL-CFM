@@ -4,7 +4,8 @@
            [--k_list 0,1,3,5,10,20,50] [--n_seeds 100] [--random_weights] --out kshot.csv
     python -m CITNP.evaluation kshot-prior --ckpt ... --model_config ... \
            --data_config ... [--num_variables 3,4] [--n_tasks 500] \
-           [--task_offset 0] [--k_list 0,1,3,5,10] --out kshot_prior.csv
+           [--task_offset 0] [--k_list 0,1,3,5,10] [--no_oracle] \
+           --out kshot_prior.csv
     python -m CITNP.evaluation scm-suite --ckpt ... --model_config ... \
            --data_config ... --out suite.csv
     python -m CITNP.evaluation bank --data_config ... --out bank.pkl
@@ -24,7 +25,10 @@ E[KL(oracle||model)] >= 0. Its prior comes from the data config (graph,
 variable permutation, weights, noise, do-value distribution, D, default
 n_obs, oracle priors); the CLI only sets the protocol (k_list, n_tasks,
 task_offset, base_seed, n_y, n_mc, grid_eps) and how many graphs estimate
-the oracle's graph prior (graph_prior_samples).
+the oracle's graph prior (graph_prior_samples). `kshot-prior --no_oracle`
+evaluates the model against the truth only: it works for any D (the exact
+oracle is limited to D <= max_oracle_nodes), gives the same model scores as
+a run with the oracle, and leaves the oracle's columns empty.
 
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
 and `probe-flag` compute,
@@ -116,6 +120,14 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                         "task's do_dist")  # fmt: skip
     p.add_argument("--flag_ablation", action="store_true",
                    help="also score the model with intervention flags zeroed")  # fmt: skip
+    p.add_argument("--no_oracle", action="store_true",
+                   help="evaluate the model against the truth only: the "
+                        "exact oracle is not run and its columns are left "
+                        "empty; works for any D, and gives the same model "
+                        "scores as a run with the oracle (--n_mc, "
+                        "--min_graph_prob, --max_oracle_nodes, "
+                        "--graph_prior_samples and --oracle_budget then "
+                        "have no effect)")  # fmt: skip
     p.add_argument("--max_oracle_nodes", type=int, default=4,
                    help="largest D for exact DAG enumeration")  # fmt: skip
     p.add_argument("--graph_prior_samples", type=int, default=None,
@@ -275,7 +287,11 @@ def _print_prior_summary(df) -> None:
     which slightly truncates the prior relative to the oracle), design x k
     means (pairs averaged within a task first, then mean and s.e. over
     tasks) and the identity check: mean excess KL(truth) vs mean
-    KL(oracle||model)."""
+    KL(oracle||model).
+
+    Columns that are entirely missing are skipped: after a run without the
+    oracle only KL(truth||model) is summarised, with no graph-prior line and
+    no identity check."""
     import pandas as pd
 
     cols = [
@@ -286,19 +302,28 @@ def _print_prior_summary(df) -> None:
     ]
     with pd.option_context("display.width", 220, "display.max_rows", 500):
         for D, dd in df.groupby("D"):
+            present = [c for c in cols if dd[c].notna().any()]
             per_t = dd.drop_duplicates("task")
-            missing = float((~per_t["true_graph_in_prior"]).mean())
             resampled = float((per_t["resample_attempts"] > 0).mean())
+            in_prior = per_t["true_graph_in_prior"]
+            graph_line = "the oracle was not run; "
+            if in_prior.notna().any():
+                missing = float((~in_prior.astype(bool)).mean())
+                graph_line = (
+                    "true graph missing from the oracle's graph prior: "
+                    f"{missing:.2%}; "
+                )
             print(
-                f"\n=== D={D}: {len(per_t)} tasks; true graph missing from "
-                f"the oracle's graph prior: {missing:.2%}; resampled by the "
-                f"generator (resample_attempts > 0): {resampled:.2%}"
+                f"\n=== D={D}: {len(per_t)} tasks; {graph_line}resampled by "
+                f"the generator (resample_attempts > 0): {resampled:.2%}"
             )
-            per_task = dd.groupby(["task", "design", "k"])[cols].mean()
+            per_task = dd.groupby(["task", "design", "k"])[present].mean()
             g = per_task.groupby(["design", "k"])
             mean, se = g.mean(), g.sem()
             print(f"\n=== D={D}: mean over tasks, by design and k (nats)")
             print(mean.round(4))
+            if not {"excess_kl_truth", "kl_oracle_model"} <= set(present):
+                continue
             check = pd.DataFrame({
                 "excess": mean["excess_kl_truth"],
                 "excess_se": se["excess_kl_truth"],
@@ -337,6 +362,7 @@ def _run_kshot_prior(
         default_n_obs,
         resolve_graph_prior_samples,
     )
+    from CITNP.utils.config_files import config_fingerprint
 
     device = a.device or _default_device()
     data_cfg = load_config(a.data_config)
@@ -349,9 +375,13 @@ def _run_kshot_prior(
     k_list = sorted({int(k) for k in (a.k_list or "0,1,3,5,10").split(",")})
     n_obs = a.n_obs if a.n_obs is not None else default_n_obs(data_cfg)
 
+    with_oracle = not a.no_oracle
+    # graphs sampled for the oracle's graph prior, per D (none without it)
     n_graphs = {
-        D: resolve_graph_prior_samples(D, a.graph_prior_samples) for D in Ds
-    }
+        D: resolve_graph_prior_samples(D, a.graph_prior_samples) if with_oracle
+        else None
+        for D in Ds
+    }  # fmt: skip
 
     t0 = time.time()
     dfs, dfs_t = [], []
@@ -365,6 +395,7 @@ def _run_kshot_prior(
             min_graph_prob=a.min_graph_prob, flag_ablation=a.flag_ablation,
             max_oracle_nodes=a.max_oracle_nodes,
             graph_prior_samples=n_graphs[D], oracle_budget=a.oracle_budget,
+            with_oracle=with_oracle,
         )  # fmt: skip
         dfs.append(df)
         dfs_t.append(df_t)
@@ -382,18 +413,27 @@ def _run_kshot_prior(
             "param_min": float(d["do_scale_or_width"].min()),
             "param_max": float(d["do_scale_or_width"].max()),
         }
+    # sha256: the named file alone; fingerprint: every file it is built from
+    # through `extends` (CITNP.utils.config_files.config_fingerprint)
     meta = {
-        "data_config": {"path": a.data_config, "sha256": _sha256(a.data_config)},
+        "data_config": {
+            "path": a.data_config, "sha256": _sha256(a.data_config),
+            "fingerprint": config_fingerprint(a.data_config),
+        },
         "model_config": {
             "path": a.model_config, "sha256": _sha256(a.model_config),
+            "fingerprint": config_fingerprint(a.model_config),
         },
         "ckpt": a.ckpt,
+        "with_oracle": with_oracle,
         "git_commit": _git_commit(),
         "args": vars(a),
         "num_variables": Ds,
         "k_list": k_list,
         "n_obs": n_obs,
-        "graph_prior_samples": {str(D): n for D, n in n_graphs.items()},
+        "graph_prior_samples": (
+            {str(D): n for D, n in n_graphs.items()} if with_oracle else None
+        ),
         "oracle_budget": a.oracle_budget,
         "torch_threads": n_threads,
         "do_dist_summary": do_summary,
@@ -410,8 +450,11 @@ def _run_kshot_prior(
 # label -> key path in <out>_meta.json (missing keys read as None).
 _MERGE_FIELDS = {
     "data_config sha256": ("data_config", "sha256"),
+    "data_config fingerprint": ("data_config", "fingerprint"),
     "ckpt": ("ckpt",),
     "model_config sha256": ("model_config", "sha256"),
+    "model_config fingerprint": ("model_config", "fingerprint"),
+    "with_oracle": ("with_oracle",),
     "base_seed": ("args", "base_seed"),
     "k_list": ("k_list",),
     "n_mc": ("args", "n_mc"),
@@ -420,10 +463,28 @@ _MERGE_FIELDS = {
     "graph_prior_samples": ("graph_prior_samples",),
     "oracle_budget": ("oracle_budget",),
 }
+# Meta files written before a key existed do not have it. What a missing
+# key stands for: before `--no_oracle` the oracle was always run.
+_MERGE_DEFAULTS = {"with_oracle": True}
+# Fields that older meta files do not record and that have no default: they
+# are compared among the parts that record them. The config fingerprints
+# cover the files a config is built from through `extends`; the sha256 of
+# the named file alone, which every meta file records, is always compared.
+_MERGE_FIELDS_IF_RECORDED = {
+    "data_config fingerprint",
+    "model_config fingerprint",
+}
+# Fields that only describe the oracle: not compared when no part ran it.
+_ORACLE_MERGE_FIELDS = {"n_mc", "graph_prior_samples", "oracle_budget"}
 
 
 def _meta_mismatches(metas: dict) -> dict:
     """Fields of `_MERGE_FIELDS` on which the parts' metas disagree.
+
+    Meta files written by older versions are accepted: a missing
+    `with_oracle` reads as True, and the config fingerprints are compared
+    only among the parts that record them. Parts run with and without the
+    oracle always disagree (on `with_oracle`).
 
     Args:
     ----------
@@ -437,15 +498,22 @@ def _meta_mismatches(metas: dict) -> dict:
     """
     import json
 
+    def value(meta: dict, field: str):
+        v = meta
+        for key in _MERGE_FIELDS[field]:
+            v = v.get(key) if isinstance(v, dict) else None
+        return _MERGE_DEFAULTS.get(field) if v is None else v
+
+    any_oracle = any(value(meta, "with_oracle") for meta in metas.values())
     out = {}
-    for field, keys in _MERGE_FIELDS.items():
-        vals = {}
-        for part, meta in metas.items():
-            v = meta
-            for key in keys:
-                v = v.get(key) if isinstance(v, dict) else None
-            vals[part] = v
-        if len({json.dumps(v, sort_keys=True) for v in vals.values()}) > 1:
+    for field in _MERGE_FIELDS:
+        if field in _ORACLE_MERGE_FIELDS and not any_oracle:
+            continue
+        vals = {part: value(meta, field) for part, meta in metas.items()}
+        compared = list(vals.values())
+        if field in _MERGE_FIELDS_IF_RECORDED:
+            compared = [v for v in compared if v is not None]
+        if len({json.dumps(v, sort_keys=True) for v in compared}) > 1:
             out[field] = vals
     return out
 
