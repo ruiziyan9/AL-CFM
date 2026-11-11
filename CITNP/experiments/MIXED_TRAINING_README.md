@@ -316,9 +316,47 @@ python -m CITNP.evaluation plot-kshot-prior RUN/kshot_prior.csv
 - **The data config** must still be a linear-Gaussian family with
   `normalise: false`: the closed-form truth needs it too.
 
+### One fixed graph
+
+`--fixed_graph_edges` gives every task the same DAG, in a fixed variable
+order, instead of a graph drawn from the training prior. Weights, noise
+variances and the do-value distribution are still drawn from the data config
+exactly as in training; contexts, designs, questions, scores, CSV layout and
+figures are unchanged. Edges are 0-based `source->target` pairs, and node `j`
+is variable `X_{j+1}`: the example below is `X1 -> X2`, `X2 -> X3`,
+`X3 -> X5`, `X1 -> X4`, `X4 -> X5`, `X1 -> X3`.
+
+```bash
+python -m CITNP.evaluation kshot-prior --no_oracle \
+    --ckpt RUN/best_model.pt \
+    --model_config CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    --data_config CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+    --fixed_graph_edges "0->1,1->2,2->4,0->3,3->4,0->2" \
+    --n_tasks 500 --k_list 0,1,3,5,10 --out RUN/kshot_fixed_graph.csv
+```
+
+- **One D.** The graph fixes D, so `--num_variables` must name one value
+  (not needed when the data config has one, as `oracle_d5_iw_a15.yaml`).
+  The edge list is checked before anything runs: bad syntax, a repeated
+  edge, a self loop, an index outside the nodes or a cycle is an error.
+- **Table.** The column `fixed_graph` holds the sorted edge list on every row
+  (empty without the option), and the figure titles name the graph, so these
+  results are not mistaken for training-prior ones.
+- **The oracle is no longer a lower bound.** With the oracle (D <= 4) the
+  tasks are not drawn from the training prior it assumes, so
+  KL(truth || oracle) can exceed KL(truth || model), and the excess can be
+  negative on average.
+- **Merging.** `<out>_meta.json` records the graph as a sorted edge list;
+  parts with different graphs, or a fixed-graph part and a prior part, cannot
+  be merged. A meta file from before the option counts as "no fixed graph".
+- **Tasks.** Task `i` uses new random streams, so its weights differ from
+  task `i` of the prior run (no graph is drawn).
+
 On the cluster, `bmrc/eval_kshot_prior.sh` runs the evaluation as a CPU array
 (the oracle dominates the cost); `NO_ORACLE=1` passes `--no_oracle`, and a
 model-only run is cheap enough for a single GPU job (see the script's header).
+`FIXED_GRAPH_EDGES="0->1,1->2,2->4,0->3,3->4,0->2"` passes
+`--fixed_graph_edges` (quoted; `DRY_RUN=1` shows the command).
 
 ## Information-parity grid (2 x 2)
 

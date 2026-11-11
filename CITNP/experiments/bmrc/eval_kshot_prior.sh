@@ -33,6 +33,17 @@
 #                        --partition=gpu_a100_80gb --gres=gpu:1 \
 #                        CITNP/experiments/bmrc/eval_kshot_prior.sh
 #                  Parts run with and without the oracle cannot be merged.
+#   FIXED_GRAPH_EDGES  evaluate on ONE given DAG instead of graphs drawn from
+#                  the training prior (--fixed_graph_edges): 0-based
+#                  "source->target" edges, node j being variable X_{j+1}.
+#                  Weights, noise and do-values are still drawn from DATA_CFG
+#                  as in training. Needs a single D (NUM_VARIABLES, unless
+#                  DATA_CFG has one). With the oracle (D <= 4) it is no longer
+#                  a guaranteed lower bound. Example, five variables:
+#                    FIXED_GRAPH_EDGES="0->1,1->2,2->4,0->3,3->4,0->2" \
+#                        NO_ORACLE=1 ...
+#                  Parts with different graphs, or with and without one,
+#                  cannot be merged.
 #   NUM_VARIABLES  optional comma-separated D values (default: all in DATA_CFG)
 #   DEVICE         default cpu. For a GPU add to the sbatch command line
 #                  --account=gpu_cebam.prj --partition=gpu_a100_80gb
@@ -66,6 +77,7 @@ K_LIST=${K_LIST:-0,1,3,5,10}
 N_MC=${N_MC:-2000}
 ORACLE_BUDGET=${ORACLE_BUDGET:-total}
 NO_ORACLE=${NO_ORACLE:-0}
+FIXED_GRAPH_EDGES=${FIXED_GRAPH_EDGES:-}
 NUM_VARIABLES=${NUM_VARIABLES:-}
 DEVICE=${DEVICE:-cpu}
 EXTRA_ARGS=${EXTRA_ARGS:-}
@@ -79,18 +91,30 @@ NV=()
 if [ -n "$NUM_VARIABLES" ]; then NV=(--num_variables "$NUM_VARIABLES"); fi
 ORACLE=()
 if [ "$NO_ORACLE" = 1 ]; then ORACLE=(--no_oracle); fi
+FIXED_GRAPH=()
+if [ -n "$FIXED_GRAPH_EDGES" ]; then
+  FIXED_GRAPH=(--fixed_graph_edges "$FIXED_GRAPH_EDGES")
+fi
 CMD=(python -u -m CITNP.evaluation kshot-prior
   --ckpt "$CKPT" --model_config "$MODEL_CFG" --data_config "$DATA_CFG"
   --n_tasks "$TASKS_PER_JOB" --task_offset "$OFFSET"
   --k_list "$K_LIST" --n_mc "$N_MC" --oracle_budget "$ORACLE_BUDGET"
   --device "$DEVICE"
   ${ORACLE[@]+"${ORACLE[@]}"}
+  ${FIXED_GRAPH[@]+"${FIXED_GRAPH[@]}"}
   ${NV[@]+"${NV[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
   --out "$PART.csv")
 
 if [ "$DRY_RUN" = 1 ]; then
   echo "# DRY RUN: array index $ARRAY_ID, tasks $OFFSET..$((OFFSET + TASKS_PER_JOB - 1))"
-  echo "${CMD[@]}"
+  # the edges are shown in quotes: unquoted, the ">" would redirect output
+  shown=("${CMD[@]}")
+  for i in "${!shown[@]}"; do
+    if [ -n "$FIXED_GRAPH_EDGES" ] && [ "${shown[$i]}" = "$FIXED_GRAPH_EDGES" ]; then
+      shown[$i]="\"$FIXED_GRAPH_EDGES\""
+    fi
+  done
+  echo "${shown[@]}"
   exit 0
 fi
 
