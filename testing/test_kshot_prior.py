@@ -188,6 +188,55 @@ def task_means(df: pd.DataFrame, col: str, by=("design", "k")):
 
 
 # --------------------------------------------------------------------------- #
+# 1b. prior_scm with a fixed graph
+# --------------------------------------------------------------------------- #
+FIXED_EDGES = [(0, 1), (1, 2), (2, 4), (0, 3), (3, 4), (0, 2)]
+
+
+def _fixed_graph(D=5, edges=FIXED_EDGES):
+    graph = np.zeros((D, D), dtype=int)
+    for source, target in edges:
+        graph[source, target] = 1
+    return graph
+
+
+def test_prior_scm_fixed_graph_is_returned_and_weights_follow_it():
+    graph = _fixed_graph()
+    weights = []
+    for i in range(3):
+        scm, returned, do_dist, _ = tasks.prior_scm(
+            CFG_FIVE_VARIABLES, i, SEED, 5, fixed_graph=graph
+        )
+        assert np.array_equal(returned, graph)
+        assert np.array_equal(scm.adj, graph)
+        assert np.array_equal(scm.B != 0, graph.astype(bool))
+        assert "kind" in do_dist
+        weights.append(scm.B)
+    assert not np.allclose(weights[0], weights[1])
+    assert not np.allclose(weights[1], weights[2])
+
+
+@pytest.mark.parametrize(
+    "bad_graph, message",
+    [
+        (np.zeros((5, 4)), "square"),
+        (np.zeros((4, 4)), "4 nodes but D = 5"),
+        (np.eye(5), "self loop"),
+        (_fixed_graph(edges=[(0, 1), (1, 2), (2, 0)]), "cycle"),
+        (2 * _fixed_graph(), "only 0 and 1"),
+    ],
+)
+def test_prior_scm_rejects_invalid_fixed_graph(bad_graph, message):
+    with pytest.raises(ValueError, match=message):
+        tasks.prior_scm(CFG_FIVE_VARIABLES, 0, SEED, 5, fixed_graph=bad_graph)
+
+
+def test_prior_scm_rejects_fixed_graph_outside_num_variables():
+    with pytest.raises(ValueError, match="num_variables"):
+        tasks.prior_scm(CFG, 0, SEED, 5, fixed_graph=_fixed_graph())
+
+
+# --------------------------------------------------------------------------- #
 # 1. prior_scm
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("D", [3, 4])

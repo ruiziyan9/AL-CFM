@@ -221,8 +221,44 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 PRIOR_DESIGNS = ["random", "do(T)", "do(Y)", "do(other)"]
 
 
-def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
-    """SCM, graph and do-value distribution of task `i` of the training prior.
+def validate_fixed_graph(graph, D: int, cfg) -> np.ndarray:
+    """Check a user-given DAG for the fixed-graph evaluation and return it as
+    a [D, D] int array (graph[i, j] = 1 iff i -> j).
+
+    Raises ValueError unless `graph` is a square 0/1 matrix of side D,
+    without self loops and acyclic, and D is one of `cfg.num_variables`.
+    """
+    from CITNP.datasets.mixed_regime_generator import topological_order
+
+    adj = np.asarray(graph)
+    if adj.ndim != 2 or adj.shape[0] != adj.shape[1]:
+        raise ValueError(f"fixed graph must be square, got shape {adj.shape}")
+    if adj.shape[0] != D:
+        raise ValueError(
+            f"fixed graph has {adj.shape[0]} nodes but D = {D}"
+        )
+    if D not in [int(d) for d in cfg.num_variables]:
+        raise ValueError(
+            f"D = {D} is not in the data config's num_variables "
+            f"{list(cfg.num_variables)}"
+        )
+    if not np.isin(adj, (0, 1)).all():
+        raise ValueError("fixed graph must contain only 0 and 1")
+    if np.diag(adj).any():
+        raise ValueError("fixed graph has a self loop")
+    adj = adj.astype(int)
+    try:
+        topological_order(adj)
+    except ValueError as error:
+        raise ValueError(f"fixed graph has a cycle ({error})") from error
+    return adj
+
+
+def prior_scm(
+    cfg, i: int, base_seed: int = 9101, D: int = 3, fixed_graph=None
+):
+    """SCM, graph and do-value distribution of task `i` of the training prior,
+    optionally with the graph fixed.
 
     Calls the training generator with key make_key(SOURCE_ADHOC, D,
     base_seed, i) and keeps only the SCM, graph and do_dist; the generator's
@@ -230,6 +266,13 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     base_seed, D, i): D sits in the key's split slot, so tasks with the same
     i but different D use unrelated random streams. Other SOURCE_ADHOC
     callers use split 0 and D >= 1, so these keys collide with none of them.
+
+    With `fixed_graph` the graph is not sampled and the variables are not
+    permuted: every task has that DAG in that variable order. Mechanisms
+    (weights, noise variances) and the do-value distribution are drawn by the
+    same code and the same prior as for a sampled graph, so only the graph
+    differs from the prior's tasks. The random stream differs from the
+    prior's for the same (base_seed, D, i), since no graph is drawn.
 
     Args:
     ----------
@@ -245,6 +288,11 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     D : int
         Number of variables.
 
+    fixed_graph : np.ndarray | None
+        [D, D] 0/1 adjacency, fixed_graph[i, j] = 1 meaning i -> j. None
+        draws each task's graph from the training prior, with the prior's
+        random variable permutation (the default).
+
     Returns:
     ----------
     (LinearSCM, graph [D, D] int in the task's variable order, do_dist dict,
@@ -258,11 +306,15 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
 
     require_exact_oracle(cfg)
+    if fixed_graph is not None:
+        fixed_graph = validate_fixed_graph(fixed_graph, D, cfg)
     task, debug = generate_task(
         cfg,
         make_key(SOURCE_ADHOC, D, base_seed, i),
+        graph=fixed_graph,
         num_variables=D,
         return_debug=True,
+        permute=fixed_graph is None,
     )
     lg = scm_from_debug(debug)
     if not np.allclose(lg.c, 0.0):
