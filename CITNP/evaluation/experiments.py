@@ -5,6 +5,7 @@ plain results (pandas DataFrames or a dict); writing files, printing summaries
 and plotting are left to the caller.
 """
 
+from dataclasses import dataclass
 from functools import partial
 
 import numpy as np
@@ -105,10 +106,36 @@ def _build_contexts(obs_x, obs_m, pools, k_list, perm_seed, designs=None):
     return out
 
 
-def _fit_context(
-    predict, x, m, data_cfg, graph_prior, D, Ts, Ys, grid, flag_ablation
-):
-    """Fit the oracle on one context and predict all queries in one batch.
+def _fit_oracle(x, m, data_cfg, graph_prior, D):
+    """Fit the exact Bayesian oracle on one context.
+
+    Args:
+    ----------
+    x, m : np.ndarray
+        Context rows [n, D] and their intervention mask.
+
+    data_cfg : MixedRegimeConfig
+        Training data config (gives the oracle's parameter prior).
+
+    graph_prior : dict
+        dag_key -> log prior of the oracle.
+
+    D : int
+        Number of variables.
+
+    Returns:
+    ----------
+    The fitted `LinGaussOracle`.
+    """
+    return LinGaussOracle(
+        D,
+        log_graph_prior=graph_prior,
+        prior=LinearGaussianPrior.from_config(data_cfg),
+    ).fit(x, m)
+
+
+def _predict_context(predict, x, m, Ts, Ys, grid, flag_ablation):
+    """Run the model on one context: all queries in one batch.
 
     Args:
     ----------
@@ -122,36 +149,176 @@ def _fit_context(
 
     Returns:
     ----------
-    (oracle, model prediction, flag-ablated prediction or None).
+    (model prediction, flag-ablated prediction or None).
     """
-    orc = LinGaussOracle(
-        D,
-        log_graph_prior=graph_prior,
-        prior=LinearGaussianPrior.from_config(data_cfg),
-    ).fit(x, m)
     mod = predict(x, m, Ts, Ys, grid)
     mod_nf = None
     if flag_ablation:
         mod_nf = predict(x, m, Ts, Ys, grid, zero_flags=True)
-    return orc, mod, mod_nf
+    return mod, mod_nf
 
 
-# Component block size of `mix_logpdf` in `_score_query` (bounds memory for
+# Component block size of `mix_logpdf` in the query scores (bounds memory for
 # large oracle mixtures; mixtures with <= this many components are unchunked).
 _MIX_CHUNK = 8192
 
+# Column order of the scores of one query: `_score_model_query` and
+# `_score_oracle_query` each fill their own columns, `_join_query_scores`
+# puts them in this order. A column that was not computed (the naive-slope
+# and flag-ablation columns are optional) is left out.
+_QUERY_SCORE_COLUMNS = [
+    "kl_truth_model", "kl_truth_oracle", "kl_oracle_model",
+    "kl_oracle_model_noflag", "excess_kl_truth", "slope_truth",
+    "slope_naive_obs", "slope_oracle", "slope_sd_oracle", "slope_model",
+    "intercept_model", "slope_err_model_truth", "slope_err_oracle_truth",
+    "slope_err_naive_truth", "var_ratio_model_oracle",
+]  # fmt: skip
+# The same for the table with one row per do-value.
+_DO_VALUE_SCORE_COLUMNS = [
+    "t", "kl_truth_model", "kl_truth_oracle", "kl_oracle_model",
+    "mean_truth", "sd_truth", "mean_oracle", "sd_oracle", "mean_model",
+    "sd_model",
+]  # fmt: skip
 
-def _score_query(
-    orc, mod, mod_nf, qi, T, Y, truth, grid, g, qrng, *, n_y, n_mc,
-    min_graph_prob, oracle_seed, dev, naive=None, param_cache=None,
-    oracle_budget="per_dag",
-):  # fmt: skip
-    """KLs, slopes and variance ratio of one query against one context fit.
+
+@dataclass
+class _ModelQueryScores:
+    """Scores of the model against the truth for one query of one context
+    (`_score_model_query`), with what `_score_oracle_query` reuses so that
+    the oracle is scored on the same truth samples.
+
+    Attributes:
+    ----------
+    fields : dict
+        Model-against-truth score columns, averaged over the do-value grid.
+
+    rows_by_do_value : list[dict]
+        The model-against-truth columns of each do-value on the grid.
+
+    truth_samples : torch.Tensor
+        y drawn from the true do-distribution [n_t, n_y].
+
+    truth_log_density : torch.Tensor
+        Log density of `truth_samples` under the truth [n_t, n_y].
+
+    kl_truth_model : np.ndarray
+        KL(truth || model) per do-value [n_t].
+
+    model_mixture : tuple of Tensor
+        (mu, sd, logw) of the model for this query, each [n_t, K].
+
+    model_mixture_no_flags : tuple of Tensor | None
+        The same with the intervention flags zeroed, if predicted.
+
+    model_variance : np.ndarray
+        Predictive variance of the model per do-value [n_t].
+    """
+
+    fields: dict
+    rows_by_do_value: list[dict]
+    truth_samples: torch.Tensor
+    truth_log_density: torch.Tensor
+    kl_truth_model: np.ndarray
+    model_mixture: tuple
+    model_mixture_no_flags: tuple | None
+    model_variance: np.ndarray
+
+
+def _score_model_query(
+    mod, mod_nf, qi, truth, grid, g, truth_rng, *, n_y, dev, naive=None
+):
+    """Scores of the model against the truth for one query of one context:
+    KL(truth || model), the model's implied slope and intercept, and its
+    predictive mean and spread at each do-value. Never touches the oracle.
 
     Args:
     ----------
     mod, mod_nf : tuple of Tensor
-        Batched predictions from `_fit_context`; `qi` indexes the query.
+        Batched predictions from `_predict_context`; `qi` indexes the query.
+
+    truth : tuple[float, float]
+        (slope, variance) of the true do-distribution.
+
+    grid : np.ndarray
+        Do-values [n_t].
+
+    g : torch.Tensor
+        `grid` as a float64 tensor on `dev`.
+
+    truth_rng : np.random.Generator
+        Draws the truth samples: n_y values of y per do-value.
+
+    naive : float | None
+        Naive observational slope; if given, the naive-slope columns are
+        added.
+
+    Returns:
+    ----------
+    `_ModelQueryScores`: the score columns (the caller adds the identifying
+    columns) and the truth samples for `_score_oracle_query`.
+    """
+    b, v = truth
+    y_true = torch.tensor(sample_truth(b, v, grid, n_y, truth_rng), device=dev)
+    lp_true = truth_logpdf(b, v, g, y_true)
+
+    m_par = tuple(p[qi] for p in mod)
+    nf_par = None if mod_nf is None else tuple(p[qi] for p in mod_nf)
+    kl_tm = kl_mc(lp_true, mix_logpdf(y_true, *m_par, chunk=_MIX_CHUNK))
+
+    # moments
+    mean_m, var_m = mixture_moments(*(p.cpu().numpy() for p in m_par))
+    slope_m, icpt_m = implied_slope(grid, mean_m)
+
+    fields = {"kl_truth_model": float(kl_tm.mean()), "slope_truth": float(b)}
+    if naive is not None:
+        fields["slope_naive_obs"] = naive
+    fields.update({
+        "slope_model": float(slope_m), "intercept_model": float(icpt_m),
+        "slope_err_model_truth": float(slope_m - b),
+    })  # fmt: skip
+    if naive is not None:
+        fields["slope_err_naive_truth"] = float(naive - b)
+    rows_t = [
+        {
+            "t": float(tv),
+            "kl_truth_model": float(kl_tm[ti]),
+            "mean_truth": float(b * tv), "sd_truth": float(np.sqrt(v)),
+            "mean_model": float(mean_m[ti]),
+            "sd_model": float(np.sqrt(max(var_m[ti], 0.0))),
+        }
+        for ti, tv in enumerate(grid)
+    ]  # fmt: skip
+    return _ModelQueryScores(
+        fields=fields,
+        rows_by_do_value=rows_t,
+        truth_samples=y_true,
+        truth_log_density=lp_true,
+        kl_truth_model=kl_tm,
+        model_mixture=m_par,
+        model_mixture_no_flags=nf_par,
+        model_variance=var_m,
+    )
+
+
+def _score_oracle_query(
+    orc, model_scores, T, Y, truth, grid, g, oracle_rng, *, n_y, n_mc,
+    min_graph_prob, oracle_seed, dev, param_cache=None,
+    oracle_budget="per_dag",
+):  # fmt: skip
+    """Scores that involve the exact oracle for one query of one context:
+    KL(truth || oracle) on the truth samples of `model_scores`,
+    KL(oracle || model) with and without the intervention flags, the excess
+    KL(truth || model) - KL(truth || oracle), the oracle's implied slope and
+    its spread, the model / oracle variance ratio, and the oracle's
+    predictive mean and spread at each do-value.
+
+    Args:
+    ----------
+    orc : LinGaussOracle
+        Oracle fitted on the context (`_fit_oracle`).
+
+    model_scores : _ModelQueryScores
+        From `_score_model_query` for the same query.
 
     truth : tuple[float, float]
         (slope, variance) of the true do-distribution.
@@ -159,9 +326,9 @@ def _score_query(
     g : torch.Tensor
         `grid` as a float64 tensor on `dev`.
 
-    naive : float | None
-        Naive observational slope; if given, the naive-slope columns are
-        added.
+    oracle_rng : np.random.Generator
+        Draws the oracle's own samples: n_y values of y per do-value from
+        the oracle's predictive, for KL(oracle || model).
 
     param_cache : dict | None
         Oracle parameter cache of this context (see
@@ -172,12 +339,12 @@ def _score_query(
 
     Returns:
     ----------
-    (row fields, per-t rows): dicts holding only the score columns; the
-    caller adds the identifying columns.
+    (row fields, per-do-value rows): dicts holding only the oracle's score
+    columns; join them with the model's by `_join_query_scores`.
     """
-    b, v = truth
-    y_true = torch.tensor(sample_truth(b, v, grid, n_y, qrng), device=dev)
-    lp_true = truth_logpdf(b, v, g, y_true)
+    b, _ = truth
+    y_true, lp_true = model_scores.truth_samples, model_scores.truth_log_density
+    kl_tm = model_scores.kl_truth_model
 
     # exact Bayes p_B
     log_w, slope, var = orc.predictive_components(
@@ -190,57 +357,81 @@ def _score_query(
         budget=oracle_budget,
     )
     log_w, w, var = oracle_weights(log_w, var)
-    y_or = torch.tensor(sample_oracle(w, slope, var, grid, n_y, qrng), device=dev)
+    y_or = torch.tensor(
+        sample_oracle(w, slope, var, grid, n_y, oracle_rng), device=dev
+    )
     o_par = oracle_mixture_on_grid(log_w, slope, var, g)
 
-    m_par = tuple(p[qi] for p in mod)
     mlp = partial(mix_logpdf, chunk=_MIX_CHUNK)
     lp_o_on_o = mlp(y_or, *o_par)
-    kl_om = kl_mc(lp_o_on_o, mlp(y_or, *m_par))
-    kl_tm = kl_mc(lp_true, mlp(y_true, *m_par))
+    kl_om = kl_mc(lp_o_on_o, mlp(y_or, *model_scores.model_mixture))
     kl_to = kl_mc(lp_true, mlp(y_true, *o_par))
 
     # moments
     s_bar, s_sd, mean_o, var_o = oracle_moments(w, slope, var, grid)
-    mean_m, var_m = mixture_moments(*(p.cpu().numpy() for p in m_par))
-    slope_m, icpt_m = implied_slope(grid, mean_m)
 
     fields = {
-        "kl_truth_model": float(kl_tm.mean()),
         "kl_truth_oracle": float(kl_to.mean()),
         "kl_oracle_model": float(kl_om.mean()),
     }
-    if mod_nf is not None:
-        nf_par = tuple(p[qi] for p in mod_nf)
-        kl_om_nf = kl_mc(lp_o_on_o, mlp(y_or, *nf_par))
+    if model_scores.model_mixture_no_flags is not None:
+        kl_om_nf = kl_mc(
+            lp_o_on_o, mlp(y_or, *model_scores.model_mixture_no_flags)
+        )
         fields["kl_oracle_model_noflag"] = float(kl_om_nf.mean())
-    fields["excess_kl_truth"] = float((kl_tm - kl_to).mean())
-    fields["slope_truth"] = float(b)
-    if naive is not None:
-        fields["slope_naive_obs"] = naive
     fields.update({
+        "excess_kl_truth": float((kl_tm - kl_to).mean()),
         "slope_oracle": s_bar, "slope_sd_oracle": s_sd,
-        "slope_model": float(slope_m), "intercept_model": float(icpt_m),
-        "slope_err_model_truth": float(slope_m - b),
         "slope_err_oracle_truth": float(s_bar - b),
+        "var_ratio_model_oracle": variance_ratio(
+            model_scores.model_variance, var_o
+        ),
     })  # fmt: skip
-    if naive is not None:
-        fields["slope_err_naive_truth"] = float(naive - b)
-    fields["var_ratio_model_oracle"] = variance_ratio(var_m, var_o)
     rows_t = [
         {
-            "t": float(tv),
-            "kl_truth_model": float(kl_tm[ti]),
             "kl_truth_oracle": float(kl_to[ti]),
             "kl_oracle_model": float(kl_om[ti]),
-            "mean_truth": float(b * tv), "sd_truth": float(np.sqrt(v)),
             "mean_oracle": float(mean_o[ti]),
             "sd_oracle": float(np.sqrt(var_o[ti])),
-            "mean_model": float(mean_m[ti]),
-            "sd_model": float(np.sqrt(max(var_m[ti], 0.0))),
         }
-        for ti, tv in enumerate(grid)
-    ]  # fmt: skip
+        for ti in range(len(grid))
+    ]
+    return fields, rows_t
+
+
+def _in_column_order(scores: dict, columns: list[str]) -> dict:
+    """`scores` with its keys in the order of `columns`."""
+    unknown = set(scores) - set(columns)
+    if unknown:
+        raise KeyError(f"score columns without a place: {sorted(unknown)}")
+    return {c: scores[c] for c in columns if c in scores}
+
+
+def _join_query_scores(model_scores, oracle_fields, oracle_rows):
+    """Model and oracle scores of one query as one set of columns.
+
+    Args:
+    ----------
+    model_scores : _ModelQueryScores
+        From `_score_model_query`.
+
+    oracle_fields, oracle_rows : dict, list[dict]
+        From `_score_oracle_query` for the same query.
+
+    Returns:
+    ----------
+    (row fields, per-do-value rows) in the column order of
+    `_QUERY_SCORE_COLUMNS` and `_DO_VALUE_SCORE_COLUMNS`.
+    """
+    fields = _in_column_order(
+        {**model_scores.fields, **oracle_fields}, _QUERY_SCORE_COLUMNS
+    )
+    rows_t = [
+        _in_column_order({**model_row, **oracle_row}, _DO_VALUE_SCORE_COLUMNS)
+        for model_row, oracle_row in zip(
+            model_scores.rows_by_do_value, oracle_rows
+        )
+    ]
     return fields, rows_t
 
 
@@ -333,18 +524,24 @@ def run_kshot(
         )
         for c_i, (design, k, x, m, nodes) in enumerate(contexts):
             # all six queries share the context: one batch of six elements
-            orc, mod, mod_nf = _fit_context(
-                predict, x, m, data_cfg, prior, len(scm.s2), Ts, Ys, grid, True
-            )
+            orc = _fit_oracle(x, m, data_cfg, prior, len(scm.s2))
+            mod, mod_nf = _predict_context(predict, x, m, Ts, Ys, grid, True)
             qrng = np.random.default_rng([s, c_i, k, 99])
 
             for qi, (T, Y) in enumerate(QUERIES):
                 b = truth[(T, Y)][0]
-                fields, t_rows = _score_query(
-                    orc, mod, mod_nf, qi, T, Y, truth[(T, Y)], grid, g, qrng,
-                    n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
-                    oracle_seed=s, dev=dev, naive=naive[(T, Y)],
+                model_scores = _score_model_query(
+                    mod, mod_nf, qi, truth[(T, Y)], grid, g, qrng,
+                    n_y=n_y, dev=dev, naive=naive[(T, Y)],
                 )  # fmt: skip
+                oracle_fields, oracle_rows = _score_oracle_query(
+                    orc, model_scores, T, Y, truth[(T, Y)], grid, g, qrng,
+                    n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
+                    oracle_seed=s, dev=dev,
+                )  # fmt: skip
+                fields, t_rows = _join_query_scores(
+                    model_scores, oracle_fields, oracle_rows
+                )
                 q = qname(T, Y)
                 qtype = query_type(nodes, T, Y)
                 rows.append({
@@ -551,19 +748,26 @@ def run_kshot_prior(
 
         acc: dict = {}  # (pair index, design, k) -> [(fields, t rows, nodes)]
         for c_i, (key, k, x, m, nodes) in enumerate(contexts):
-            orc, mod, mod_nf = _fit_context(
-                predict, x, m, data_cfg, graph_prior, D, Ts, Ys, grid,
-                flag_ablation,
-            )  # fmt: skip
+            orc = _fit_oracle(x, m, data_cfg, graph_prior, D)
+            mod, mod_nf = _predict_context(
+                predict, x, m, Ts, Ys, grid, flag_ablation
+            )
             qrng = np.random.default_rng([base_seed, D, i, c_i, k, 99])
             cache: dict = {}  # oracle draws shared by this context's pairs
             for qi, (T, Y) in enumerate(pairs):
-                fields, t_rows = _score_query(
-                    orc, mod, mod_nf, qi, T, Y, truth[qi], grid, g, qrng,
+                model_scores = _score_model_query(
+                    mod, mod_nf, qi, truth[qi], grid, g, qrng,
+                    n_y=n_y, dev=device,
+                )  # fmt: skip
+                oracle_fields, oracle_rows = _score_oracle_query(
+                    orc, model_scores, T, Y, truth[qi], grid, g, qrng,
                     n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
                     oracle_seed=i, dev=device, param_cache=cache,
                     oracle_budget=oracle_budget,
                 )  # fmt: skip
+                fields, t_rows = _join_query_scores(
+                    model_scores, oracle_fields, oracle_rows
+                )
                 design = "obs" if key == "obs" else design_of[qi][key]
                 acc.setdefault((qi, design, k), []).append(
                     (fields, t_rows, nodes)
