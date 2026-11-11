@@ -51,6 +51,7 @@ from CITNP.evaluation.tasks import (
     context_designs,
     default_n_obs,
     empirical_graph_prior,
+    format_graph_edges,
     make_context,
     make_pools,
     node_pools,
@@ -62,6 +63,7 @@ from CITNP.evaluation.tasks import (
     require_exact_oracle,
     resolve_graph_prior_samples,
     scm_suite,
+    validate_fixed_graph,
 )
 
 
@@ -666,9 +668,11 @@ def run_kshot_prior(
     graph_prior_samples: int | None = None,
     oracle_budget: str = "total",
     with_oracle: bool = True,
+    fixed_graph: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """K-shot evaluation on tasks drawn from the TRAINING PRIOR: the only
-    evaluation in which the exact oracle is a true lower bound.
+    evaluation in which the exact oracle is a true lower bound (not so with
+    `fixed_graph`, see below).
 
     The model is scored against the truth; with_oracle (the default) also
     runs the exact Bayesian oracle on every context. The model-against-truth
@@ -773,6 +777,22 @@ def run_kshot_prior(
         `true_graph_in_prior`) is then written as a missing value, so both
         modes give tables with the same columns.
 
+    fixed_graph : np.ndarray | None
+        [D, D] 0/1 adjacency (fixed_graph[i, j] = 1 meaning i -> j). If given,
+        every task uses this DAG in this variable order (no variable
+        permutation), while weights, noise variances and the do-value
+        distribution are still drawn from `data_cfg` exactly as in training
+        (see `prior_scm`); contexts, designs, questions and scores are
+        unchanged. The edge list is recorded in the column `fixed_graph`
+        (empty for the prior's own graphs). The oracle still runs where D
+        allows it, but on a fixed graph it is NO LONGER A GUARANTEED LOWER
+        BOUND: the tasks are not drawn from the training prior, so
+        E[KL(truth||model)] - E[KL(truth||oracle)] can be negative, and the
+        identity with E[KL(oracle||model)] no longer holds. Its graph prior
+        is still the training prior's (a fixed graph that the prior gives
+        probability 0 gives `true_graph_in_prior` False). Default None
+        draws each task's graph from the prior.
+
     Returns:
     ----------
     (one row per task, pair, design, k; one row per task, pair, design, k and
@@ -791,6 +811,11 @@ def run_kshot_prior(
     if D not in list(data_cfg.num_variables):
         raise ValueError(f"D={D} not in data_cfg.num_variables")
     require_exact_oracle(data_cfg)
+    if fixed_graph is not None:
+        fixed_graph = validate_fixed_graph(fixed_graph, D, data_cfg)
+    fixed_graph_edges = (
+        "" if fixed_graph is None else format_graph_edges(fixed_graph)
+    )
     if isinstance(predict_or_model, torch.nn.Module):
         predict = partial(predict_mixture, predict_or_model, device=device)
     else:
@@ -822,7 +847,9 @@ def run_kshot_prior(
     rows: list[dict] = []
     rows_t: list[dict] = []
     for i in range(task_offset, task_offset + n_tasks):
-        scm, graph, do_dist, attempts = prior_scm(data_cfg, i, base_seed, D)
+        scm, graph, do_dist, attempts = prior_scm(
+            data_cfg, i, base_seed, D, fixed_graph=fixed_graph
+        )
         grid = do_dist_quantile(do_dist, q_levels)
         g = torch.tensor(grid, dtype=torch.float64, device=device)
         truth = [scm.do_dist(T, Y) for T, Y in pairs]
@@ -914,6 +941,7 @@ def run_kshot_prior(
                         "resample_attempts": attempts,
                         "log_prior_true_graph": log_prior_true,
                         "true_graph_in_prior": true_graph_in_prior,
+                        "fixed_graph": fixed_graph_edges,
                     })  # fmt: skip
                     for ti in range(n_t):
                         tr = _mean_dicts([it[1][ti] for it in items])

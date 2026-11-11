@@ -254,6 +254,13 @@ def validate_fixed_graph(graph, D: int, cfg) -> np.ndarray:
     return adj
 
 
+def format_graph_edges(graph) -> str:
+    """Edge list of a DAG as text, "0->1,0->2,1->2" (graph[i, j] = 1 gives
+    "i->j"), sorted by source and then target; "" for a graph without edges."""
+    sources, targets = np.nonzero(np.asarray(graph))
+    return ",".join(f"{int(i)}->{int(j)}" for i, j in zip(sources, targets))
+
+
 def prior_scm(
     cfg, i: int, base_seed: int = 9101, D: int = 3, fixed_graph=None
 ):

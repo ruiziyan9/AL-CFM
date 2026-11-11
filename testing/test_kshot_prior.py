@@ -610,6 +610,36 @@ def test_model_only_five_variables(monkeypatch):
     assert df_t[ORACLE_COLUMNS_BY_DO_VALUE].isna().all().all()
 
 
+def test_fixed_graph_model_only_five_variables(monkeypatch):
+    D = 5
+    forbid_the_oracle(monkeypatch)
+
+    def evaluate(fixed_graph):
+        return run_kshot_prior(
+            untrained_model_predictor(D),
+            CFG_FIVE_VARIABLES,
+            D=D,
+            device="cpu",
+            k_list=[0, 2],
+            n_tasks=3,
+            base_seed=SEED,
+            n_y=16,
+            n_t=5,
+            with_oracle=False,
+            fixed_graph=fixed_graph,
+        )
+
+    df, df_t = evaluate(_fixed_graph())
+    prior_df, _ = evaluate(None)
+    assert list(df.columns) == list(prior_df.columns)
+    assert df["fixed_graph"].eq("0->1,0->2,0->3,1->2,2->4,3->4").all()
+    assert prior_df["fixed_graph"].eq("").all()
+    assert np.isfinite(df[["kl_truth_model", "slope_truth"]]).all().all()
+    assert np.isfinite(df_t[["kl_truth_model", "mean_truth"]]).all().all()
+    assert df["task"].nunique() == 3
+    assert df[ORACLE_COLUMNS].isna().all().all()
+
+
 def test_large_d_error_points_to_the_model_only_mode():
     with pytest.raises(ValueError, match="with_oracle=False"):
         run_kshot_prior(
