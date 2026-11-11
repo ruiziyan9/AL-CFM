@@ -175,10 +175,11 @@ _MIX_CHUNK = 8192
 # and flag-ablation columns are optional) is left out.
 _QUERY_SCORE_COLUMNS = [
     "kl_truth_model", "kl_truth_oracle", "kl_oracle_model",
-    "kl_oracle_model_noflag", "excess_kl_truth", "slope_truth",
-    "slope_naive_obs", "slope_oracle", "slope_sd_oracle", "slope_model",
-    "intercept_model", "slope_err_model_truth", "slope_err_oracle_truth",
-    "slope_err_naive_truth", "var_ratio_model_oracle",
+    "kl_oracle_model_noflag", "kl_truth_model_noflag", "excess_kl_truth",
+    "slope_truth", "slope_naive_obs", "slope_oracle", "slope_sd_oracle",
+    "slope_model", "intercept_model", "slope_err_model_truth",
+    "slope_err_oracle_truth", "slope_err_naive_truth",
+    "var_ratio_model_oracle",
 ]  # fmt: skip
 # The same for the table with one row per do-value.
 _DO_VALUE_SCORE_COLUMNS = [
@@ -245,8 +246,10 @@ def _score_model_query(
     mod, mod_nf, qi, truth, grid, g, truth_rng, *, n_y, dev, naive=None
 ):
     """Scores of the model against the truth for one query of one context:
-    KL(truth || model), the model's implied slope and intercept, and its
-    predictive mean and spread at each do-value. Never touches the oracle.
+    KL(truth || model), with `mod_nf` also KL(truth || model with the
+    intervention flags zeroed) on the same truth samples, the model's
+    implied slope and intercept, and its predictive mean and spread at each
+    do-value. Never touches the oracle.
 
     Args:
     ----------
@@ -286,7 +289,13 @@ def _score_model_query(
     mean_m, var_m = mixture_moments(*(p.cpu().numpy() for p in m_par))
     slope_m, icpt_m = implied_slope(grid, mean_m)
 
-    fields = {"kl_truth_model": float(kl_tm.mean()), "slope_truth": float(b)}
+    fields = {"kl_truth_model": float(kl_tm.mean())}
+    if nf_par is not None:
+        kl_tm_nf = kl_mc(
+            lp_true, mix_logpdf(y_true, *nf_par, chunk=_MIX_CHUNK)
+        )
+        fields["kl_truth_model_noflag"] = float(kl_tm_nf.mean())
+    fields["slope_truth"] = float(b)
     if naive is not None:
         fields["slope_naive_obs"] = naive
     fields.update({
@@ -518,6 +527,8 @@ def run_kshot(
         kl_truth_model    KL(p*  || p_m)   how wrong the model is about the world
         kl_truth_oracle   KL(p*  || p_B)   the best achievable from this context
         kl_oracle_model   KL(p_B || p_m)   distance from the Bayes answer
+    the first and the last also with the model's intervention flags zeroed
+    (kl_truth_model_noflag, kl_oracle_model_noflag),
     plus implied effects (slope of the predictive mean in t) and variance
     ratios. query_type is seen / unseen_identified / unidentified. The oracle
     is Bayes-optimal only for the prior the model was trained on
@@ -619,8 +630,8 @@ def run_kshot(
 # --------------------------------------------------------------------------- #
 _PRIOR_FIELDS = [
     "kl_truth_model", "kl_truth_oracle", "kl_oracle_model",
-    "kl_oracle_model_noflag", "excess_kl_truth", "slope_truth",
-    "slope_oracle", "slope_model", "var_ratio_model_oracle",
+    "kl_oracle_model_noflag", "kl_truth_model_noflag", "excess_kl_truth",
+    "slope_truth", "slope_oracle", "slope_model", "var_ratio_model_oracle",
 ]  # fmt: skip
 
 
@@ -720,7 +731,10 @@ def run_kshot_prior(
         Monte Carlo y samples per do-value; oracle draws per DAG.
 
     flag_ablation : bool
-        Also score the model with intervention flags zeroed.
+        Also score the model with intervention flags zeroed: adds
+        `kl_truth_model_noflag`, KL(truth || model without flags), which
+        needs no oracle, and `kl_oracle_model_noflag`, KL(oracle || model
+        without flags).
 
     max_oracle_nodes : int
         Largest D for which exact DAG enumeration is attempted (ignored

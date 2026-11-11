@@ -508,6 +508,30 @@ def test_model_scores_do_not_depend_on_the_oracle(monkeypatch):
     assert df["kl_truth_model"].nunique() > 1
 
 
+def flag_sensitive_predictor(x, m, Ts, Ys, grid, zero_flags=False):
+    """N(0, 1) with the intervention flags, N(0.5, 4) with them zeroed."""
+    mu, sd, logw = normal_predictor(x, m, Ts, Ys, grid)
+    return (mu + 0.5, 2.0 * sd, logw) if zero_flags else (mu, sd, logw)
+
+
+def flags_always_zeroed_predictor(x, m, Ts, Ys, grid, zero_flags=False):
+    """What `flag_sensitive_predictor` predicts with the flags zeroed."""
+    return flag_sensitive_predictor(x, m, Ts, Ys, grid, zero_flags=True)
+
+
+@pytest.mark.parametrize("with_oracle", [True, False])
+def test_flag_ablation_against_truth(with_oracle):
+    kw = dict(log_graph_prior=uniform_prior(3), with_oracle=with_oracle)
+    df, _ = run(3, 2, [0, 2], flag_sensitive_predictor, flag_ablation=True, **kw)
+    # the flag-ablated model, scored as the model on the same truth samples
+    zeroed, _ = run(3, 2, [0, 2], flags_always_zeroed_predictor, **kw)
+    assert np.array_equal(df["kl_truth_model_noflag"], zeroed["kl_truth_model"])
+    assert (df["kl_truth_model_noflag"] != df["kl_truth_model"]).all()
+    assert df["kl_oracle_model_noflag"].notna().all() == with_oracle
+    # neither flag-ablation column without flag_ablation
+    assert not [c for c in zeroed.columns if c.endswith("noflag")]
+
+
 def test_model_only_five_variables(monkeypatch):
     D = 5
     forbid_the_oracle(monkeypatch)
