@@ -444,3 +444,107 @@ def test_plot_kshot_prior_model_only(tmp_path, monkeypatch):
     assert "excess" not in titles and "excess" not in ylabels[0]
     assert "KL(truth || model)" in ylabels[0]
     assert lines == [5, 5]  # two question classes
+
+
+# --------------------------------------------------------------------------- #
+# --fixed_graph_edges
+# --------------------------------------------------------------------------- #
+def test_parse_graph_edges_valid():
+    from CITNP.evaluation.tasks import format_graph_edges, parse_graph_edges
+
+    graph = parse_graph_edges("0->1, 1->2,2->4,0->3,3->4,0->2", 5)
+    assert graph.shape == (5, 5) and graph.sum() == 6
+    assert graph[0, 1] == graph[2, 4] == graph[0, 2] == 1 and graph[1, 0] == 0
+    # canonical form: sorted by source, then target
+    assert format_graph_edges(graph) == "0->1,0->2,0->3,1->2,2->4,3->4"
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("", "empty"),
+        ("0->1,,1->2", "bad edge"),
+        ("0-1", "bad edge"),
+        ("0->a", "bad edge"),
+        ("-1->2", "bad edge"),
+        ("0->5", "index >= D"),
+        ("1->1", "self loop"),
+        ("0->1,1->2,0->1", "repeated"),
+        ("0->1,1->2,2->0", "cycle"),
+    ],
+)
+def test_parse_graph_edges_rejects(text, message):
+    from CITNP.evaluation.tasks import parse_graph_edges
+
+    with pytest.raises(ValueError, match=message):
+        parse_graph_edges(text, 5)
+
+
+def test_cli_rejects_bad_fixed_graph_before_evaluating(tmp_path, capsys):
+    from CITNP.evaluation.__main__ import main
+
+    out = tmp_path / "kp.csv"
+    args = [
+        "kshot-prior", "--ckpt", "unused.pt", "--model_config", "unused.yaml",
+        "--data_config", str(REPO / DATA_CFG_FIVE_VARIABLES),
+        "--no_oracle", "--out", str(out),
+    ]  # fmt: skip
+    with pytest.raises(SystemExit):
+        main([*args, "--fixed_graph_edges", "0->1,1->0"])
+    assert "cycle" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main([*args, "--fixed_graph_edges", "0->1,0->1"])
+    assert "repeated" in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.skipif(
+    not (GOLDEN / "tiny_model.pt").exists(), reason="golden files not recorded"
+)
+def test_kshot_prior_fixed_graph_five_variables(tmp_path):
+    import json
+
+    import pandas as pd
+
+    from CITNP.evaluation.__main__ import main
+
+    out = tmp_path / "kp.csv"
+    main([
+        "kshot-prior", "--ckpt", str(GOLDEN / "tiny_model.pt"),
+        "--model_config", str(REPO / TINY_CFG),
+        "--data_config", str(REPO / DATA_CFG_FIVE_VARIABLES),
+        "--n_tasks", "2", "--k_list", "0,1", "--n_y", "16", "--no_oracle",
+        "--fixed_graph_edges", "3->4, 0->1,1->2,2->4,0->3,0->2",
+        "--device", "cpu", "--out", str(out),
+    ])  # fmt: skip
+    df = pd.read_csv(out)
+    assert df["fixed_graph"].eq("0->1,0->2,0->3,1->2,2->4,3->4").all()
+    meta = json.loads((tmp_path / "kp_meta.json").read_text())
+    assert meta["fixed_graph"] == "0->1,0->2,0->3,1->2,2->4,3->4"
+
+
+def test_meta_mismatches_refuses_different_fixed_graphs():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    one = _part_meta_with_mode(True, fixed_graph="0->1,1->2")
+    two = _part_meta_with_mode(True, fixed_graph="0->1,0->2")
+    assert _meta_mismatches({"p0": one, "p1": one}) == {}
+    diff = _meta_mismatches({"p0": one, "p1": two})
+    assert set(diff) == {"fixed_graph"}
+    assert diff["fixed_graph"] == {"p0": "0->1,1->2", "p1": "0->1,0->2"}
+
+
+def test_meta_mismatches_refuses_fixed_graph_with_prior_part():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    fixed = _part_meta_with_mode(True, fixed_graph="0->1,1->2")
+    from_prior = _part_meta_with_mode(True, fixed_graph=None)
+    assert set(_meta_mismatches({"p0": fixed, "p1": from_prior})) == {
+        "fixed_graph"
+    }
+    # a meta file from before the option existed is a prior part ...
+    old = _part_meta()
+    assert "fixed_graph" not in old
+    assert set(_meta_mismatches({"p0": fixed, "p1": old})) == {"fixed_graph"}
+    # ... and merges with prior parts
+    assert _meta_mismatches({"p0": old, "p1": from_prior}) == {}

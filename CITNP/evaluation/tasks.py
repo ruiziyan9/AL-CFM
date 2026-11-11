@@ -8,6 +8,7 @@ explicitly and draw in a fixed order, so results are reproducible.
 
 import itertools
 import random
+import re
 import time
 
 import numpy as np
@@ -259,6 +260,50 @@ def format_graph_edges(graph) -> str:
     "i->j"), sorted by source and then target; "" for a graph without edges."""
     sources, targets = np.nonzero(np.asarray(graph))
     return ",".join(f"{int(i)}->{int(j)}" for i, j in zip(sources, targets))
+
+
+def parse_graph_edges(text: str, D: int) -> np.ndarray:
+    """Adjacency matrix from an edge list such as "0->1, 1->2, 0->2": 0-based
+    node indices, "i->j" meaning i -> j, edges separated by commas (spaces
+    are ignored).
+
+    Returns:
+    ----------
+    [D, D] int array, adjacency[i, j] = 1 iff the list has "i->j".
+
+    Raises ValueError for an empty list, an entry that is not "i->j" with
+    non-negative integers, an index >= D, a repeated edge, a self loop and a
+    cycle.
+    """
+    entries = [e.strip() for e in text.replace(" ", "").split(",")]
+    if text.strip() == "":
+        raise ValueError("the edge list is empty")
+    adjacency = np.zeros((D, D), dtype=int)
+    for entry in entries:
+        match = re.fullmatch(r"(\d+)->(\d+)", entry)
+        if match is None:
+            raise ValueError(
+                f"bad edge {entry!r}: expected 'source->target' with "
+                "non-negative integer node indices, e.g. '0->1,1->2'"
+            )
+        source, target = int(match.group(1)), int(match.group(2))
+        if max(source, target) >= D:
+            raise ValueError(
+                f"edge {entry!r} uses a node index >= D = {D} (indices are "
+                "0-based)"
+            )
+        if source == target:
+            raise ValueError(f"edge {entry!r} is a self loop")
+        if adjacency[source, target]:
+            raise ValueError(f"edge {entry!r} is repeated")
+        adjacency[source, target] = 1
+    from CITNP.datasets.mixed_regime_generator import topological_order
+
+    try:
+        topological_order(adjacency)
+    except ValueError as error:
+        raise ValueError(f"the edges form a cycle ({error})") from error
+    return adjacency
 
 
 def prior_scm(

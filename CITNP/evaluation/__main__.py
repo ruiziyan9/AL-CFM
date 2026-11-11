@@ -5,7 +5,7 @@
     python -m CITNP.evaluation kshot-prior --ckpt ... --model_config ... \
            --data_config ... [--num_variables 3,4] [--n_tasks 500] \
            [--task_offset 0] [--k_list 0,1,3,5,10] [--no_oracle] \
-           --out kshot_prior.csv
+           [--fixed_graph_edges 0->1,1->2] --out kshot_prior.csv
     python -m CITNP.evaluation scm-suite --ckpt ... --model_config ... \
            --data_config ... --out suite.csv
     python -m CITNP.evaluation bank --data_config ... --out bank.pkl
@@ -29,6 +29,11 @@ the oracle's graph prior (graph_prior_samples). `kshot-prior --no_oracle`
 evaluates the model against the truth only: it works for any D (the exact
 oracle is limited to D <= max_oracle_nodes), gives the same model scores as
 a run with the oracle, and leaves the oracle's columns empty.
+`kshot-prior --fixed_graph_edges` gives every task one given DAG (0-based
+node indices, fixed variable order) with weights, noise and do-value
+distribution still drawn from the data config; there the oracle is no longer
+a guaranteed lower bound, because the tasks are not drawn from the training
+prior.
 
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
 and `probe-flag` compute,
@@ -128,6 +133,14 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                         "--min_graph_prob, --max_oracle_nodes, "
                         "--graph_prior_samples and --oracle_budget then "
                         "have no effect)")  # fmt: skip
+    p.add_argument("--fixed_graph_edges", default=None,
+                   help="use this DAG for every task instead of drawing "
+                        "graphs from the training prior, as 0-based "
+                        "'source->target' edges, e.g. \"0->1,1->2,0->2\" "
+                        "(node j is variable X_{j+1}); weights, noise and "
+                        "do-values are still drawn from the data config. "
+                        "Needs exactly one D (--num_variables). The oracle "
+                        "is then not a guaranteed lower bound")  # fmt: skip
     p.add_argument("--max_oracle_nodes", type=int, default=4,
                    help="largest D for exact DAG enumeration")  # fmt: skip
     p.add_argument("--graph_prior_samples", type=int, default=None,
@@ -360,7 +373,10 @@ def _run_kshot_prior(
     from CITNP.evaluation.model_api import load_model
     from CITNP.evaluation.tasks import (
         default_n_obs,
+        format_graph_edges,
+        parse_graph_edges,
         resolve_graph_prior_samples,
+        validate_fixed_graph,
     )
     from CITNP.utils.config_files import config_fingerprint
 
@@ -372,6 +388,18 @@ def _run_kshot_prior(
         Ds = [int(D) for D in a.num_variables.split(",")]
     if not set(Ds) <= set(all_D):
         parser.error(f"--num_variables {Ds} not a subset of {all_D}")
+    fixed_graph = None
+    if a.fixed_graph_edges is not None:
+        if len(Ds) != 1:
+            parser.error(
+                "--fixed_graph_edges needs exactly one D: pass "
+                f"--num_variables (data config has {all_D})"
+            )
+        try:
+            fixed_graph = parse_graph_edges(a.fixed_graph_edges, Ds[0])
+            fixed_graph = validate_fixed_graph(fixed_graph, Ds[0], data_cfg)
+        except ValueError as error:
+            parser.error(f"--fixed_graph_edges: {error}")
     k_list = sorted({int(k) for k in (a.k_list or "0,1,3,5,10").split(",")})
     n_obs = a.n_obs if a.n_obs is not None else default_n_obs(data_cfg)
 
@@ -395,7 +423,7 @@ def _run_kshot_prior(
             min_graph_prob=a.min_graph_prob, flag_ablation=a.flag_ablation,
             max_oracle_nodes=a.max_oracle_nodes,
             graph_prior_samples=n_graphs[D], oracle_budget=a.oracle_budget,
-            with_oracle=with_oracle,
+            with_oracle=with_oracle, fixed_graph=fixed_graph,
         )  # fmt: skip
         dfs.append(df)
         dfs_t.append(df_t)
@@ -426,6 +454,10 @@ def _run_kshot_prior(
         },
         "ckpt": a.ckpt,
         "with_oracle": with_oracle,
+        # canonical sorted edge list, None for the prior's own graphs
+        "fixed_graph": (
+            None if fixed_graph is None else format_graph_edges(fixed_graph)
+        ),
         "git_commit": _git_commit(),
         "args": vars(a),
         "num_variables": Ds,
@@ -455,6 +487,7 @@ _MERGE_FIELDS = {
     "model_config sha256": ("model_config", "sha256"),
     "model_config fingerprint": ("model_config", "fingerprint"),
     "with_oracle": ("with_oracle",),
+    "fixed_graph": ("fixed_graph",),
     "base_seed": ("args", "base_seed"),
     "k_list": ("k_list",),
     "n_mc": ("args", "n_mc"),
@@ -464,8 +497,9 @@ _MERGE_FIELDS = {
     "oracle_budget": ("oracle_budget",),
 }
 # Meta files written before a key existed do not have it. What a missing
-# key stands for: before `--no_oracle` the oracle was always run.
-_MERGE_DEFAULTS = {"with_oracle": True}
+# key stands for: before `--no_oracle` the oracle was always run, and before
+# `--fixed_graph_edges` every graph came from the training prior (None).
+_MERGE_DEFAULTS = {"with_oracle": True, "fixed_graph": None}
 # Fields that older meta files do not record and that have no default: they
 # are compared among the parts that record them. The config fingerprints
 # cover the files a config is built from through `extends`; the sha256 of
@@ -482,9 +516,11 @@ def _meta_mismatches(metas: dict) -> dict:
     """Fields of `_MERGE_FIELDS` on which the parts' metas disagree.
 
     Meta files written by older versions are accepted: a missing
-    `with_oracle` reads as True, and the config fingerprints are compared
-    only among the parts that record them. Parts run with and without the
-    oracle always disagree (on `with_oracle`).
+    `with_oracle` reads as True, a missing `fixed_graph` as no fixed graph,
+    and the config fingerprints are compared only among the parts that
+    record them. Parts run with and without the oracle always disagree (on
+    `with_oracle`), and so do parts with different fixed graphs or with and
+    without one (on `fixed_graph`).
 
     Args:
     ----------
