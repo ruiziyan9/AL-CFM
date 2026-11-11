@@ -38,7 +38,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from CITNP.evaluation.tasks import DESIGNS, MAIN_QUERY, QUERIES, qname
+from CITNP.evaluation.tasks import (
+    DESIGNS,
+    MAIN_QUERY,
+    OBSERVATIONAL_DESIGN,
+    QUERIES,
+    qname,
+)
 
 COLORS = {
     "random": "C0",
@@ -356,6 +362,22 @@ PRIOR_COLORS = {
     "do(Y)": "C3",
     "do(other)": "C2",
 }
+# The extra-observational design is not interventional, so it is drawn set
+# apart from the four interventional designs: grey and dashed.
+_OBSERVATIONAL_COLOR = "0.45"
+_OBSERVATIONAL_LINESTYLE = "--"
+
+
+def _plot_observational_design(ax, dd: pd.DataFrame, col: str) -> None:
+    """Draw the extra-observational design on `ax` as a grey dashed line, if
+    the rows contain it (a CSV without the design is drawn unchanged)."""
+    if OBSERVATIONAL_DESIGN not in set(dd["design"]):
+        return
+    mu, se = _prior_curve(dd, OBSERVATIONAL_DESIGN, [col])
+    band(
+        ax, mu[col], se[col], _OBSERVATIONAL_COLOR,
+        ls=_OBSERVATIONAL_LINESTYLE, label=OBSERVATIONAL_DESIGN,
+    )  # fmt: skip
 _ID_COLS = ["D", "task", "T", "Y", "design", "k"]
 
 
@@ -402,7 +424,8 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
     Without oracle scores (a run without the oracle) the figure has one
     panel: KL(truth || model) against k per design, +/- s.e. over tasks.
     Rows with a fixed graph (column `fixed_graph`) add a line naming it, so
-    that they are not mistaken for training-prior results.
+    that they are not mistaken for training-prior results. The
+    extra-observational design, when present, is drawn as a grey dashed line.
     """
     for D, dd in df.groupby("D"):
         ks = sorted(dd.k.unique())
@@ -412,6 +435,7 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
                 mu, se = _prior_curve(dd, d, ["kl_truth_model"])
                 band(ax, mu["kl_truth_model"], se["kl_truth_model"], c,
                      label=d)  # fmt: skip
+            _plot_observational_design(ax, dd, "kl_truth_model")
             ax.axhline(0, color="k", lw=0.5)
             finish(
                 ax, ks,
@@ -438,6 +462,9 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
                  label=d)  # fmt: skip
             band(axes[2], mu["kl_oracle_model"], se["kl_oracle_model"], c,
                  label=d)  # fmt: skip
+        _plot_observational_design(axes[0], dd, "kl_truth_model")
+        _plot_observational_design(axes[1], dd, "excess_kl_truth")
+        _plot_observational_design(axes[2], dd, "kl_oracle_model")
         titles = [
             f"D={D}: KL(truth || ·)",
             f"D={D}: excess KL(truth) = KL(truth||model) - KL(truth||oracle)",
@@ -461,7 +488,8 @@ def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
 
     Without oracle scores (a run without the oracle) the panels show
     KL(truth || model) in place of the excess. Rows with a fixed graph add a
-    line naming it to the title."""
+    line naming it to the title. The extra-observational design, when
+    present, is drawn as a grey dashed line."""
     for D, dd in df.groupby("D"):
         if _has_oracle_scores(dd):
             col = "excess_kl_truth"
@@ -488,6 +516,7 @@ def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
             for d, c in PRIOR_COLORS.items():
                 mu, se = _prior_curve(sub, d, [col])
                 band(ax, mu[col], se[col], c, label=d)
+            _plot_observational_design(ax, sub, col)
             ax.axhline(0, color="k", lw=0.5)
             finish(ax, ks, rel)
         axes[0][0].set_ylabel(ylabel)

@@ -106,7 +106,9 @@ def test_kshot_prior_smoke(tmp_path):
     ])  # fmt: skip
     df = pd.read_csv(out)
     assert (tmp_path / "kp_by_t.csv").stat().st_size > 0
-    assert set(df["design"]) == {"obs", "random", "do(T)", "do(Y)", "do(other)"}
+    assert set(df["design"]) == {
+        "obs", "random", "do(T)", "do(Y)", "do(other)", "observational",
+    }
     assert set(df["k"]) == {0, 1} and set(df["task"]) == {0, 1}
     assert df["kl_oracle_model"].notna().all()
     meta = json.loads((tmp_path / "kp_meta.json").read_text())
@@ -603,3 +605,83 @@ def test_meta_mismatches_refuses_fixed_graph_with_prior_part():
     assert set(_meta_mismatches({"p0": fixed, "p1": old})) == {"fixed_graph"}
     # ... and merges with prior parts
     assert _meta_mismatches({"p0": old, "p1": from_prior}) == {}
+
+
+def test_meta_mismatches_refuses_pool_and_no_pool_parts():
+    from CITNP.evaluation.__main__ import _meta_mismatches
+
+    with_pool = _part_meta_with_mode(True, with_observational_pool=True)
+    without = _part_meta_with_mode(True, with_observational_pool=False)
+    assert _meta_mismatches({"p0": with_pool, "p1": with_pool}) == {}
+    assert set(_meta_mismatches({"p0": with_pool, "p1": without})) == {
+        "with_observational_pool"
+    }
+    # a meta file from before the pool existed counts as "without the pool"
+    old = _part_meta()
+    assert "with_observational_pool" not in old
+    assert set(_meta_mismatches({"p0": with_pool, "p1": old})) == {
+        "with_observational_pool"
+    }
+    assert _meta_mismatches({"p0": without, "p1": old}) == {}
+
+
+def test_plot_kshot_prior_draws_the_observational_design(tmp_path, monkeypatch):
+    """A CSV with the observational design gets an extra grey dashed line;
+    a CSV without it is drawn exactly as before (no extra line)."""
+    import itertools
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from CITNP.evaluation import plots
+    from CITNP.evaluation.__main__ import main
+
+    rng = np.random.default_rng(0)
+    designs = ["random", "do(T)", "do(Y)", "do(other)", "observational"]
+    rows = []
+    for task, (T, Y) in itertools.product(range(3), [(0, 1), (1, 2)]):
+        rows.append({
+            "D": 3, "task": task, "T": T, "Y": Y, "relation": "reverse",
+            "design": "obs", "k": 0, "kl_truth_model": 0.5,
+            "kl_truth_oracle": 0.4, "kl_oracle_model": 0.1,
+            "excess_kl_truth": 0.1,
+        })  # fmt: skip
+        for design in designs:
+            for k in (1, 3):
+                to = float(rng.uniform(0.1, 0.5))
+                om = float(rng.uniform(0.0, 0.2))
+                rows.append({
+                    "D": 3, "task": task, "T": T, "Y": Y, "relation": "reverse",
+                    "design": design, "k": k, "kl_truth_oracle": to,
+                    "kl_truth_model": to + om, "kl_oracle_model": om,
+                    "excess_kl_truth": om,
+                })  # fmt: skip
+    full = pd.DataFrame(rows)
+
+    lines = {}  # file name -> {label: linestyle} of the first panel's lines
+    save = plots._save
+
+    def record(fig, path, dpi=150):
+        ax = fig.axes[0]
+        labelled = {
+            ln.get_label(): ln.get_linestyle()
+            for ln in ax.get_lines() if not ln.get_label().startswith("_")
+        }
+        lines[Path(path).name] = labelled
+        save(fig, path, dpi)
+
+    monkeypatch.setattr(plots, "_save", record)
+    for name, df in [("with", full), ("without", full[full["design"] != "observational"])]:
+        csv = tmp_path / f"{name}_part0.csv"
+        df.to_csv(csv, index=False)
+        (tmp_path / f"{name}_part0_meta.json").write_text(
+            json.dumps({"data_config": {"sha256": "a" * 64}})
+        )
+        main(["plot-kshot-prior", str(csv)])
+        assert (tmp_path / f"{name}_D3_main.png").stat().st_size > 0
+
+    # the observational line is present (dashed) only with the design
+    assert "observational" in lines["with_D3_main.png"]
+    assert lines["with_D3_main.png"]["observational"] == "--"
+    assert "observational" not in lines["without_D3_main.png"]

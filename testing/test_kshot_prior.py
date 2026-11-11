@@ -319,10 +319,11 @@ def test_one_fit_per_context_shared_by_pairs():
 
     # counts calls only: any graph prior will do
     df, _ = run(D, 2, [0, 2, 4], spy, log_graph_prior=uniform_prior(D))
-    # per task: obs + (D + 1) pools x 2 positive k
-    assert len(calls) == 2 * (1 + (D + 1) * 2)
+    # per task: obs + (D + 1 interventional + 1 observational) pools x 2 k
+    assert len(calls) == 2 * (1 + (D + 2) * 2)
     assert all(n == D * (D - 1) for _, n in calls)
-    assert len(df) == 2 * 6 * (1 + 4 * 2)  # obs + 4 designs x 2 k
+    # obs + 4 interventional + observational designs x 2 k
+    assert len(df) == 2 * 6 * (1 + 5 * 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -340,6 +341,66 @@ def test_pair_design_pools_cover_each_node_once(D):
             assert sorted([p["do(T)"], p["do(Y)"], *p["do(other)"]]) == list(
                 range(D)
             )
+            # the observational design maps to the observational pool, the
+            # same pool for every pair
+            with_obs = tasks.pair_design_pools(T, Y, D, with_observational=True)
+            assert set(with_obs) == {*tasks.PRIOR_DESIGNS, "observational"}
+            assert with_obs["observational"] == "observational"
+
+
+# --------------------------------------------------------------------------- #
+# 3b. Extra observational pool
+# --------------------------------------------------------------------------- #
+def test_observational_pool_is_nested_and_has_no_interventions():
+    scm, _, _, _ = tasks.prior_scm(CFG, 0, SEED, 3)
+    rng = np.random.default_rng([SEED, 3, 0, 23])
+    x, mask, targets = tasks.observational_pool(scm, 5, rng)
+    assert x.shape == (5, 3) and mask.shape == (5, 3)
+    assert not mask.any()  # purely observational: no intervention flags
+    assert (targets == -1).all()  # no target node
+    # nested in k: the first k rows do not depend on the pool size
+    rng = np.random.default_rng([SEED, 3, 0, 23])
+    x3, _, _ = tasks.observational_pool(scm, 3, rng)
+    assert np.array_equal(x[:3], x3)
+
+
+def test_observational_design_appears_for_every_pair():
+    df, _ = run(3, 2, [0, 2], normal_predictor, log_graph_prior=uniform_prior(3))
+    obs = df[df["design"] == "observational"]
+    # every ordered pair (T, Y), every task, at k = 2 (not k = 0: shared "obs")
+    assert set(zip(obs["T"], obs["Y"])) == {
+        (T, Y) for T in range(3) for Y in range(3) if T != Y
+    }
+    assert set(obs["k"]) == {2}
+    assert (obs["n_other"] == 0).all()
+    assert (obs["intervened_nodes"] == "").all()  # no intervened nodes
+
+
+@pytest.mark.parametrize(
+    "D, with_oracle", [(3, True), (5, False)]
+)
+def test_observational_pool_leaves_other_designs_unchanged(D, with_oracle):
+    cfg = CFG if D == 3 else CFG_FIVE_VARIABLES
+    kw = dict(log_graph_prior=uniform_prior(D)) if with_oracle else {}
+    predict = normal_predictor if with_oracle else untrained_model_predictor(D)
+
+    def evaluate(flag):
+        df, df_t = run_kshot_prior(
+            predict, cfg, D=D, device="cpu", k_list=[0, 2], n_tasks=2,
+            base_seed=SEED, n_y=16, n_t=5, n_mc=50, with_oracle=with_oracle,
+            with_observational_pool=flag, **kw,
+        )  # fmt: skip
+        return df, df_t
+
+    on, on_t = evaluate(True)
+    off, off_t = evaluate(False)
+    assert "observational" in set(on["design"])
+    assert "observational" not in set(off["design"])
+    # the pre-existing designs' rows are identical with and without the pool
+    shared = on[on["design"] != "observational"].reset_index(drop=True)
+    shared_t = on_t[on_t["design"] != "observational"].reset_index(drop=True)
+    pd.testing.assert_frame_equal(shared, off.reset_index(drop=True))
+    pd.testing.assert_frame_equal(shared_t, off_t.reset_index(drop=True))
 
 
 def test_check_context_size():
@@ -391,7 +452,7 @@ def test_d4_smoke():
     other = df[df["design"] == "do(other)"]
     assert len(other) > 0 and (other["n_other"] == 2).all()
     assert (df[df["design"] != "do(other)"]["n_other"] == 0).all()
-    assert set(df["design"]) == {"obs", *tasks.PRIOR_DESIGNS}
+    assert set(df["design"]) == {"obs", *tasks.prior_design_names(True)}
     assert set(df["D"]) == {4}
     assert {"q", "t"} <= set(df_t.columns)
     assert df["kl_oracle_model"].notna().all()
@@ -596,10 +657,10 @@ def test_model_only_five_variables(monkeypatch):
         n_t=5,
         with_oracle=False,
     )
-    # obs + 4 designs at k = 2, for each of the D (D - 1) ordered pairs
-    assert len(df) == 2 * D * (D - 1) * 5
+    # obs + 4 interventional + observational designs at k = 2, per ordered pair
+    assert len(df) == 2 * D * (D - 1) * 6
     assert len(df_t) == len(df) * 5
-    assert set(df["design"]) == {"obs", *tasks.PRIOR_DESIGNS}
+    assert set(df["design"]) == {"obs", *tasks.prior_design_names(True)}
     assert (df[df["design"] == "do(other)"]["n_other"] == D - 2).all()
     model_columns = ["kl_truth_model", "slope_truth", "slope_model"]
     assert np.isfinite(df[model_columns]).all().all()

@@ -44,7 +44,7 @@ from CITNP.evaluation.oracle import LinGaussOracle, dag_key
 from CITNP.evaluation.probes import fit_linear_probe
 from CITNP.evaluation.tasks import (
     DESIGNS,
-    PRIOR_DESIGNS,
+    OBSERVATIONAL_DESIGN,
     QUERIES,
     check_context_size,
     confounder_scm,
@@ -55,7 +55,9 @@ from CITNP.evaluation.tasks import (
     make_context,
     make_pools,
     node_pools,
+    observational_pool,
     pair_design_pools,
+    prior_design_names,
     prior_scm,
     qname,
     query_type,
@@ -103,10 +105,14 @@ def _build_contexts(obs_x, obs_m, pools, k_list, perm_seed, designs=None):
         if k == 0:
             x, m, nodes = obs_x, obs_m, frozenset()
         else:
-            px, pm, seq = pools[design]
+            px, pm, _ = pools[design]
             x = np.concatenate([obs_x, px[:k]])
             m = np.concatenate([obs_m, pm[:k]])
-            nodes = frozenset(int(j) for j in seq[:k])
+            # Intervened nodes of the k rows, from the mask: the target node(s)
+            # for an interventional pool, and none for the observational pool
+            # (its mask is all False). Equal to the pool's per-row targets for
+            # every interventional pool, so existing contexts are unchanged.
+            nodes = frozenset(int(j) for j in np.where(pm[:k].any(axis=0))[0])
         perm = np.random.default_rng([*perm_seed, c_i, k]).permutation(len(x))
         out.append((design, k, x[perm], m[perm], nodes))
     return out
@@ -170,6 +176,11 @@ def _predict_context(predict, x, m, Ts, Ys, grid, flag_ablation):
 # score, do not depend on whether the oracle is scored.
 _TRUTH_SAMPLE_STREAM = 99
 _ORACLE_SAMPLE_STREAM = 98
+
+# The extra-observational pool is drawn from its own generator, seeded with
+# the identifiers of the interventional pools ([base_seed, D, task]) and this
+# distinct last entry, so that adding it changes no other pool's draws.
+_OBSERVATIONAL_POOL_STREAM = 23
 
 # Component block size of `mix_logpdf` in the query scores (bounds memory for
 # large oracle mixtures; mixtures with <= this many components are unchunked).
@@ -669,6 +680,7 @@ def run_kshot_prior(
     oracle_budget: str = "total",
     with_oracle: bool = True,
     fixed_graph: np.ndarray | None = None,
+    with_observational_pool: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """K-shot evaluation on tasks drawn from the TRAINING PRIOR: the only
     evaluation in which the exact oracle is a true lower bound (not so with
@@ -793,6 +805,15 @@ def run_kshot_prior(
         probability 0 gives `true_graph_in_prior` False). Default None
         draws each task's graph from the prior.
 
+    with_observational_pool : bool
+        Also score an extra design "observational" (default): a pool of extra
+        OBSERVATIONAL rows from the task's model, nested in k like the
+        interventional pools and scored for every pair. It isolates the gain
+        from simply having more data, as opposed to interventional data. Its
+        pool is drawn from a separate generator, so turning it off (or on)
+        leaves every other design's rows unchanged. The oracle, where it
+        runs, scores it like any other context.
+
     Returns:
     ----------
     (one row per task, pair, design, k; one row per task, pair, design, k and
@@ -839,7 +860,11 @@ def run_kshot_prior(
     Ts = np.array([T for T, _ in pairs])
     Ys = np.array([Y for _, Y in pairs])
     q_levels = np.linspace(grid_eps, 1.0 - grid_eps, n_t)
+    # The observational pool key is appended last, so every other context
+    # keeps its position c_i and hence its truth / oracle sample seeds.
     pool_keys: list = list(range(D)) + ["random"]
+    if with_observational_pool:
+        pool_keys.append(OBSERVATIONAL_DESIGN)
     fields_out = [
         f for f in _PRIOR_FIELDS if flag_ablation or not f.endswith("noflag")
     ]
@@ -862,6 +887,13 @@ def run_kshot_prior(
         rng = np.random.default_rng([base_seed, D, i, 7])
         obs_x, obs_m = scm.sample(n_obs, None, None, rng)
         pools = node_pools(scm, ks[-1], do_dist, rng) if k_pos else {}
+        if with_observational_pool and k_pos:
+            obs_pool_rng = np.random.default_rng(
+                [base_seed, D, i, _OBSERVATIONAL_POOL_STREAM]
+            )
+            pools[OBSERVATIONAL_DESIGN] = observational_pool(
+                scm, ks[-1], obs_pool_rng
+            )
         contexts = _build_contexts(
             obs_x, obs_m, pools, k_pos, [base_seed, D, i], designs=pool_keys
         )
@@ -870,7 +902,10 @@ def run_kshot_prior(
         design_of = []
         for T, Y in pairs:
             inv = {}
-            for design, p in pair_design_pools(T, Y, D).items():
+            pair_pools = pair_design_pools(
+                T, Y, D, with_observational=with_observational_pool
+            )
+            for design, p in pair_pools.items():
                 for j in p if isinstance(p, list) else [p]:
                     inv[j] = design
             design_of.append(inv)
@@ -917,8 +952,9 @@ def run_kshot_prior(
                 )
 
         scale = do_dist.get("scale", do_dist.get("width"))
+        agg_designs = ["obs"] + prior_design_names(with_observational_pool)
         for qi, (T, Y) in enumerate(pairs):
-            for design in ["obs"] + PRIOR_DESIGNS:
+            for design in agg_designs:
                 for k in [0] if design == "obs" else k_pos:
                     items = acc.get((qi, design, k))
                     if items is None:

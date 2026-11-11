@@ -44,6 +44,13 @@
 #                        NO_ORACLE=1 ...
 #                  Parts with different graphs, or with and without one,
 #                  cannot be merged.
+#   NO_OBSERVATIONAL_POOL=1  drop the extra "observational" design
+#                  (--no_observational_pool). On by default, it adds a pool of
+#                  extra observational rows from the same model, nested like
+#                  the interventional pools and scored for every query, to show
+#                  how much of the gain is from more data rather than
+#                  intervention. A part with the pool and a part without it
+#                  cannot be merged.
 #   NUM_VARIABLES  optional comma-separated D values (default: all in DATA_CFG)
 #   DEVICE         default cpu. For a GPU add to the sbatch command line
 #                  --account=gpu_cebam.prj --partition=gpu_a100_80gb
@@ -77,6 +84,7 @@ K_LIST=${K_LIST:-0,1,3,5,10}
 N_MC=${N_MC:-2000}
 ORACLE_BUDGET=${ORACLE_BUDGET:-total}
 NO_ORACLE=${NO_ORACLE:-0}
+NO_OBSERVATIONAL_POOL=${NO_OBSERVATIONAL_POOL:-0}
 FIXED_GRAPH_EDGES=${FIXED_GRAPH_EDGES:-}
 NUM_VARIABLES=${NUM_VARIABLES:-}
 DEVICE=${DEVICE:-cpu}
@@ -91,6 +99,8 @@ NV=()
 if [ -n "$NUM_VARIABLES" ]; then NV=(--num_variables "$NUM_VARIABLES"); fi
 ORACLE=()
 if [ "$NO_ORACLE" = 1 ]; then ORACLE=(--no_oracle); fi
+OBS_POOL=()
+if [ "$NO_OBSERVATIONAL_POOL" = 1 ]; then OBS_POOL=(--no_observational_pool); fi
 FIXED_GRAPH=()
 if [ -n "$FIXED_GRAPH_EDGES" ]; then
   FIXED_GRAPH=(--fixed_graph_edges "$FIXED_GRAPH_EDGES")
@@ -101,6 +111,7 @@ CMD=(python -u -m CITNP.evaluation kshot-prior
   --k_list "$K_LIST" --n_mc "$N_MC" --oracle_budget "$ORACLE_BUDGET"
   --device "$DEVICE"
   ${ORACLE[@]+"${ORACLE[@]}"}
+  ${OBS_POOL[@]+"${OBS_POOL[@]}"}
   ${FIXED_GRAPH[@]+"${FIXED_GRAPH[@]}"}
   ${NV[@]+"${NV[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
   --out "$PART.csv")

@@ -303,13 +303,22 @@ python -m CITNP.evaluation plot-kshot-prior RUN/kshot_prior.csv
 - **Flag ablation.** `--flag_ablation` adds `kl_truth_model_noflag`,
   KL(truth || model with the intervention flags zeroed), in both modes, and
   `kl_oracle_model_noflag` with the oracle.
+- **Extra observational rows.** By default a design `observational` is added:
+  a pool of more observational rows from the same model, nested in k like the
+  interventional pools and scored for every query (and by the oracle, where it
+  runs). It shows how much of the gain at k rows is from simply having more
+  data, as opposed to interventional data. Its pool is drawn from a separate
+  generator, so every other design's rows are identical with or without it.
+  `--no_observational_pool` drops it. In the figures it is a grey dashed line.
 - **Figures.** Without the oracle, `<prefix>_D<D>_main.png` shows
   KL(truth || model) against k per design, and `<prefix>_D<D>_by_relation.png`
   shows it by question class (with the oracle: the excess over the oracle).
-- **Merging.** `<out>_meta.json` records `with_oracle` and a fingerprint of
-  each config that covers its `extends` parents; `plot-kshot-prior` refuses to
-  merge parts that differ in either. Parts run with and without the oracle
-  cannot be merged.
+- **Merging.** `<out>_meta.json` records `with_oracle`,
+  `with_observational_pool` and a fingerprint of each config that covers its
+  `extends` parents; `plot-kshot-prior` refuses to merge parts that differ in
+  any of them. Parts run with and without the oracle, or with and without the
+  observational pool, cannot be merged (an old meta file with no
+  `with_observational_pool` key counts as "without").
 - **Options without effect.** `--n_mc`, `--min_graph_prob`,
   `--max_oracle_nodes`, `--graph_prior_samples` and `--oracle_budget` only
   concern the oracle.
@@ -356,7 +365,8 @@ On the cluster, `bmrc/eval_kshot_prior.sh` runs the evaluation as a CPU array
 (the oracle dominates the cost); `NO_ORACLE=1` passes `--no_oracle`, and a
 model-only run is cheap enough for a single GPU job (see the script's header).
 `FIXED_GRAPH_EDGES="0->1,1->2,2->4,0->3,3->4,0->2"` passes
-`--fixed_graph_edges` (quoted; `DRY_RUN=1` shows the command).
+`--fixed_graph_edges` (quoted; `DRY_RUN=1` shows the command), and
+`NO_OBSERVATIONAL_POOL=1` passes `--no_observational_pool`.
 
 ## Information-parity grid (2 x 2)
 

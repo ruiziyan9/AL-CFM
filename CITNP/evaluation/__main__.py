@@ -125,6 +125,12 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                         "task's do_dist")  # fmt: skip
     p.add_argument("--flag_ablation", action="store_true",
                    help="also score the model with intervention flags zeroed")  # fmt: skip
+    p.add_argument("--no_observational_pool", action="store_true",
+                   help="drop the extra 'observational' design (a pool of "
+                        "more observational rows from the same model, nested "
+                        "like the interventional pools and scored for every "
+                        "query); on by default, it shows how much of the gain "
+                        "at k rows is from more data rather than intervention")  # fmt: skip
     p.add_argument("--no_oracle", action="store_true",
                    help="evaluate the model against the truth only: the "
                         "exact oracle is not run and its columns are left "
@@ -404,6 +410,7 @@ def _run_kshot_prior(
     n_obs = a.n_obs if a.n_obs is not None else default_n_obs(data_cfg)
 
     with_oracle = not a.no_oracle
+    with_observational_pool = not a.no_observational_pool
     # graphs sampled for the oracle's graph prior, per D (none without it)
     n_graphs = {
         D: resolve_graph_prior_samples(D, a.graph_prior_samples) if with_oracle
@@ -424,6 +431,7 @@ def _run_kshot_prior(
             max_oracle_nodes=a.max_oracle_nodes,
             graph_prior_samples=n_graphs[D], oracle_budget=a.oracle_budget,
             with_oracle=with_oracle, fixed_graph=fixed_graph,
+            with_observational_pool=with_observational_pool,
         )  # fmt: skip
         dfs.append(df)
         dfs_t.append(df_t)
@@ -454,6 +462,7 @@ def _run_kshot_prior(
         },
         "ckpt": a.ckpt,
         "with_oracle": with_oracle,
+        "with_observational_pool": with_observational_pool,
         # canonical sorted edge list, None for the prior's own graphs
         "fixed_graph": (
             None if fixed_graph is None else format_graph_edges(fixed_graph)
@@ -487,6 +496,7 @@ _MERGE_FIELDS = {
     "model_config sha256": ("model_config", "sha256"),
     "model_config fingerprint": ("model_config", "fingerprint"),
     "with_oracle": ("with_oracle",),
+    "with_observational_pool": ("with_observational_pool",),
     "fixed_graph": ("fixed_graph",),
     "base_seed": ("args", "base_seed"),
     "k_list": ("k_list",),
@@ -497,9 +507,15 @@ _MERGE_FIELDS = {
     "oracle_budget": ("oracle_budget",),
 }
 # Meta files written before a key existed do not have it. What a missing
-# key stands for: before `--no_oracle` the oracle was always run, and before
-# `--fixed_graph_edges` every graph came from the training prior (None).
-_MERGE_DEFAULTS = {"with_oracle": True, "fixed_graph": None}
+# key stands for: before `--no_oracle` the oracle was always run, before
+# `--fixed_graph_edges` every graph came from the training prior (None), and
+# before the observational pool existed no run had it (False), so an old part
+# is never merged with a new part that has the pool.
+_MERGE_DEFAULTS = {
+    "with_oracle": True,
+    "fixed_graph": None,
+    "with_observational_pool": False,
+}
 # Fields that older meta files do not record and that have no default: they
 # are compared among the parts that record them. The config fingerprints
 # cover the files a config is built from through `extends`; the sha256 of
@@ -516,11 +532,13 @@ def _meta_mismatches(metas: dict) -> dict:
     """Fields of `_MERGE_FIELDS` on which the parts' metas disagree.
 
     Meta files written by older versions are accepted: a missing
-    `with_oracle` reads as True, a missing `fixed_graph` as no fixed graph,
-    and the config fingerprints are compared only among the parts that
-    record them. Parts run with and without the oracle always disagree (on
-    `with_oracle`), and so do parts with different fixed graphs or with and
-    without one (on `fixed_graph`).
+    `with_oracle` reads as True, a missing `fixed_graph` as no fixed graph, a
+    missing `with_observational_pool` as off, and the config fingerprints are
+    compared only among the parts that record them. Parts run with and
+    without the oracle always disagree (on `with_oracle`), parts with
+    different fixed graphs or with and without one disagree (on
+    `fixed_graph`), and a part with the observational pool is never merged
+    with one without it (on `with_observational_pool`).
 
     Args:
     ----------

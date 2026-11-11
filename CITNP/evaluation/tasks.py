@@ -205,6 +205,22 @@ def node_pools(scm: LinearSCM, k_max: int, do_dist: dict, rng) -> dict:
     return pools
 
 
+def observational_pool(scm: LinearSCM, k_max: int, rng) -> tuple:
+    """A pool of k_max purely OBSERVATIONAL rows from `scm`, nested in k like
+    the interventional pools of `node_pools`: the first k rows are the k-row
+    context. The intervention mask is all False and no node is a target (the
+    per-row target array is all -1), so a context built from this pool has no
+    intervened nodes. Drawn from `rng` alone, so it does not disturb the draw
+    order of any other pool.
+
+    Returns:
+    ----------
+    (x [k_max, D], int_mask [k_max, D] all False, target node per row all -1).
+    """
+    x, m = scm.sample(k_max, None, None, rng)
+    return x, m, np.full(k_max, -1)
+
+
 def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
     """K-shot experiment pools, nested in k. For each design in DESIGNS:
     (x [k_max, D], int_mask [k_max, D], target node per row). Thin wrapper
@@ -220,6 +236,16 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 # Tasks drawn from the training prior (kshot-prior)
 # --------------------------------------------------------------------------- #
 PRIOR_DESIGNS = ["random", "do(T)", "do(Y)", "do(other)"]
+# One more design, optional (see `run_kshot_prior`): extra OBSERVATIONAL rows
+# from the same model, nested like the interventional pools. It shows how
+# much of the gain at k rows is from more data rather than from intervention.
+OBSERVATIONAL_DESIGN = "observational"
+
+
+def prior_design_names(with_observational: bool = False) -> list[str]:
+    """The kshot-prior design names: the four interventional designs and, when
+    `with_observational`, the extra-observational-rows design last."""
+    return PRIOR_DESIGNS + ([OBSERVATIONAL_DESIGN] if with_observational else [])
 
 
 def validate_fixed_graph(graph, D: int, cfg) -> np.ndarray:
@@ -379,16 +405,22 @@ def prior_scm(
     )
 
 
-def pair_design_pools(T: int, Y: int, D: int) -> dict:
+def pair_design_pools(
+    T: int, Y: int, D: int, with_observational: bool = False
+) -> dict:
     """Pool(s) used by each design for the query pair (T, Y): "random" -> the
     random pool, "do(T)" -> pool T, "do(Y)" -> pool Y, "do(other)" -> the list
-    of the remaining D - 2 nodes' pools."""
-    return {
+    of the remaining D - 2 nodes' pools. With `with_observational`,
+    "observational" -> the extra-observational pool, the same for every pair."""
+    pools: dict = {
         "random": "random",
         "do(T)": T,
         "do(Y)": Y,
         "do(other)": [j for j in range(D) if j not in (T, Y)],
     }
+    if with_observational:
+        pools[OBSERVATIONAL_DESIGN] = OBSERVATIONAL_DESIGN
+    return pools
 
 
 def default_n_obs(cfg) -> int:
