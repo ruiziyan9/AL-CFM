@@ -51,6 +51,7 @@ from CITNP.evaluation.tasks import (
     context_designs,
     default_n_obs,
     empirical_graph_prior,
+    example_design_name,
     format_graph_edges,
     make_context,
     make_pools,
@@ -986,6 +987,218 @@ def run_kshot_prior(
                         })  # fmt: skip
         if (i - task_offset + 1) % 10 == 0:
             print(f"D={D}: {i - task_offset + 1}/{n_tasks} tasks done")
+
+    return pd.DataFrame(rows), pd.DataFrame(rows_t)
+
+
+# --------------------------------------------------------------------------- #
+# One fixed example: a single model and query over repeated context draws
+# --------------------------------------------------------------------------- #
+def run_kshot_example(
+    predict_or_model,
+    scm,
+    graph: np.ndarray,
+    do_dist: dict,
+    *,
+    T: int,
+    Y: int,
+    device: str,
+    k_list: list[int],
+    n_obs: int,
+    repetitions: int = 200,
+    base_seed: int = 9101,
+    grid: np.ndarray | None = None,
+    grid_eps: float = 0.02,
+    n_t: int = 13,
+    n_y: int = 64,
+    n_mc: int = 2000,
+    min_graph_prob: float = 1e-4,
+    with_oracle: bool = True,
+    data_cfg=None,
+    max_oracle_nodes: int = 4,
+    log_graph_prior: dict | None = None,
+    graph_prior_samples: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One worked example: a single fixed model (`scm`, `graph`, `do_dist`) and
+    one query X_Y | do(X_T = t), evaluated over `repetitions` fresh context
+    draws from the SAME model.
+
+    Unlike `run_kshot_prior`, which averages over many tasks and query types,
+    this isolates how the model's answer to one query changes as nested
+    observational or interventional rows are added to the context. Each
+    repetition draws n_obs observational rows and, from its own generator,
+    pools of k_max rows (one per node, a random-target pool and an
+    observational pool), then builds the nested contexts exactly as
+    `run_kshot_prior` does (obs rows + the first k rows of a pool, shuffled;
+    nested in k; k = 0 shared as design "obs"). Designs are named by what they
+    add: "do(X{j+1})", "random", "observational" (`example_design_name`).
+
+    For every (repetition, design, k) the model is scored against the closed-
+    form truth on a per-query do-value grid (`kl_truth_model`, KL(truth ||
+    model) averaged over the grid; `slope_model`, the model's implied total
+    effect; `slope_truth`, the true effect), with the oracle columns too when
+    `with_oracle` (missing otherwise, as in `run_kshot_prior`). Writing the
+    tables, the figures and the meta file is left to the caller.
+
+    The truth samples come from a generator seeded per context ([base_seed,
+    repetition, context number, k, 99]) separate from the oracle's ([..., 98])
+    and from the observational pool's ([base_seed, repetition, 23]), so the
+    model's numbers do not depend on whether the oracle runs, and every result
+    is reproducible from `base_seed`.
+
+    Args:
+    ----------
+    predict_or_model : torch.nn.Module | callable
+        A loaded model, or a predictor as in `run_kshot_prior`.
+
+    scm : LinearSCM
+        The fixed ground-truth model (e.g. from `example_model`).
+
+    graph : np.ndarray
+        [D, D] int adjacency of `scm`, recorded in the column `graph`.
+
+    do_dist : dict
+        Do-value distribution of the interventional rows and (by default) of
+        the query grid's quantiles.
+
+    T, Y : int
+        0-based treatment and outcome node indices of the query (T != Y).
+
+    k_list : list[int]
+        Numbers of added rows; k = 0 is always included.
+
+    repetitions : int
+        Independent context draws from the fixed model.
+
+    grid : np.ndarray | None
+        Do-value grid (default: quantiles linspace(grid_eps, 1 - grid_eps,
+        n_t) of `do_dist`).
+
+    with_oracle : bool
+        Run the exact oracle on every context (default); needs `data_cfg` and
+        D <= max_oracle_nodes. False evaluates the model alone and leaves the
+        oracle columns missing, with the same table layout.
+
+    data_cfg : MixedRegimeConfig | None
+        The training data config, needed only for the oracle (its parameter
+        and graph priors). `log_graph_prior` / `graph_prior_samples` are as in
+        `run_kshot_prior`.
+
+    Returns:
+    ----------
+    (one row per repetition, design, k; one row per repetition, design, k and
+    grid point).
+    """
+    from CITNP.datasets.mixed_regime_generator import do_dist_quantile
+
+    D = len(scm.s2)
+    if T == Y or not (0 <= T < D and 0 <= Y < D):
+        raise ValueError(
+            f"treatment {T} and outcome {Y} must be distinct 0-based indices "
+            f"below D = {D}"
+        )
+    if with_oracle:
+        if D > max_oracle_nodes:
+            raise ValueError(
+                f"D={D} > max_oracle_nodes={max_oracle_nodes}: exact DAG "
+                "enumeration is infeasible, so the oracle cannot be run. Pass "
+                "with_oracle=False (`--no_oracle` on the command line) to "
+                "evaluate the model alone"
+            )
+        if data_cfg is None:
+            raise ValueError(
+                "the oracle needs the data config it was trained on: pass "
+                "data_cfg, or with_oracle=False"
+            )
+        require_exact_oracle(data_cfg)
+
+    if isinstance(predict_or_model, torch.nn.Module):
+        predict = partial(predict_mixture, predict_or_model, device=device)
+    else:
+        predict = predict_or_model
+
+    ks = sorted(set(k_list) | {0})
+    k_pos = [k for k in ks if k > 0]
+    if grid is None:
+        q_levels = np.linspace(grid_eps, 1.0 - grid_eps, n_t)
+        grid = do_dist_quantile(do_dist, q_levels)
+    grid = np.asarray(grid, dtype=float)
+    n_t = len(grid)
+    g = torch.tensor(grid, dtype=torch.float64, device=device)
+    Ts, Ys = np.array([T]), np.array([Y])
+
+    graph_prior: dict = {}
+    if with_oracle:
+        graph_prior = log_graph_prior
+        if graph_prior is None:
+            graph_prior = empirical_graph_prior(
+                data_cfg,
+                n=resolve_graph_prior_samples(D, graph_prior_samples),
+                num_nodes=D,
+            )
+
+    truth = scm.do_dist(T, Y)
+    edges = format_graph_edges(graph)
+    # The observational pool key is appended last, so every other context keeps
+    # its position c_i and hence its truth / oracle sample seeds.
+    pool_keys: list = list(range(D)) + ["random", OBSERVATIONAL_DESIGN]
+
+    rows: list[dict] = []
+    rows_t: list[dict] = []
+    for rep in range(repetitions):
+        rng = np.random.default_rng([base_seed, rep, 7])
+        obs_x, obs_m = scm.sample(n_obs, None, None, rng)
+        pools = node_pools(scm, ks[-1], do_dist, rng) if k_pos else {}
+        if k_pos:
+            obs_pool_rng = np.random.default_rng(
+                [base_seed, rep, _OBSERVATIONAL_POOL_STREAM]
+            )
+            pools[OBSERVATIONAL_DESIGN] = observational_pool(
+                scm, ks[-1], obs_pool_rng
+            )
+        contexts = _build_contexts(
+            obs_x, obs_m, pools, k_pos, [base_seed, rep], designs=pool_keys
+        )
+        for c_i, (key, k, x, m, nodes) in enumerate(contexts):
+            orc = None
+            if with_oracle:
+                orc = _fit_oracle(x, m, data_cfg, graph_prior, D)
+            mod, mod_nf = _predict_context(predict, x, m, Ts, Ys, grid, False)
+            context_seed = [base_seed, rep, c_i, k]
+            truth_rng = np.random.default_rng(
+                [*context_seed, _TRUTH_SAMPLE_STREAM]
+            )
+            oracle_rng = np.random.default_rng(
+                [*context_seed, _ORACLE_SAMPLE_STREAM]
+            )
+            model_scores = _score_model_query(
+                mod, mod_nf, 0, truth, grid, g, truth_rng, n_y=n_y, dev=device
+            )
+            if orc is None:
+                oracle_fields, oracle_rows = _missing_oracle_scores(n_t, False)
+            else:
+                oracle_fields, oracle_rows = _score_oracle_query(
+                    orc, model_scores, T, Y, truth, grid, g, oracle_rng,
+                    n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
+                    oracle_seed=rep, dev=device,
+                )  # fmt: skip
+            fields, t_rows = _join_query_scores(
+                model_scores, oracle_fields, oracle_rows
+            )
+            design = "obs" if key == "obs" else example_design_name(key)
+            ident = {
+                "D": D, "graph": edges, "T": T, "Y": Y,
+                "rep": rep, "design": design, "k": k,
+            }  # fmt: skip
+            rows.append({
+                **ident,
+                "intervened_nodes": "".join(str(j) for j in sorted(nodes)),
+                **fields,
+            })  # fmt: skip
+            for tr in t_rows:
+                rows_t.append({**ident, **tr})
+        if (rep + 1) % 50 == 0:
+            print(f"example: {rep + 1}/{repetitions} repetitions done")
 
     return pd.DataFrame(rows), pd.DataFrame(rows_t)
 

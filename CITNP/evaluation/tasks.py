@@ -248,6 +248,25 @@ def prior_design_names(with_observational: bool = False) -> list[str]:
     return PRIOR_DESIGNS + ([OBSERVATIONAL_DESIGN] if with_observational else [])
 
 
+def example_design_name(pool_key) -> str:
+    """Design label for `kshot-example`, named by what the pool adds to the
+    context rather than by a role: "do(X{j+1})" for a pool intervening on node
+    j (node j is variable X_{j+1}), and "random" or "observational" for those
+    pools."""
+    if pool_key in ("random", OBSERVATIONAL_DESIGN):
+        return str(pool_key)
+    return f"do(X{int(pool_key) + 1})"
+
+
+def example_design_names(D: int) -> list[str]:
+    """Every `kshot-example` design, in a fixed order: do(X1) .. do(XD), then
+    the random pool and the extra-observational pool."""
+    return (
+        [example_design_name(j) for j in range(D)]
+        + ["random", OBSERVATIONAL_DESIGN]
+    )
+
+
 def validate_fixed_graph(graph, D: int, cfg) -> np.ndarray:
     """Check a user-given DAG for the fixed-graph evaluation and return it as
     a [D, D] int array (graph[i, j] = 1 iff i -> j).
