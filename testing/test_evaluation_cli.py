@@ -351,6 +351,40 @@ def test_plot_kshot_example_refuses_an_unknown_design(tmp_path, capsys):
     assert "do(X9)" in capsys.readouterr().err
 
 
+def test_eval_kshot_example_script_dry_run_both_ways():
+    import os
+    import subprocess
+
+    script = REPO / "CITNP/experiments/bmrc/eval_kshot_example.sh"
+
+    def dry_run(**env):
+        base = {
+            "DRY_RUN": "1", "CKPT": "ckpt.pt", "MODEL_CFG": "m.yaml",
+            "OUT_PREFIX": "out", "TREATMENT": "2", "OUTCOME": "4",
+        }  # fmt: skip
+        return subprocess.run(
+            ["bash", str(script)],
+            env={**os.environ, **base, **env},
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    # drawn from a graph, model only
+    drawn = dry_run(
+        DATA_CFG="d5.yaml", FIXED_GRAPH_EDGES="0->1,1->2,2->4,0->3,3->4,0->2",
+        NO_ORACLE="1", DESIGNS="do(X3),random,observational",
+    )
+    assert "kshot-example" in drawn
+    assert '--fixed_graph_edges "0->1,1->2,2->4,0->3,3->4,0->2"' in drawn
+    assert "--treatment 2 --outcome 4" in drawn
+    assert "--no_oracle" in drawn
+    assert '--designs "do(X3),random,observational"' in drawn
+
+    # supplied as a file
+    from_file = dry_run(EXAMPLE_FILE="model.yaml", DATA_CFG="d3.yaml")
+    assert "--example_file model.yaml" in from_file
+    assert "--fixed_graph_edges" not in from_file
+
+
 def test_kshot_example_requires_a_model_source(tmp_path):
     from CITNP.evaluation.__main__ import main
 

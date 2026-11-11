@@ -368,6 +368,61 @@ model-only run is cheap enough for a single GPU job (see the script's header).
 `--fixed_graph_edges` (quoted; `DRY_RUN=1` shows the command), and
 `NO_OBSERVATIONAL_POOL=1` passes `--no_observational_pool`.
 
+### One fixed example: `kshot-example`
+
+`kshot-prior` averages over many tasks and query types. `kshot-example` is the
+single worked example instead: one fixed graph, fixed weights and noise, and
+one query (for example `X5 | do(X3 = t)`), evaluated over repeated context
+draws from that one model. It shows how the model's answer to this one query
+moves as nested observational or interventional rows are added, exactly as in
+`kshot-prior`. It writes `<out>.csv`, `<out>_by_t.csv`, `<out>_meta.json` (with
+the example model's contents) and two figures.
+
+```bash
+python -m CITNP.evaluation kshot-example --no_oracle \
+    --ckpt RUN/best_model.pt \
+    --model_config CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    --data_config CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+    --fixed_graph_edges "0->1,1->2,2->4,0->3,3->4,0->2" \
+    --treatment 2 --outcome 4 --repetitions 200 --out RUN/kshot_example.csv
+python -m CITNP.evaluation plot-kshot-example RUN/kshot_example.csv
+```
+
+- **The model.** It comes from `--example_file`, a small YAML file that fully
+  specifies one linear-Gaussian model (number of variables, edges with
+  weights, noise variances, the do-value distribution of the interventional
+  rows, and its provenance). When `--example_file` is not given, the model is
+  drawn from `--data_config`'s prior on `--fixed_graph_edges` (with weights and
+  noise drawn as in training) with `--example_seed`, saved next to `--out` as
+  `<out>_example.yaml`, and its true effect for the query is printed; re-running
+  with that saved file reproduces the results. `--fixed_graph_edges` uses
+  0-based `source->target` edges, node `j` being `X_{j+1}`, and needs a
+  single-D data config.
+- **The query.** `--treatment` and `--outcome` are 0-based node indices.
+- **Designs.** Each repetition draws a fresh context and fresh pools from the
+  same model and builds the nested contexts as `kshot-prior` does: one pool per
+  node, the random pool and the observational pool. Designs are named by what
+  they add: `do(X1)` .. `do(XD)`, `random`, `observational`.
+- **Columns.** For every (repetition, design, k): `kl_truth_model`
+  (KL(truth || model) over the grid), `slope_model` (the model's estimated
+  total effect, in the model's raw units), `slope_truth` (the true effect) and
+  the oracle columns (empty with `--no_oracle`, which is needed above the
+  oracle's variable limit). The do-value grid defaults to the quantile grid
+  `kshot-prior` uses, from the model's do-value distribution.
+- **Figures.** `<out>_kl.png` is KL(truth || model) against k (mean over
+  repetitions, +/- s.e.), one line per design, the observational design grey
+  and dashed. `<out>_effect.png` is the estimated effect against k (band =
+  central 80% of repetitions) with a red dashed line at the true effect.
+  `--designs "do(X3),random,observational"` chooses and orders the curves in
+  both figures (an unknown name is refused); the evaluation always stores every
+  design, so the same CSV redraws with any selection through
+  `plot-kshot-example`.
+
+On the cluster, `bmrc/eval_kshot_example.sh` runs it as a single CPU job (no
+array); `NO_ORACLE=1` passes `--no_oracle`, `FIXED_GRAPH_EDGES` or
+`EXAMPLE_FILE` supplies the model, and `DESIGNS="do(X3),random,observational"`
+passes `--designs` (quoted; `DRY_RUN=1` shows the command).
+
 ## Information-parity grid (2 x 2)
 
 Question: does a model that sees only the standardised context lose anything
