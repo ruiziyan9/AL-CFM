@@ -1,6 +1,7 @@
 #!/bin/bash
 # kshot-prior evaluation as a Slurm array over task_offset (CPU by default:
-# the exact oracle dominates the cost). Array task a evaluates tasks
+# the exact oracle dominates the cost; see NO_ORACLE for the model alone).
+# Array task a evaluates tasks
 # a * TASKS_PER_JOB .. (a + 1) * TASKS_PER_JOB - 1; task keys depend only on
 # (D, task index), so the split does not change any result.
 #
@@ -20,6 +21,18 @@
 #   N_MC           default 2000
 #   ORACLE_BUDGET  total (default: N_MC oracle draws per query in total) or
 #                  per_dag (N_MC per retained DAG); --oracle_budget
+#   NO_ORACLE=1    evaluate the model against the truth only (--no_oracle):
+#                  the exact oracle is not run and its columns are left
+#                  empty. Needed for D above the oracle's limit (five
+#                  variables); the model scores equal those of a run with
+#                  the oracle. N_MC and ORACLE_BUDGET have no effect in this
+#                  mode. Without the oracle the run is cheap: one GPU job
+#                  replaces the CPU array, e.g.
+#                    NO_ORACLE=1 DEVICE=cuda TASKS_PER_JOB=500 ... \
+#                        sbatch --array=0 --account=gpu_cebam.prj \
+#                        --partition=gpu_a100_80gb --gres=gpu:1 \
+#                        CITNP/experiments/bmrc/eval_kshot_prior.sh
+#                  Parts run with and without the oracle cannot be merged.
 #   NUM_VARIABLES  optional comma-separated D values (default: all in DATA_CFG)
 #   DEVICE         default cpu. For a GPU add to the sbatch command line
 #                  --account=gpu_cebam.prj --partition=gpu_a100_80gb
@@ -52,6 +65,7 @@ TASKS_PER_JOB=${TASKS_PER_JOB:-50}
 K_LIST=${K_LIST:-0,1,3,5,10}
 N_MC=${N_MC:-2000}
 ORACLE_BUDGET=${ORACLE_BUDGET:-total}
+NO_ORACLE=${NO_ORACLE:-0}
 NUM_VARIABLES=${NUM_VARIABLES:-}
 DEVICE=${DEVICE:-cpu}
 EXTRA_ARGS=${EXTRA_ARGS:-}
@@ -63,11 +77,14 @@ PART=${OUT_PREFIX}_part${ARRAY_ID}
 read -ra EXTRA <<< "$EXTRA_ARGS"
 NV=()
 if [ -n "$NUM_VARIABLES" ]; then NV=(--num_variables "$NUM_VARIABLES"); fi
+ORACLE=()
+if [ "$NO_ORACLE" = 1 ]; then ORACLE=(--no_oracle); fi
 CMD=(python -u -m CITNP.evaluation kshot-prior
   --ckpt "$CKPT" --model_config "$MODEL_CFG" --data_config "$DATA_CFG"
   --n_tasks "$TASKS_PER_JOB" --task_offset "$OFFSET"
   --k_list "$K_LIST" --n_mc "$N_MC" --oracle_budget "$ORACLE_BUDGET"
   --device "$DEVICE"
+  ${ORACLE[@]+"${ORACLE[@]}"}
   ${NV[@]+"${NV[@]}"} ${EXTRA[@]+"${EXTRA[@]}"}
   --out "$PART.csv")
 

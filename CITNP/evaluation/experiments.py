@@ -1,5 +1,9 @@
 """Evaluation loops: tasks x model x oracle -> table of scores.
 
+In the k-shot loops the model is scored against the truth by functions that
+never touch the oracle, and the oracle by separate ones on the same truth
+samples; `run_kshot_prior(with_oracle=False)` evaluates the model alone.
+
 Each `run_*` takes a loaded model (see `model_api.load_model`) and returns
 plain results (pandas DataFrames or a dict); writing files, printing summaries
 and plotting are left to the caller.

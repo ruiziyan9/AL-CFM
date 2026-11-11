@@ -267,6 +267,59 @@ MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yam
     sbatch CITNP/experiments/bmrc/train.sh
 ```
 
+## Evaluating on the training prior: `kshot-prior`, with or without the oracle
+
+`python -m CITNP.evaluation kshot-prior` draws true models from the training
+prior (the data config), builds nested k-shot contexts (observational rows
+plus the first k rows of an interventional pool) and scores the trained model
+against the closed-form truth: `kl_truth_model`, KL(truth || model) in nats
+per query point, for every ordered pair (T, Y) and the designs `obs`,
+`random`, `do(T)`, `do(Y)`, `do(other)`. By default it also runs the exact
+Bayesian oracle on every context, which adds `kl_truth_oracle`,
+`kl_oracle_model`, `excess_kl_truth` and the oracle's slope and variance
+columns; this is the only evaluation in which the oracle is a true lower
+bound. It writes `<out>.csv`, `<out>_by_t.csv` (one row per do-value) and
+`<out>_meta.json`; `plot-kshot-prior` merges parts and draws the figures.
+
+The exact oracle enumerates every graph, so it is limited to
+`--max_oracle_nodes` variables (default 4). `--no_oracle` evaluates the model
+alone, at any number of variables:
+
+```bash
+python -m CITNP.evaluation kshot-prior --no_oracle \
+    --ckpt RUN/best_model.pt \
+    --model_config CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    --data_config CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+    --n_tasks 500 --k_list 0,1,3,5,10 --out RUN/kshot_prior.csv
+python -m CITNP.evaluation plot-kshot-prior RUN/kshot_prior.csv
+```
+
+- **Same model numbers.** The truth samples have their own random generator,
+  so every model-against-truth column is identical with and without the
+  oracle, on the same tasks.
+- **Same table layout.** Without the oracle, every oracle-derived column
+  (including `log_prior_true_graph`, `true_graph_in_prior` and the oracle
+  columns of `<out>_by_t.csv`) is present and empty.
+- **Flag ablation.** `--flag_ablation` adds `kl_truth_model_noflag`,
+  KL(truth || model with the intervention flags zeroed), in both modes, and
+  `kl_oracle_model_noflag` with the oracle.
+- **Figures.** Without the oracle, `<prefix>_D<D>_main.png` shows
+  KL(truth || model) against k per design, and `<prefix>_D<D>_by_relation.png`
+  shows it by question class (with the oracle: the excess over the oracle).
+- **Merging.** `<out>_meta.json` records `with_oracle` and a fingerprint of
+  each config that covers its `extends` parents; `plot-kshot-prior` refuses to
+  merge parts that differ in either. Parts run with and without the oracle
+  cannot be merged.
+- **Options without effect.** `--n_mc`, `--min_graph_prob`,
+  `--max_oracle_nodes`, `--graph_prior_samples` and `--oracle_budget` only
+  concern the oracle.
+- **The data config** must still be a linear-Gaussian family with
+  `normalise: false`: the closed-form truth needs it too.
+
+On the cluster, `bmrc/eval_kshot_prior.sh` runs the evaluation as a CPU array
+(the oracle dominates the cost); `NO_ORACLE=1` passes `--no_oracle`, and a
+model-only run is cheap enough for a single GPU job (see the script's header).
+
 ## Information-parity grid (2 x 2)
 
 Question: does a model that sees only the standardised context lose anything
