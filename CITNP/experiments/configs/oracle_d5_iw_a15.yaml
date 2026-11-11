@@ -8,3 +8,10 @@
 extends: oracle_d3_iw_a15.yaml
 num_variables: [5]
 graph_degrees: {5: [2, 4, 6, 8]}
+graph_type: [ER, SF, FC]
+k_max: 5
+n_ctx_range: [64, 360]
+n_qry: 60
+qry_mode: grouped
+qry_groups: [1, 2, 3, 4, 5]
+n_obs_min: 32
