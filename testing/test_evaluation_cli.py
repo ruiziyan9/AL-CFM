@@ -446,6 +446,61 @@ def test_plot_kshot_prior_model_only(tmp_path, monkeypatch):
     assert lines == [5, 5]  # two question classes
 
 
+def test_plot_kshot_prior_names_the_fixed_graph(tmp_path, monkeypatch):
+    """Titles of figures from a fixed-graph model-only CSV name the graph;
+    those of a training-prior CSV do not."""
+    import itertools
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from CITNP.evaluation import plots
+    from CITNP.evaluation.__main__ import main
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for task, (T, Y) in itertools.product(range(3), [(0, 1), (1, 2)]):
+        for design, k in [("obs", 0)] + [
+            (d, k) for d in ("random", "do(T)", "do(Y)", "do(other)")
+            for k in (1, 3)
+        ]:  # fmt: skip
+            rows.append({
+                "D": 5, "task": task, "T": T, "Y": Y,
+                "relation": "reverse" if task else "unrelated",
+                "design": design, "k": k,
+                "kl_truth_model": float(rng.uniform(0.1, 0.7)),
+                "kl_truth_oracle": np.nan, "kl_oracle_model": np.nan,
+                "excess_kl_truth": np.nan,
+                "fixed_graph": "0->1,0->2,0->3,1->2,2->4,3->4",
+            })  # fmt: skip
+
+    titles = {}
+    save = plots._save
+
+    def save_and_record(fig, path, dpi=150):
+        title = fig._suptitle.get_text() if fig._suptitle else ""
+        titles[Path(path).name] = " | ".join(
+            [title, *(ax.get_title() for ax in fig.axes)]
+        )
+        save(fig, path, dpi)
+
+    monkeypatch.setattr(plots, "_save", save_and_record)
+    for name, edges in [("fixed", "0->1,0->2,0->3,1->2,2->4,3->4"), ("prior", "")]:
+        csv = tmp_path / f"{name}_part0.csv"
+        pd.DataFrame(rows).assign(fixed_graph=edges).to_csv(csv, index=False)
+        (tmp_path / f"{name}_part0_meta.json").write_text(json.dumps({
+            "data_config": {"sha256": "a" * 64}, "with_oracle": False,
+        }))
+        main(["plot-kshot-prior", str(csv)])
+    for s in ("main", "by_relation"):
+        assert "fixed graph 0->1, 0->2, 0->3, 1->2, 2->4, 3->4" in titles[
+            f"fixed_D5_{s}.png"
+        ]
+        assert "fixed graph" not in titles[f"prior_D5_{s}.png"]
+        assert (tmp_path / f"fixed_D5_{s}.png").stat().st_size > 0
+
+
 # --------------------------------------------------------------------------- #
 # --fixed_graph_edges
 # --------------------------------------------------------------------------- #

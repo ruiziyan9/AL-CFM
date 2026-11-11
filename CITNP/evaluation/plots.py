@@ -377,6 +377,20 @@ def _has_oracle_scores(df: pd.DataFrame) -> bool:
     return bool(df[present].notna().any().any())
 
 
+def _fixed_graph_title(dd: pd.DataFrame) -> str:
+    """Title line naming the fixed graph of kshot-prior rows, e.g. "fixed
+    graph 0->1, 0->2"; "" when the rows come from the training prior (also
+    for CSV files written before the column `fixed_graph` existed)."""
+    if "fixed_graph" not in dd:
+        return ""
+    graphs = dd["fixed_graph"].fillna("").unique()
+    if len(graphs) == 1 and graphs[0] == "":
+        return ""
+    if len(graphs) == 1:
+        return "fixed graph " + graphs[0].replace(",", ", ")
+    return "several graphs (fixed and training-prior tasks mixed)"
+
+
 def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
     """One figure <prefix>_D{D}_main.png per D, from kshot-prior rows.
 
@@ -387,6 +401,8 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
 
     Without oracle scores (a run without the oracle) the figure has one
     panel: KL(truth || model) against k per design, +/- s.e. over tasks.
+    Rows with a fixed graph (column `fixed_graph`) add a line naming it, so
+    that they are not mistaken for training-prior results.
     """
     for D, dd in df.groupby("D"):
         ks = sorted(dd.k.unique())
@@ -403,6 +419,8 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
                 "KL(truth || model), nats per query point",
             )  # fmt: skip
             ax.legend(fontsize=7)
+            if _fixed_graph_title(dd):
+                fig.suptitle(_fixed_graph_title(dd), fontsize=9)
             _save(fig, f"{prefix}_D{D}_main.png")
             continue
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -431,6 +449,8 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
         axes[0].set_ylabel("KL, nats per query point")
         axes[0].legend(fontsize=7, ncol=2)
         axes[1].legend(fontsize=7)
+        if _fixed_graph_title(dd):
+            fig.suptitle(_fixed_graph_title(dd), fontsize=9)
         _save(fig, f"{prefix}_D{D}_main.png")
 
 
@@ -440,7 +460,8 @@ def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
     over the whole prior, not within a class, so a facet may dip below 0.
 
     Without oracle scores (a run without the oracle) the panels show
-    KL(truth || model) in place of the excess."""
+    KL(truth || model) in place of the excess. Rows with a fixed graph add a
+    line naming it to the title."""
     for D, dd in df.groupby("D"):
         if _has_oracle_scores(dd):
             col = "excess_kl_truth"
@@ -471,6 +492,8 @@ def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
             finish(ax, ks, rel)
         axes[0][0].set_ylabel(ylabel)
         axes[0][0].legend(fontsize=7)
+        if _fixed_graph_title(dd):
+            title += "\n" + _fixed_graph_title(dd)
         fig.suptitle(title)
         _save(fig, f"{prefix}_D{D}_by_relation.png")
 
