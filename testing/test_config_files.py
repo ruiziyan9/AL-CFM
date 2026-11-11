@@ -48,10 +48,16 @@ def _is_model_config(path: Path) -> bool:
     return set(load_config_mapping(path)) <= set(MODEL_KEYS)
 
 
-def _train_script_dry_run(tmp_path: Path, data_config: Path, model_config: Path):
+def _train_script_dry_run(
+    tmp_path: Path,
+    data_config: Path,
+    model_config: Path,
+    extra_environment: dict[str, str] | None = None,
+):
     """Run train.sh with DRY_RUN=1 on the two configs; returns the completed
     process (not checked). REPO does not exist, so the script stays in the
-    current directory, and OUT is empty, so the run is a fresh one."""
+    current directory, and OUT is empty, so the run is a fresh one.
+    `extra_environment` adds further train.sh variables."""
     environment = {
         "PATH": os.environ["PATH"],
         "USER": "tester",
@@ -60,6 +66,7 @@ def _train_script_dry_run(tmp_path: Path, data_config: Path, model_config: Path)
         "OUT": str(tmp_path / "out"),
         "DATA_CFG": str(data_config),
         "MODEL_CFG": str(model_config),
+        **(extra_environment or {}),
     }
     return subprocess.run(
         ["bash", str(TRAIN_SCRIPT)],
@@ -223,16 +230,31 @@ def test_every_shipped_config_loads_and_data_configs_are_unchanged(path):
     assert load_config(path) == MixedRegimeConfig(**raw)
 
 
-def test_five_variable_config_differs_from_its_parent_in_two_fields_only():
+def test_five_variable_config_differs_from_its_parent_in_stated_fields_only():
     child = dataclasses.asdict(load_config(CHILD))  # passes validation
     parent = dataclasses.asdict(load_config(PARENT))
     assert yaml.safe_load(CHILD.read_text()) == {
         "extends": "oracle_d3_iw_a15.yaml",
         "num_variables": [5],
         "graph_degrees": {5: [2, 4, 6, 8]},
+        "graph_type": ["ER", "SF", "FC"],
+        "k_max": 5,
+        "n_ctx_range": [64, 360],
+        "n_qry": 60,
+        "qry_mode": "grouped",
+        "qry_groups": [1, 2, 3, 4, 5],
+        "n_obs_min": 32,
     }
+    # graph_type, qry_mode and n_obs_min restate the parent's values.
     differing = {key for key in child if child[key] != parent[key]}
-    assert differing == {"num_variables", "graph_degrees"}
+    assert differing == {
+        "num_variables",
+        "graph_degrees",
+        "k_max",
+        "n_ctx_range",
+        "n_qry",
+        "qry_groups",
+    }
     assert list(child["num_variables"]) == [5]
     assert {int(d): list(v) for d, v in child["graph_degrees"].items()} == {
         5: [2, 4, 6, 8]
@@ -315,6 +337,38 @@ def test_train_script_aborts_on_cycle_and_on_missing_parent(tmp_path):
     orphan = _write(tmp_path, "orphan.yaml", "extends: no_such_parent.yaml\n")
     result = _train_script_dry_run(tmp_path, orphan, MODEL_CONFIG)
     assert result.returncode != 0 and "no_such_parent.yaml" in result.stderr
+
+
+@needs_bash
+def test_skip_oracle_bank_trains_without_a_bank(tmp_path):
+    result = _train_script_dry_run(
+        tmp_path, CHILD, MODEL_CONFIG, {"SKIP_ORACLE_BANK": "1"}
+    )
+    assert result.returncode == 0, result.stderr
+    assert "# oracle bank: skipped (SKIP_ORACLE_BANK=1)" in result.stdout
+    assert not re.search(r"^BANK=", result.stdout, re.M)
+    assert "--oracle_bank" not in result.stdout
+    assert "--oracle_every" not in result.stdout
+    assert "CITNP.evaluation.oracle_bank" not in result.stdout  # no build
+    assert "CITNP.experiments.mixed_train" in result.stdout
+
+
+@needs_bash
+def test_oracle_bank_is_used_unless_skipped(tmp_path):
+    unset = _train_script_dry_run(tmp_path, PARENT, MODEL_CONFIG)
+    assert unset.returncode == 0, unset.stderr
+    assert "skipped" not in unset.stdout
+    bank = re.search(r"^BANK=(.+)$", unset.stdout, re.M)
+    assert bank, unset.stdout
+    assert f"--oracle_bank {bank.group(1)} \\\n" in unset.stdout
+    assert "--oracle_every 2500 \\\n" in unset.stdout
+    assert "CITNP.evaluation.oracle_bank" in unset.stdout  # bank build shown
+
+    # Only the value 1 skips; 0 is the default behaviour, line for line.
+    zero = _train_script_dry_run(
+        tmp_path, PARENT, MODEL_CONFIG, {"SKIP_ORACLE_BANK": "0"}
+    )
+    assert zero.returncode == 0 and zero.stdout == unset.stdout
 
 
 # ------------------------------------------------------ readers use extends

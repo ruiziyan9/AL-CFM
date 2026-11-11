@@ -1,10 +1,16 @@
 # D=5 inverse-Wishart (IW) prior, alpha0 = 1.5: oracle_d3_iw_a15.yaml with
-# five variables instead of three. Everything not stated here (the IW prior,
-# graph types, context and query sizes) is inherited from that file; see the
-# "Config inheritance" section of CITNP/experiments/MIXED_TRAINING_README.md.
+# five variables instead of three, and the context, query and intervention
+# sizes scaled up to match (k_max, n_ctx_range, n_qry, qry_groups). The IW
+# prior itself (function_generator, alpha0, normalise) is inherited from that
+# file; see the "Config inheritance" section of
+# CITNP/experiments/MIXED_TRAINING_README.md.
 #
 # graph_degrees replaces the parent's dictionary whole (it is not merged), so
-# it lists only D = 5.
+# it lists only D = 5. graph_type, qry_mode and n_obs_min restate the parent's
+# values.
+#
+# The exact oracle does not support five variables yet: train with
+# SKIP_ORACLE_BANK=1 (CITNP/experiments/bmrc/train.sh).
 extends: oracle_d3_iw_a15.yaml
 num_variables: [5]
 graph_degrees: {5: [2, 4, 6, 8]}

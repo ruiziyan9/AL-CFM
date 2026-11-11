@@ -23,6 +23,11 @@
 #   SEED        default 0
 #   EXTRA_ARGS  further mixed_train arguments
 #   BANK_ARGS   further arguments of the oracle-bank build (e.g. --per_bucket 5)
+#   SKIP_ORACLE_BANK=1  train without an oracle bank: no bank is built and
+#               --oracle_bank / --oracle_every are not passed, so the gap to
+#               the oracle is not logged during training. For data configs
+#               the exact oracle cannot handle yet (e.g. five variables).
+#               Default 0: the bank is built when missing and used, as before.
 #   DRY_RUN=1   print the resolved variables and the exact commands, then
 #               exit. Loads no module, activates no conda env, imports no
 #               Python and needs no GPU, so it runs with plain `bash` on the
@@ -72,6 +77,7 @@ EPOCHS=${EPOCHS:-500}
 SEED=${SEED:-0}
 EXTRA_ARGS=${EXTRA_ARGS:-}
 BANK_ARGS=${BANK_ARGS:-}
+SKIP_ORACLE_BANK=${SKIP_ORACLE_BANK:-0}
 DRY_RUN=${DRY_RUN:-0}
 FORCE_RESUME=${FORCE_RESUME:-0}
 RUN=${RUN:-$(basename "$DATA_CFG" .yaml)__$(basename "$MODEL_CFG" .yaml)__s$SEED}
@@ -197,6 +203,8 @@ read -ra BANK_EXTRA <<< "$BANK_ARGS"
 read -ra RESUME_ARGS <<< "$RESUME"
 BANK_CMD=(python -m CITNP.evaluation.oracle_bank
   --data_config "$DATA_CFG" --out "$BANK.tmp.PID" ${BANK_EXTRA[@]+"${BANK_EXTRA[@]}"})
+ORACLE_ARGS=(--oracle_bank "$BANK" --oracle_every 2500)
+if [ "$SKIP_ORACLE_BANK" = 1 ]; then ORACLE_ARGS=(); fi
 TRAIN_CMD=(python -u -m CITNP.experiments.mixed_train
   --data_config "$DATA_CFG"
   --model_config "$MODEL_CFG"
@@ -206,7 +214,7 @@ TRAIN_CMD=(python -u -m CITNP.experiments.mixed_train
   --learning_rate 5e-4 --lr_warmup_ratio 0.02 --lr_schedule cosine
   --save_checkpoint_every_n_steps 2500 --val_iterations 50 --test_iterations 50
   --num_workers 4 --log_step 500 --seed "$SEED" --no_wandb
-  --oracle_bank "$BANK" --oracle_every 2500
+  ${ORACLE_ARGS[@]+"${ORACLE_ARGS[@]}"}
   --run_name "$RUN" --results_path "$OUT"
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"})
 
@@ -236,10 +244,14 @@ if [ "$DRY_RUN" = 1 ]; then
     echo "DATA_ROOT=$DATA_ROOT"
     echo "train split config.json fingerprint: $TRAIN_DATA_FINGERPRINT"
   fi
-  echo "BANK=$BANK"
-  if [ -f "$BANK" ]; then echo "# bank exists: not rebuilt"; else
-    echo "# bank missing: built first with ('PID' is the job's process id)"
-    print_cmd "${BANK_CMD[@]}"
+  if [ "$SKIP_ORACLE_BANK" = 1 ]; then
+    echo "# oracle bank: skipped (SKIP_ORACLE_BANK=1)"
+  else
+    echo "BANK=$BANK"
+    if [ -f "$BANK" ]; then echo "# bank exists: not rebuilt"; else
+      echo "# bank missing: built first with ('PID' is the job's process id)"
+      print_cmd "${BANK_CMD[@]}"
+    fi
   fi
   if [ -n "$RESUME" ] && [ "$RECORD_HASHES" = 1 ]; then
     echo "# resume: yes, FORCE_RESUME=1 (current hashes recorded to $HASHES)"
@@ -261,7 +273,7 @@ nvidia-smi
 python -c "import torch; assert torch.cuda.is_available(); print('torch', torch.__version__, 'CUDA', torch.version.cuda, torch.cuda.get_device_name(0))"
 
 mkdir -p "$OUT/banks" "$OUT/run_hashes"
-if [ ! -f "$BANK" ]; then
+if [ "$SKIP_ORACLE_BANK" != 1 ] && [ ! -f "$BANK" ]; then
   # Build to a temporary name so a failed or concurrent build never leaves a
   # truncated bank under the final name.
   python -m CITNP.evaluation.oracle_bank \
@@ -269,6 +281,10 @@ if [ ! -f "$BANK" ]; then
   mv "$BANK.tmp.$$" "$BANK"
 fi
 if [ "$RECORD_HASHES" = 1 ]; then echo "$WANT_HASHES" > "$HASHES"; fi
-echo "=== Run $RUN, bank $BANK"
+if [ "$SKIP_ORACLE_BANK" = 1 ]; then
+  echo "=== Run $RUN, oracle bank skipped (SKIP_ORACLE_BANK=1)"
+else
+  echo "=== Run $RUN, bank $BANK"
+fi
 if [ -n "$RESUME" ]; then echo "=== Resuming from $CKPT"; fi
 "${TRAIN_CMD[@]}"

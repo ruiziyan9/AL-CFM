@@ -251,6 +251,22 @@ a NEW run from a checkpoint's model weights only (strict match, fresh optimiser,
 step 0, new warmup and cosine schedule, new run directory). The two flags are
 mutually exclusive.
 
+## Training without an oracle bank
+
+`bmrc/train.sh` normally builds an oracle bank for the data config (when it is
+missing) and passes it to `mixed_train.py`, which then logs the model's gap to
+the exact oracle every 2500 steps. `SKIP_ORACLE_BANK=1` trains without one: no
+bank is built and `--oracle_bank` / `--oracle_every` are not passed, so that
+gap is not logged; everything else, including the resume guard, is unchanged.
+Use it for data configs the exact oracle does not support yet, such as the
+five-variable [`configs/oracle_d5_iw_a15.yaml`](configs/oracle_d5_iw_a15.yaml):
+
+```bash
+SKIP_ORACLE_BANK=1 DATA_CFG=CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    sbatch CITNP/experiments/bmrc/train.sh
+```
+
 ## Information-parity grid (2 x 2)
 
 Question: does a model that sees only the standardised context lose anything
