@@ -110,22 +110,10 @@ def test_hand_written_file_loads(tmp_path):
     [
         (lambda s: s.update(noise_variances=[1.0, 0.5]), "noise_variances must"),
         (lambda s: s.update(noise_variances=[1.0, -0.5, 0.25]), "positive"),
-        (
-            lambda s: s["edges"].append({"source": 2, "target": 0, "weight": 1.0}),
-            "cycle",
-        ),
-        (
-            lambda s: s["edges"].append({"source": 1, "target": 1, "weight": 1.0}),
-            "self loop",
-        ),
-        (
-            lambda s: s["edges"].append({"source": 0, "target": 1, "weight": 1.0}),
-            "repeated",
-        ),
-        (
-            lambda s: s["edges"].append({"source": 0, "target": 7, "weight": 1.0}),
-            "node index outside",
-        ),
+        (lambda s: s["edges"].append((2, 0, 1.0)), "cycle"),
+        (lambda s: s["edges"].append((1, 1, 1.0)), "self loop"),
+        (lambda s: s["edges"].append((0, 1, 1.0)), "repeated"),
+        (lambda s: s["edges"].append((0, 7, 1.0)), "node index outside"),
         (lambda s: s.update(do_dist={"kind": "cauchy"}), "unknown do_dist"),
         (lambda s: s.update(do_dist={"kind": "normal", "scale": 0.0}), "scale"),
         (lambda s: s.pop("edges"), "missing 'edges'"),

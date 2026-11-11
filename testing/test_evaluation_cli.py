@@ -284,7 +284,8 @@ def _write_example_csv(path, designs=("do(X1)", "do(X2)", "do(X3)",
                     "D": 3, "graph": "0->1,0->2,1->2", "T": 0, "Y": 2,
                     "rep": rep, "design": d, "k": k,
                     "kl_truth_model": float(rng.uniform(0.1, 0.5)),
-                    "slope_truth": -0.3, "slope_model": float(rng.uniform(-0.5, 0)),
+                    "slope_truth": -0.3,
+                    "slope_model": float(rng.uniform(-0.5, 0)),
                 })  # fmt: skip
     pd.DataFrame(rows).to_csv(path, index=False)
 
@@ -323,7 +324,11 @@ def test_plot_kshot_example_default_draws_every_design(tmp_path, monkeypatch):
         "do(X1)", "do(X2)", "do(X3)", "random", "observational"
     ]
     # the effect figure draws the same designs plus the true-effect line
-    assert [la for la in labels["ex_effect.png"] if la.startswith(("do", "ran", "obs"))] == [
+    effect_designs = [
+        la for la in labels["ex_effect.png"]
+        if la.startswith(("do", "ran", "obs"))
+    ]
+    assert effect_designs == [
         "do(X1)", "do(X2)", "do(X3)", "random", "observational"
     ]
 
