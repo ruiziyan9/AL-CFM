@@ -234,6 +234,9 @@ def test_kshot_example_draws_from_a_graph_and_evaluates(tmp_path):
     assert meta["example_model"]["num_variables"] == 5
     assert "true_effect" in meta
     assert meta["example_file"] == str(saved)
+    # the command draws both figures
+    assert (tmp_path / "ex_kl.png").stat().st_size > 0
+    assert (tmp_path / "ex_effect.png").stat().st_size > 0
 
 
 @pytest.mark.skipif(
@@ -259,6 +262,93 @@ def test_kshot_example_reproduces_from_the_saved_file(tmp_path):
         "--out", str(from_file),
     ])  # fmt: skip
     pd.testing.assert_frame_equal(pd.read_csv(drawn), pd.read_csv(from_file))
+
+
+def _write_example_csv(path, designs=("do(X1)", "do(X2)", "do(X3)",
+                                       "random", "observational")):
+    """A synthetic kshot-example CSV (no model needed) for the plot tests."""
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for rep in range(4):
+        rows.append({
+            "D": 3, "graph": "0->1,0->2,1->2", "T": 0, "Y": 2, "rep": rep,
+            "design": "obs", "k": 0, "kl_truth_model": 0.5, "slope_truth": -0.3,
+            "slope_model": 0.1,
+        })  # fmt: skip
+        for d in designs:
+            for k in (1, 3):
+                rows.append({
+                    "D": 3, "graph": "0->1,0->2,1->2", "T": 0, "Y": 2,
+                    "rep": rep, "design": d, "k": k,
+                    "kl_truth_model": float(rng.uniform(0.1, 0.5)),
+                    "slope_truth": -0.3, "slope_model": float(rng.uniform(-0.5, 0)),
+                })  # fmt: skip
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _record_first_panel_lines(monkeypatch):
+    """Capture {file name: [labelled line labels of the first panel]} as the
+    figures are saved."""
+    from CITNP.evaluation import plots
+
+    labels = {}
+    save = plots._save
+
+    def record(fig, path, dpi=150):
+        ax = fig.axes[0]
+        labels[Path(path).name] = [
+            ln.get_label()
+            for ln in ax.get_lines()
+            if not ln.get_label().startswith("_")
+        ]
+        save(fig, path, dpi)
+
+    monkeypatch.setattr(plots, "_save", record)
+    return labels
+
+
+def test_plot_kshot_example_default_draws_every_design(tmp_path, monkeypatch):
+    from CITNP.evaluation.__main__ import main
+
+    csv = tmp_path / "ex.csv"
+    _write_example_csv(csv)
+    labels = _record_first_panel_lines(monkeypatch)
+    main(["plot-kshot-example", str(csv)])
+    assert (tmp_path / "ex_kl.png").stat().st_size > 0
+    # the KL figure draws every design, in canonical order
+    assert labels["ex_kl.png"] == [
+        "do(X1)", "do(X2)", "do(X3)", "random", "observational"
+    ]
+    # the effect figure draws the same designs plus the true-effect line
+    assert [la for la in labels["ex_effect.png"] if la.startswith(("do", "ran", "obs"))] == [
+        "do(X1)", "do(X2)", "do(X3)", "random", "observational"
+    ]
+
+
+def test_plot_kshot_example_selects_designs_in_order(tmp_path, monkeypatch):
+    from CITNP.evaluation.__main__ import main
+
+    csv = tmp_path / "ex.csv"
+    _write_example_csv(csv)
+    labels = _record_first_panel_lines(monkeypatch)
+    main([
+        "plot-kshot-example", str(csv),
+        "--designs", "do(X3),random,observational",
+    ])  # fmt: skip
+    assert labels["ex_kl.png"] == ["do(X3)", "random", "observational"]
+
+
+def test_plot_kshot_example_refuses_an_unknown_design(tmp_path, capsys):
+    from CITNP.evaluation.__main__ import main
+
+    csv = tmp_path / "ex.csv"
+    _write_example_csv(csv)
+    with pytest.raises(SystemExit):
+        main(["plot-kshot-example", str(csv), "--designs", "do(X9)"])
+    assert "do(X9)" in capsys.readouterr().err
 
 
 def test_kshot_example_requires_a_model_source(tmp_path):

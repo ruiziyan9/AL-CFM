@@ -18,6 +18,8 @@
     python -m CITNP.evaluation plot-kshot kshot.csv     # all k-shot figures, no GPU
     python -m CITNP.evaluation plot-kshot-prior part0.csv [part1.csv ...] \
            [--prefix P]            # merges array-job parts (same settings)
+    python -m CITNP.evaluation plot-kshot-example kshot_example.csv \
+           [--designs "do(X3),random,observational"]   # redraw the 2 figures
     python -m CITNP.evaluation plot-monitoring RUN_DIR [RUN_DIR ...] --out monitoring.png
     python -m CITNP.evaluation probe-flag --ckpt ... --model_config ... \
            --bank bank.pkl --out probe.csv               # + probe.png
@@ -202,6 +204,21 @@ def _kshot_example_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--graph_prior_samples", type=int, default=None,
                    help="graphs sampled for the oracle's graph prior "
                         "(default: 20000 for D = 3, 500000 for D >= 4)")  # fmt: skip
+    p.add_argument("--designs", default=None,
+                   help="comma-separated design names for the figures, in "
+                        "legend order, e.g. \"do(X3),random,observational\"; "
+                        "default: every design. The evaluation always stores "
+                        "all designs; this only chooses which the figures show")  # fmt: skip
+    p.add_argument("--plot_only", default=None,
+                   help="<out>.csv from a previous run: only redraw the "
+                        "figures (respects --designs)")  # fmt: skip
+
+
+def _plot_kshot_example_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument("csv", help="<out>.csv written by kshot-example")
+    p.add_argument("--designs", default=None,
+                   help="comma-separated design names for the figures, in "
+                        "legend order; default: every design")  # fmt: skip
 
 
 def _plot_kshot_prior_parser(p: argparse.ArgumentParser) -> None:
@@ -532,6 +549,20 @@ def _run_kshot_prior(
     _print_prior_summary(df)
 
 
+def _plot_kshot_example(
+    csv_path: str, designs, parser: argparse.ArgumentParser
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from CITNP.evaluation.plots import plot_kshot_example_all
+
+    try:
+        plot_kshot_example_all(csv_path, designs)
+    except ValueError as error:  # an unknown --designs name
+        parser.error(str(error))
+
+
 def _print_example_summary(df) -> None:
     """Mean over repetitions of the model's KL to the truth and its implied
     effect, by design and k (oracle columns too when present)."""
@@ -556,6 +587,9 @@ def _run_kshot_example(
 
     import torch
 
+    if a.plot_only:
+        _plot_kshot_example(a.plot_only, a.designs, parser)
+        return
     if not (a.ckpt and a.model_config):
         parser.error("--ckpt and --model_config are required")
 
@@ -626,6 +660,19 @@ def _run_kshot_example(
     if with_oracle and data_cfg is None:
         parser.error("the oracle needs --data_config (or pass --no_oracle)")
 
+    # validate --designs now, before the (slow) evaluation
+    from CITNP.evaluation.tasks import example_design_names
+
+    valid_designs = example_design_names(D)
+    if a.designs is not None:
+        chosen = [d.strip() for d in a.designs.split(",") if d.strip()]
+        unknown = [d for d in chosen if d not in valid_designs]
+        if unknown:
+            parser.error(
+                f"--designs: unknown design(s) {unknown}; the valid names are "
+                f"{valid_designs}"
+            )
+
     if a.n_obs is not None:
         n_obs = a.n_obs
     elif data_cfg is not None:
@@ -678,6 +725,7 @@ def _run_kshot_example(
         json.dump(meta, f, indent=2, default=str)
     print(f"wrote {a.out}, {prefix}_by_t.csv and {prefix}_meta.json")
     _print_example_summary(df)
+    _plot_kshot_example(a.out, a.designs, parser)
 
 
 # Settings that must agree across kshot-prior parts before they are merged:
@@ -920,6 +968,10 @@ COMMANDS = {
         _plot_kshot_prior_parser,
         "figures from kshot-prior CSV parts (same settings only)",
     ),
+    "plot-kshot-example": (
+        _plot_kshot_example_parser,
+        "redraw the kshot-example figures from a saved CSV",
+    ),
     "plot-monitoring": (
         _plot_monitoring_parser,
         "figures from oracle_gap / train_stats CSVs",
@@ -959,6 +1011,8 @@ def main(argv: list[str] | None = None) -> None:
         _plot_kshot(a.csv)
     elif a.command == "plot-kshot-prior":
         _run_plot_kshot_prior(a, parsers["plot-kshot-prior"])
+    elif a.command == "plot-kshot-example":
+        _plot_kshot_example(a.csv, a.designs, parsers["plot-kshot-example"])
     elif a.command == "probe-flag":
         _run_probe_flag(a, parsers["probe-flag"])
     else:

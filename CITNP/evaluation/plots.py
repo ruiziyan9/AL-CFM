@@ -43,6 +43,7 @@ from CITNP.evaluation.tasks import (
     MAIN_QUERY,
     OBSERVATIONAL_DESIGN,
     QUERIES,
+    example_design_names,
     qname,
 )
 
@@ -547,6 +548,150 @@ def plot_kshot_prior_all(
         for s in ("_main", "_by_relation")
     ]
     print("wrote " + ", ".join(written))
+
+
+# --------------------------------------------------------------------------- #
+# One fixed example (kshot-example)
+# --------------------------------------------------------------------------- #
+EXAMPLE_XLAB = "number of added context rows (k)"
+
+
+def example_design_order(df: pd.DataFrame, designs=None) -> list[str]:
+    """The kshot-example designs to draw, in legend order: `designs` (a list,
+    or a comma-separated string of design names as they appear in the legend)
+    or, by default, every design do(X1) .. do(XD), random and observational.
+
+    Raises ValueError, listing the valid names, for an unknown design."""
+    valid = example_design_names(int(df["D"].iloc[0]))
+    if designs is None:
+        return valid
+    if isinstance(designs, str):
+        designs = [d.strip() for d in designs.split(",") if d.strip()]
+    unknown = [d for d in designs if d not in valid]
+    if unknown:
+        raise ValueError(
+            f"unknown design(s) {unknown}; the valid names are {valid}"
+        )
+    return list(designs)
+
+
+def _example_design_color(design: str, D: int) -> str:
+    """Colour of a kshot-example design: a distinct colour per interventional
+    design (do(X1) .. do(XD), then random), and grey for the observational
+    design (which is also drawn dashed)."""
+    if design == OBSERVATIONAL_DESIGN:
+        return _OBSERVATIONAL_COLOR
+    order = [f"do(X{j + 1})" for j in range(D)] + ["random"]
+    return f"C{order.index(design) % 10}"
+
+
+def _example_linestyle(design: str) -> str:
+    """Dashed for the (non-interventional) observational design, solid else."""
+    return _OBSERVATIONAL_LINESTYLE if design == OBSERVATIONAL_DESIGN else "-"
+
+
+def _example_curve(df: pd.DataFrame, design: str, col: str):
+    """Mean and s.e. over repetitions of `col` against k, k = 0 prepended."""
+    return seed_curve(with_k0(df, design), col, unit="rep")
+
+
+def _example_effect_band(df: pd.DataFrame, design: str):
+    """Mean and the central-80% interval (10th, 90th percentiles) over
+    repetitions of the estimated effect `slope_model` against k, k = 0
+    prepended."""
+    per_rep = with_k0(df, design).groupby(["rep", "k"])["slope_model"].mean()
+    g = per_rep.groupby("k")
+    return g.mean(), g.quantile(0.1), g.quantile(0.9)
+
+
+def _example_header(df: pd.DataFrame):
+    """(D, T, Y, repetitions, graph text with X names, query text) of a
+    kshot-example CSV."""
+    D = int(df["D"].iloc[0])
+    T, Y = int(df["T"].iloc[0]), int(df["Y"].iloc[0])
+    reps = df["rep"].nunique()
+    edges = str(df["graph"].iloc[0]) if df["graph"].notna().iloc[0] else ""
+    named = ", ".join(
+        f"X{int(s) + 1}->X{int(t) + 1}"
+        for s, t in (e.split("->") for e in edges.split(",") if e)
+    )
+    query = f"X{Y + 1} | do(X{T + 1} = t)"
+    return D, T, Y, reps, named, query
+
+
+def plot_kshot_example_kl(
+    df: pd.DataFrame, prefix: str, designs=None
+) -> None:
+    """<prefix>_kl.png: KL(truth || model) against k, one line per design
+    (mean over repetitions, +/- s.e. band), the observational design grey and
+    dashed. `designs` selects and orders the lines (see `example_design_order`).
+    """
+    D, T, Y, reps, named, query = _example_header(df)
+    chosen = example_design_order(df, designs)
+    ks = sorted(df.k.unique())
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for d in chosen:
+        mu, se = _example_curve(df, d, "kl_truth_model")
+        band(
+            ax, mu, se, _example_design_color(d, D),
+            ls=_example_linestyle(d), label=d,
+        )  # fmt: skip
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks(ks)
+    ax.set_xlabel(EXAMPLE_XLAB)
+    ax.set_ylabel("KL(truth || model), nats per query point")
+    ax.set_title(
+        f"{query}  on  {named}\n"
+        f"KL(truth || model) vs k, mean of {reps} repetitions"
+    )
+    ax.legend(fontsize=8)
+    _save(fig, prefix + "_kl.png")
+
+
+def plot_kshot_example_effect(
+    df: pd.DataFrame, prefix: str, designs=None
+) -> None:
+    """<prefix>_effect.png: the model's estimated effect (slope of its
+    predictive mean) against k, one line per design (mean over repetitions,
+    band = central 80% of repetitions), with a red dashed line at the true
+    effect. `designs` selects and orders the lines."""
+    D, T, Y, reps, named, query = _example_header(df)
+    chosen = example_design_order(df, designs)
+    true_effect = float(df["slope_truth"].iloc[0])
+    ks = sorted(df.k.unique())
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for d in chosen:
+        mu, lo, hi = _example_effect_band(df, d)
+        color = _example_design_color(d, D)
+        ax.plot(
+            mu.index, mu.values, _example_linestyle(d), marker="o", ms=3,
+            color=color, label=d,
+        )  # fmt: skip
+        ax.fill_between(mu.index, lo.values, hi.values, color=color, alpha=0.15)
+    ax.axhline(
+        true_effect, color="r", ls="--", lw=1.2,
+        label=f"true effect ({true_effect:+.3f})",
+    )  # fmt: skip
+    ax.set_xticks(ks)
+    ax.set_xlabel(EXAMPLE_XLAB)
+    ax.set_ylabel("estimated total effect (slope of predictive mean)")
+    ax.set_title(
+        f"{query}  on  {named}\n"
+        f"estimated effect vs k, band = central 80% of {reps} repetitions"
+    )
+    ax.legend(fontsize=8)
+    _save(fig, prefix + "_effect.png")
+
+
+def plot_kshot_example_all(csv_path: str, designs=None) -> None:
+    """Both kshot-example figures from <prefix>.csv: the KL and the effect
+    against k. `designs` (a comma-separated list of design names, or None for
+    all) selects and orders the lines in both."""
+    prefix = csv_path.removesuffix(".csv")
+    df = pd.read_csv(csv_path)
+    plot_kshot_example_kl(df, prefix, designs)
+    plot_kshot_example_effect(df, prefix, designs)
+    print(f"wrote {prefix}_kl.png and {prefix}_effect.png")
 
 
 # --------------------------------------------------------------------------- #
