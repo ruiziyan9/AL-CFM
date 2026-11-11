@@ -177,6 +177,103 @@ def test_kshot_prior_no_oracle_five_variables(tmp_path, capsys):
     assert "identity check" not in summary
 
 
+# --------------------------------------------------------------------------- #
+# kshot-example
+# --------------------------------------------------------------------------- #
+_EXAMPLE_EDGES = "3->4, 0->1,1->2,2->4,0->3,0->2"
+_EXAMPLE_GRAPH = "0->1,0->2,0->3,1->2,2->4,3->4"  # canonical (sorted) form
+
+
+def _example_args():
+    """kshot-example arguments shared by the model-only tests (five variables,
+    X5 | do(X3), a couple of repetitions)."""
+    return [
+        "kshot-example", "--ckpt", str(GOLDEN / "tiny_model.pt"),
+        "--model_config", str(REPO / TINY_CFG),
+        "--treatment", "2", "--outcome", "4",
+        "--repetitions", "2", "--k_list", "0,1", "--n_y", "16", "--n_obs", "30",
+        "--no_oracle", "--device", "cpu",
+    ]  # fmt: skip
+
+
+@pytest.mark.skipif(
+    not (GOLDEN / "tiny_model.pt").exists(), reason="golden files not recorded"
+)
+def test_kshot_example_draws_from_a_graph_and_evaluates(tmp_path):
+    import json
+
+    import pandas as pd
+
+    from CITNP.evaluation.__main__ import main
+
+    out = tmp_path / "ex.csv"
+    main([
+        *_example_args(),
+        "--data_config", str(REPO / DATA_CFG_FIVE_VARIABLES),
+        "--fixed_graph_edges", _EXAMPLE_EDGES, "--example_seed", "7",
+        "--out", str(out),
+    ])  # fmt: skip
+    df = pd.read_csv(out)
+    assert set(df["design"]) == {
+        "obs", "do(X1)", "do(X2)", "do(X3)", "do(X4)", "do(X5)",
+        "random", "observational",
+    }
+    assert (df["T"] == 2).all() and (df["Y"] == 4).all()
+    assert df["graph"].eq(_EXAMPLE_GRAPH).all()
+    assert set(df["rep"]) == {0, 1}
+    assert df["kl_truth_model"].notna().all()
+    assert df["kl_truth_oracle"].isna().all()
+    assert (tmp_path / "ex_by_t.csv").stat().st_size > 0
+    # the drawn model is saved next to the outputs
+    saved = tmp_path / "ex_example.yaml"
+    assert saved.stat().st_size > 0
+
+    meta = json.loads((tmp_path / "ex_meta.json").read_text())
+    assert meta["with_oracle"] is False
+    assert meta["treatment"] == 2 and meta["outcome"] == 4
+    assert meta["example_model"]["num_variables"] == 5
+    assert "true_effect" in meta
+    assert meta["example_file"] == str(saved)
+
+
+@pytest.mark.skipif(
+    not (GOLDEN / "tiny_model.pt").exists(), reason="golden files not recorded"
+)
+def test_kshot_example_reproduces_from_the_saved_file(tmp_path):
+    import pandas as pd
+
+    from CITNP.evaluation.__main__ import main
+
+    shared = [*_example_args(), "--base_seed", "123"]
+    # way 1: draw the model from the prior on the graph (saves the YAML)
+    drawn = tmp_path / "drawn.csv"
+    main([
+        *shared, "--data_config", str(REPO / DATA_CFG_FIVE_VARIABLES),
+        "--fixed_graph_edges", _EXAMPLE_EDGES, "--example_seed", "7",
+        "--out", str(drawn),
+    ])  # fmt: skip
+    # way 2: supply the saved file directly (no data config, model only)
+    from_file = tmp_path / "from_file.csv"
+    main([
+        *shared, "--example_file", str(tmp_path / "drawn_example.yaml"),
+        "--out", str(from_file),
+    ])  # fmt: skip
+    pd.testing.assert_frame_equal(pd.read_csv(drawn), pd.read_csv(from_file))
+
+
+def test_kshot_example_requires_a_model_source(tmp_path):
+    from CITNP.evaluation.__main__ import main
+
+    # neither --example_file nor --fixed_graph_edges
+    with pytest.raises(SystemExit):
+        main([
+            "kshot-example", "--ckpt", "x", "--model_config", "y",
+            "--data_config", str(REPO / DATA_CFG_FIVE_VARIABLES),
+            "--treatment", "2", "--outcome", "4", "--no_oracle",
+            "--out", str(tmp_path / "ex.csv"),
+        ])  # fmt: skip
+
+
 def test_kshot_prior_rejects_foreign_num_variables(tmp_path):
     from CITNP.evaluation.__main__ import main
 
