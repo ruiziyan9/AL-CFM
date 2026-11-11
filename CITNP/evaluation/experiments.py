@@ -186,6 +186,16 @@ _DO_VALUE_SCORE_COLUMNS = [
     "mean_truth", "sd_truth", "mean_oracle", "sd_oracle", "mean_model",
     "sd_model",
 ]  # fmt: skip
+# The columns of the two tables that `_score_oracle_query` fills; without the
+# oracle they hold missing values (`_missing_oracle_scores`).
+_ORACLE_QUERY_SCORE_COLUMNS = [
+    "kl_truth_oracle", "kl_oracle_model", "kl_oracle_model_noflag",
+    "excess_kl_truth", "slope_oracle", "slope_sd_oracle",
+    "slope_err_oracle_truth", "var_ratio_model_oracle",
+]  # fmt: skip
+_ORACLE_DO_VALUE_SCORE_COLUMNS = [
+    "kl_truth_oracle", "kl_oracle_model", "mean_oracle", "sd_oracle",
+]  # fmt: skip
 
 
 @dataclass
@@ -406,6 +416,35 @@ def _score_oracle_query(
     return fields, rows_t
 
 
+def _missing_oracle_scores(n_t: int, flag_ablation: bool):
+    """What `_score_oracle_query` returns, with every value missing (NaN):
+    the oracle's columns of an evaluation that does not run the oracle, so
+    that the tables have the same columns with and without it.
+
+    Args:
+    ----------
+    n_t : int
+        Number of do-values on the grid.
+
+    flag_ablation : bool
+        Include the flag-ablated KL(oracle || model) column.
+
+    Returns:
+    ----------
+    (row fields, per-do-value rows), as from `_score_oracle_query`.
+    """
+    fields = {
+        column: np.nan
+        for column in _ORACLE_QUERY_SCORE_COLUMNS
+        if flag_ablation or not column.endswith("noflag")
+    }
+    rows_t = [
+        {column: np.nan for column in _ORACLE_DO_VALUE_SCORE_COLUMNS}
+        for _ in range(n_t)
+    ]
+    return fields, rows_t
+
+
 def _in_column_order(scores: dict, columns: list[str]) -> dict:
     """`scores` with its keys in the order of `columns`."""
     unknown = set(scores) - set(columns)
@@ -611,9 +650,16 @@ def run_kshot_prior(
     log_graph_prior: dict | None = None,
     graph_prior_samples: int | None = None,
     oracle_budget: str = "total",
+    with_oracle: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """K-shot evaluation on tasks drawn from the TRAINING PRIOR: the only
     evaluation in which the exact oracle is a true lower bound.
+
+    The model is scored against the truth; with_oracle (the default) also
+    runs the exact Bayesian oracle on every context. The model-against-truth
+    columns are identical in both modes, and the model alone can be
+    evaluated at any D (with_oracle=False), where the oracle is limited to
+    D <= max_oracle_nodes.
 
     Bayes optimality holds in expectation over the prior. With a context
     protocol that does not depend on the SCM, at every (design, k):
@@ -634,7 +680,7 @@ def run_kshot_prior(
     k; shared by all query pairs. All D (D - 1) ordered pairs (T, Y) are
     scored with pair-relative designs random / do(T) / do(Y) / do(other);
     do(other) averages over the other D - 2 nodes' pools (n_other). k = 0 is
-    design "obs". The oracle is fitted and the model run once per context.
+    design "obs". The model is run, and the oracle fitted, once per context.
     KLs use a per-task do-value grid at quantiles of the task's do_dist.
     Per context, the truth samples come from rng [base_seed, D, i, context
     number, k, 99] and the oracle's own samples from a second generator
@@ -649,7 +695,8 @@ def run_kshot_prior(
         device=...)`.
 
     data_cfg : MixedRegimeConfig
-        Training data config (linear-Gaussian, normalise: false).
+        Training data config (linear-Gaussian, normalise: false; the
+        closed-form truth needs this with or without the oracle).
 
     D : int
         Number of variables (one value per call).
@@ -676,7 +723,8 @@ def run_kshot_prior(
         Also score the model with intervention flags zeroed.
 
     max_oracle_nodes : int
-        Largest D for which exact DAG enumeration is attempted.
+        Largest D for which exact DAG enumeration is attempted (ignored
+        without the oracle).
 
     log_graph_prior : dict | None
         dag_key -> log prior of the oracle (default: `empirical_graph_prior`
@@ -696,6 +744,17 @@ def run_kshot_prior(
         `LinGaussOracle.predictive_components`): "total" (default; n_mc
         mixture components per query) or "per_dag" (n_mc per retained DAG).
 
+    with_oracle : bool
+        Run the exact oracle (default). If False, only the model is
+        evaluated: the oracle is never constructed, no graph prior is
+        estimated, and n_mc, min_graph_prob, max_oracle_nodes,
+        log_graph_prior, graph_prior_samples and oracle_budget have no
+        effect. Every oracle-derived column (the KLs to and from the oracle,
+        the excess, the oracle's slope, the variance ratio, the oracle's
+        per-do-value mean and spread, `log_prior_true_graph` and
+        `true_graph_in_prior`) is then written as a missing value, so both
+        modes give tables with the same columns.
+
     Returns:
     ----------
     (one row per task, pair, design, k; one row per task, pair, design, k and
@@ -704,10 +763,12 @@ def run_kshot_prior(
     from CITNP.datasets.mixed_regime_generator import do_dist_quantile
     from CITNP.prior_diagnostics.stats import question_class
 
-    if D > max_oracle_nodes:
+    if with_oracle and D > max_oracle_nodes:
         raise ValueError(
             f"D={D} > max_oracle_nodes={max_oracle_nodes}: exact DAG "
-            "enumeration is infeasible"
+            "enumeration is infeasible, so the oracle cannot be run. The "
+            "model can still be evaluated without the oracle: pass "
+            "with_oracle=False (`--no_oracle` on the command line)"
         )
     if D not in list(data_cfg.num_variables):
         raise ValueError(f"D={D} not in data_cfg.num_variables")
@@ -721,7 +782,10 @@ def run_kshot_prior(
     n_obs = default_n_obs(data_cfg) if n_obs is None else n_obs
     check_context_size(data_cfg, n_obs, ks[-1])
 
-    graph_prior = log_graph_prior
+    # without the oracle no graph prior is needed; the tasks do not depend on
+    # `empirical_graph_prior` reseeding the global generators, because
+    # `prior_scm` reseeds them from the task's own key
+    graph_prior = log_graph_prior if with_oracle else {}
     if graph_prior is None:
         graph_prior = empirical_graph_prior(
             data_cfg,
@@ -745,7 +809,10 @@ def run_kshot_prior(
         g = torch.tensor(grid, dtype=torch.float64, device=device)
         truth = [scm.do_dist(T, Y) for T, Y in pairs]
         rel = [question_class(graph, T, Y) for T, Y in pairs]
-        log_prior_true = float(graph_prior.get(dag_key(graph), -np.inf))
+        log_prior_true, true_graph_in_prior = np.nan, np.nan
+        if with_oracle:
+            log_prior_true = float(graph_prior.get(dag_key(graph), -np.inf))
+            true_graph_in_prior = bool(np.isfinite(log_prior_true))
 
         rng = np.random.default_rng([base_seed, D, i, 7])
         obs_x, obs_m = scm.sample(n_obs, None, None, rng)
@@ -765,7 +832,9 @@ def run_kshot_prior(
 
         acc: dict = {}  # (pair index, design, k) -> [(fields, t rows, nodes)]
         for c_i, (key, k, x, m, nodes) in enumerate(contexts):
-            orc = _fit_oracle(x, m, data_cfg, graph_prior, D)
+            orc = None
+            if with_oracle:
+                orc = _fit_oracle(x, m, data_cfg, graph_prior, D)
             mod, mod_nf = _predict_context(
                 predict, x, m, Ts, Ys, grid, flag_ablation
             )
@@ -782,12 +851,18 @@ def run_kshot_prior(
                     mod, mod_nf, qi, truth[qi], grid, g, truth_rng,
                     n_y=n_y, dev=device,
                 )  # fmt: skip
-                oracle_fields, oracle_rows = _score_oracle_query(
-                    orc, model_scores, T, Y, truth[qi], grid, g, oracle_rng,
-                    n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
-                    oracle_seed=i, dev=device, param_cache=cache,
-                    oracle_budget=oracle_budget,
-                )  # fmt: skip
+                if orc is None:
+                    oracle_fields, oracle_rows = _missing_oracle_scores(
+                        n_t, flag_ablation
+                    )
+                else:
+                    oracle_fields, oracle_rows = _score_oracle_query(
+                        orc, model_scores, T, Y, truth[qi], grid, g,
+                        oracle_rng, n_y=n_y, n_mc=n_mc,
+                        min_graph_prob=min_graph_prob, oracle_seed=i,
+                        dev=device, param_cache=cache,
+                        oracle_budget=oracle_budget,
+                    )  # fmt: skip
                 fields, t_rows = _join_query_scores(
                     model_scores, oracle_fields, oracle_rows
                 )
@@ -820,9 +895,7 @@ def run_kshot_prior(
                         "do_scale_or_width": scale,
                         "resample_attempts": attempts,
                         "log_prior_true_graph": log_prior_true,
-                        "true_graph_in_prior": bool(
-                            np.isfinite(log_prior_true)
-                        ),
+                        "true_graph_in_prior": true_graph_in_prior,
                     })  # fmt: skip
                     for ti in range(n_t):
                         tr = _mean_dicts([it[1][ti] for it in items])
