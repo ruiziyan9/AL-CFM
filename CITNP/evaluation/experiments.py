@@ -158,6 +158,13 @@ def _predict_context(predict, x, m, Ts, Ys, grid, flag_ablation):
     return mod, mod_nf
 
 
+# Last entry of the seed sequences of the two sample generators of a context.
+# The truth samples and the oracle's own samples come from separate
+# generators, so the truth samples, and with them every model-against-truth
+# score, do not depend on whether the oracle is scored.
+_TRUTH_SAMPLE_STREAM = 99
+_ORACLE_SAMPLE_STREAM = 98
+
 # Component block size of `mix_logpdf` in the query scores (bounds memory for
 # large oracle mixtures; mixtures with <= this many components are unchunked).
 _MIX_CHUNK = 8192
@@ -526,17 +533,23 @@ def run_kshot(
             # all six queries share the context: one batch of six elements
             orc = _fit_oracle(x, m, data_cfg, prior, len(scm.s2))
             mod, mod_nf = _predict_context(predict, x, m, Ts, Ys, grid, True)
-            qrng = np.random.default_rng([s, c_i, k, 99])
+            context_seed = [s, c_i, k]
+            truth_rng = np.random.default_rng(
+                [*context_seed, _TRUTH_SAMPLE_STREAM]
+            )
+            oracle_rng = np.random.default_rng(
+                [*context_seed, _ORACLE_SAMPLE_STREAM]
+            )
 
             for qi, (T, Y) in enumerate(QUERIES):
                 b = truth[(T, Y)][0]
                 model_scores = _score_model_query(
-                    mod, mod_nf, qi, truth[(T, Y)], grid, g, qrng,
+                    mod, mod_nf, qi, truth[(T, Y)], grid, g, truth_rng,
                     n_y=n_y, dev=dev, naive=naive[(T, Y)],
                 )  # fmt: skip
                 oracle_fields, oracle_rows = _score_oracle_query(
-                    orc, model_scores, T, Y, truth[(T, Y)], grid, g, qrng,
-                    n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
+                    orc, model_scores, T, Y, truth[(T, Y)], grid, g,
+                    oracle_rng, n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
                     oracle_seed=s, dev=dev,
                 )  # fmt: skip
                 fields, t_rows = _join_query_scores(
@@ -623,6 +636,10 @@ def run_kshot_prior(
     do(other) averages over the other D - 2 nodes' pools (n_other). k = 0 is
     design "obs". The oracle is fitted and the model run once per context.
     KLs use a per-task do-value grid at quantiles of the task's do_dist.
+    Per context, the truth samples come from rng [base_seed, D, i, context
+    number, k, 99] and the oracle's own samples from a second generator
+    ([..., 98]), so the model-against-truth scores do not depend on the
+    oracle.
 
     Args:
     ----------
@@ -752,15 +769,21 @@ def run_kshot_prior(
             mod, mod_nf = _predict_context(
                 predict, x, m, Ts, Ys, grid, flag_ablation
             )
-            qrng = np.random.default_rng([base_seed, D, i, c_i, k, 99])
+            context_seed = [base_seed, D, i, c_i, k]
+            truth_rng = np.random.default_rng(
+                [*context_seed, _TRUTH_SAMPLE_STREAM]
+            )
+            oracle_rng = np.random.default_rng(
+                [*context_seed, _ORACLE_SAMPLE_STREAM]
+            )
             cache: dict = {}  # oracle draws shared by this context's pairs
             for qi, (T, Y) in enumerate(pairs):
                 model_scores = _score_model_query(
-                    mod, mod_nf, qi, truth[qi], grid, g, qrng,
+                    mod, mod_nf, qi, truth[qi], grid, g, truth_rng,
                     n_y=n_y, dev=device,
                 )  # fmt: skip
                 oracle_fields, oracle_rows = _score_oracle_query(
-                    orc, model_scores, T, Y, truth[qi], grid, g, qrng,
+                    orc, model_scores, T, Y, truth[qi], grid, g, oracle_rng,
                     n_y=n_y, n_mc=n_mc, min_graph_prob=min_graph_prob,
                     oracle_seed=i, dev=device, param_cache=cache,
                     oracle_budget=oracle_budget,

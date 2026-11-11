@@ -16,6 +16,17 @@ $ALCFM_TRAINED_CKPT is given, to testing/golden/trained/ (size-m config):
     wrappers.npz                  model_mixtures / model_logpdf / mog_predictive
 
 Runs on CPU; deterministic, so rerunning reproduces identical files.
+
+The k-shot files are the only ones whose values depend on the evaluation's
+random streams. After a deliberate change to those (and only then), record
+them again with the CURRENT code, leaving every other golden file untouched:
+
+    PYTHONPATH=. python testing/make_golden.py --kshot_only [--ckpt TRAINED.pt]
+
+This goes through `python -m CITNP.evaluation kshot`, like the regression
+test. Compare the old and new files before committing them. Without --ckpt
+or $ALCFM_TRAINED_CKPT the files in testing/golden/trained/ are not rewritten
+and no longer match the code.
 """
 
 import argparse
@@ -53,12 +64,44 @@ def run_main(main, args: list[str]) -> None:
         sys.argv = argv
 
 
+def record_kshot(
+    kshot_main, ckpt: str, model_cfg: str, out_dir: Path
+) -> None:
+    """Write kshot.csv and kshot_by_t.csv of one model to `out_dir`, and
+    delete the figures the command draws next to them."""
+    run_main(
+        kshot_main,
+        [
+            "--ckpt", ckpt, "--model_config", model_cfg,
+            "--data_config", DATA_CFG, *KSHOT_ARGS,
+            "--out", f"{out_dir.relative_to(REPO)}/kshot.csv",
+        ],
+    )  # fmt: skip
+    for figure in out_dir.glob("kshot_*.png"):
+        figure.unlink()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--ckpt", default=None, help="trained checkpoint (size-m config)"
     )
+    ap.add_argument(
+        "--kshot_only", action="store_true",
+        help="record only kshot.csv and kshot_by_t.csv, with the current "
+        "code (see the module docstring)",
+    )  # fmt: skip
     a = ap.parse_args()
+
+    if a.kshot_only:
+        from CITNP.evaluation.__main__ import kshot_cli
+
+        os.chdir(REPO)
+        for name, out_dir, ckpt, model_cfg in model_sets(a.ckpt):
+            print(f"\n##### {name}: {ckpt}")
+            record_kshot(kshot_cli, ckpt, model_cfg, out_dir)
+            print(f"wrote the k-shot golden files for {name} to {out_dir}")
+        return
 
     # These names exist only on the pre-refactor baseline (commit abbb68c),
     # which is the only code this script is meant to run on.
@@ -104,12 +147,7 @@ def main() -> None:
             DATA_CFG,
         ]
         rel = out_dir.relative_to(REPO)
-        run_main(
-            eval_d3_kshot.main,
-            [*common, *KSHOT_ARGS, "--out", f"{rel}/kshot.csv"],
-        )
-        for fig in ("main", "by_query", "effect"):
-            (out_dir / f"kshot_{fig}.png").unlink(missing_ok=True)
+        record_kshot(eval_d3_kshot.main, ckpt, model_cfg, out_dir)
         run_main(
             eval_d3_oracle.main,
             [*common, *SUITE_ARGS, "--out", f"{rel}/suite.csv"],
