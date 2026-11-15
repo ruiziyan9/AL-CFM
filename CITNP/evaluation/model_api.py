@@ -9,9 +9,9 @@ Everything else derives what it needs from `predict_mixture` via
 
 import numpy as np
 import torch
-import yaml  # type: ignore[import-untyped]
 
 from CITNP.trainer.mixed_context_trainer import _normalisation_stats
+from CITNP.utils.config_files import load_config_mapping
 from CITNP.utils.configs import CausalInfModelConfig
 
 DEFAULT_MODEL_CLASS = "MixedContextMoGModel"
@@ -20,16 +20,17 @@ DEFAULT_MODEL_CLASS = "MixedContextMoGModel"
 def load_model(
     ckpt: str, model_config: str, device: str, num_nodes: int = 3
 ) -> torch.nn.Module:
-    """Build the model described by the YAML `model_config` for `num_nodes`
-    variables, load the weights in `ckpt` and return it in eval mode.
+    """Build the model described by the YAML `model_config` (with everything
+    it inherits through `extends`, CITNP/utils/config_files.py) for
+    `num_nodes` variables, load the weights in `ckpt` and return it in eval
+    mode.
 
     The class is resolved by resolve_model_class from the optional YAML keys intervention_encoding and/or model_class (default: r1, MixedContextMoGModel).
     """
     from CITNP.models.mixed_context_model import resolve_model_class
     from CITNP.models.regime_axis import REG_AXIS_CONFIG_KEYS
 
-    with open(model_config) as f:
-        m = yaml.safe_load(f)
+    m = load_config_mapping(model_config)
     cfg = CausalInfModelConfig(
         d_model=m["d_model"],
         emb_depth=m["emb_depth"],

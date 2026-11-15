@@ -6,7 +6,7 @@
 #   sbatch --partition=gpu_short --time=01:00:00 CITNP/experiments/bmrc/train.sh
 #
 #   mkdir -p /gpfs3/well/cebam/users/$USER/alcfm/logs
-#   DATA_CFG=CITNP/experiments/configs/oracle_d3.yaml \
+#   DATA_CFG=CITNP/experiments/configs/oracle_d3_iw_a15.yaml \
 #   MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m.yaml \
 #       sbatch CITNP/experiments/bmrc/train.sh
 #
@@ -26,6 +26,11 @@
 #               of context regimes per batch; default 0 = off). With
 #               DATASET_CONFIG, generate the data with the same variable.
 #   BANK_ARGS   further arguments of the oracle-bank build (e.g. --per_bucket 5)
+#   SKIP_ORACLE_BANK=1  train without an oracle bank: no bank is built and
+#               --oracle_bank / --oracle_every are not passed, so the gap to
+#               the oracle is not logged during training. For data configs
+#               the exact oracle cannot handle yet (e.g. five variables).
+#               Default 0: the bank is built when missing and used, as before.
 #   DRY_RUN=1   print the resolved variables and the exact commands, then
 #               exit. Loads no module, activates no conda env, imports no
 #               Python and needs no GPU, so it runs with plain `bash` on the
@@ -35,13 +40,26 @@
 #               started before this script existed), then record the current
 #               hashes. A hash mismatch is never overridden.
 #
-# The oracle bank is $OUT/banks/<data>__<sha1 of the data config>.pkl and is
-# built when missing, so editing a data config never reuses a stale bank.
-# Resume guard: the first launch of a RUN writes the sha1 of its data and
-# model configs to $OUT/run_hashes/$RUN.txt (not inside results/$RUN:
+# Config fingerprints. A config file may build on other files with a line
+#   extends: parent.yaml        or        extends: [first.yaml, second.yaml]
+# (paths relative to the file that names them; see the "Config inheritance"
+# section of CITNP/experiments/MIXED_TRAINING_README.md). The fingerprint of a
+# config is the first 10 characters of the sha1 of all the files it is built
+# from, joined in order: parents first, the file itself last. Editing a parent
+# therefore changes the fingerprint of every config that extends it. For a
+# file without `extends` this is the sha1 of that file alone, as before.
+# This script finds the parents by reading the `extends:` line as text, so
+# the line must be written on a single line and the paths must not contain
+# spaces (the Python loader rejects a config that breaks this rule).
+#
+# The oracle bank is $OUT/banks/<data>__<fingerprint of the data config>.pkl
+# and is built when missing, so editing a data config, or any file it
+# extends, never reuses a stale bank.
+# Resume guard: the first launch of a RUN writes the fingerprints of its data
+# and model configs to $OUT/run_hashes/$RUN.txt (not inside results/$RUN:
 # mixed_train.py refuses to start in an existing run directory). If last_model.pt
-# exists the run resumes only when both hashes still match; otherwise the
-# script aborts. Mail options go on the sbatch command line.
+# exists the run resumes only when both fingerprints still match; otherwise
+# the script aborts. Mail options go on the sbatch command line.
 #SBATCH --job-name=alcfm_train
 #SBATCH --account=gpu_cebam.prj
 #SBATCH --partition=gpu_a100_80gb
@@ -56,13 +74,14 @@ DATASET_CONFIG=${DATASET_CONFIG:-}
 if [ -z "${DATA_CFG:-}" ] && [ -n "$DATASET_CONFIG" ]; then
   DATA_CFG=$(sed -n 's/^prior_config: *\([^ #]*\).*/\1/p' "$DATASET_CONFIG")
 fi
-DATA_CFG=${DATA_CFG:?set DATA_CFG, e.g. CITNP/experiments/configs/oracle_d3.yaml}
+DATA_CFG=${DATA_CFG:?set DATA_CFG, e.g. CITNP/experiments/configs/oracle_d3_iw_a15.yaml}
 MODEL_CFG=${MODEL_CFG:?set MODEL_CFG, e.g. CITNP/experiments/configs/oracle_d3_model_m.yaml}
 EPOCHS=${EPOCHS:-500}
 SEED=${SEED:-0}
 EXTRA_ARGS=${EXTRA_ARGS:-}
 SAME_NUMREGIMES_PER_BATCH=${SAME_NUMREGIMES_PER_BATCH:-0}
 BANK_ARGS=${BANK_ARGS:-}
+SKIP_ORACLE_BANK=${SKIP_ORACLE_BANK:-0}
 DRY_RUN=${DRY_RUN:-0}
 FORCE_RESUME=${FORCE_RESUME:-0}
 RUN=${RUN:-$(basename "$DATA_CFG" .yaml)__$(basename "$MODEL_CFG" .yaml)__s$SEED}
@@ -76,8 +95,62 @@ DATA_ROOT=${DATA_ROOT:-$OUT/data}
 if [ -d "$REPO" ]; then cd "$REPO"; fi
 
 hash10() { sha1sum "$1" | cut -c1-10; }
-DATA_HASH=$(hash10 "$DATA_CFG")
-MODEL_HASH=$(hash10 "$MODEL_CFG")
+
+# Print every file the config $1 is built from, one per line: the files named
+# on its `extends:` line first (each followed recursively, in the listed
+# order), then $1 itself. A file without an `extends:` line prints only
+# itself. The remaining arguments are the files whose `extends:` lines led
+# here; meeting one of them again is a cycle and fails.
+# (Every step is checked explicitly: `set -e` is off inside $(...).)
+config_file_chain() {
+  local config_file=$1; shift
+  local resolved_path file_being_resolved parent_names parent_name
+  if [ ! -f "$config_file" ]; then
+    echo "ABORT: config file not found: $config_file" >&2
+    return 1
+  fi
+  resolved_path=$(realpath "$config_file") || return 1
+  for file_being_resolved in "$@"; do
+    if [ "$file_being_resolved" = "$resolved_path" ]; then
+      echo "ABORT: 'extends' cycle: $config_file is reached again from itself" >&2
+      return 1
+    fi
+  done
+  # The text after `extends:`, without the comment, brackets, commas and
+  # quotes: the parent paths separated by spaces.
+  parent_names=$(sed -n 's/^extends:\(.*\)$/\1/p' "$config_file" \
+    | sed 's/#.*//' | tr "[],'\"" '     ') || return 1
+  for parent_name in $parent_names; do
+    case $parent_name in
+      /*) ;;  # an absolute path is used as it is
+      *) parent_name=$(dirname "$config_file")/$parent_name ;;
+    esac
+    config_file_chain "$parent_name" "$@" "$resolved_path" || return 1
+  done
+  printf '%s\n' "$config_file"
+}
+
+# First 10 characters of the sha1 of the files of `config_file_chain $1`,
+# joined in that order. Without `extends` this equals `hash10 $1`.
+config_fingerprint() {
+  local chain_listing chain_files
+  chain_listing=$(config_file_chain "$1") || return 1
+  mapfile -t chain_files <<< "$chain_listing"
+  cat "${chain_files[@]}" | sha1sum | cut -c1-10
+}
+
+# In a dry run, list the files a config with `extends` is built from.
+print_config_file_chain() {
+  local chain_listing
+  chain_listing=$(config_file_chain "$1") || return 1
+  if [ "$chain_listing" != "$1" ]; then
+    echo "#   built from, in merge order (the fingerprint covers all of them):"
+    printf '%s\n' "$chain_listing" | sed 's/^/#     /'
+  fi
+}
+
+DATA_HASH=$(config_fingerprint "$DATA_CFG")
+MODEL_HASH=$(config_fingerprint "$MODEL_CFG")
 BANK=$OUT/banks/$(basename "$DATA_CFG" .yaml)__$DATA_HASH.pkl
 RUN_DIR=$OUT/results/$RUN
 CKPT=$RUN_DIR/last_model.pt
@@ -135,6 +208,8 @@ read -ra BANK_EXTRA <<< "$BANK_ARGS"
 read -ra RESUME_ARGS <<< "$RESUME"
 BANK_CMD=(python -m CITNP.evaluation.oracle_bank
   --data_config "$DATA_CFG" --out "$BANK.tmp.PID" ${BANK_EXTRA[@]+"${BANK_EXTRA[@]}"})
+ORACLE_ARGS=(--oracle_bank "$BANK" --oracle_every 2500)
+if [ "$SKIP_ORACLE_BANK" = 1 ]; then ORACLE_ARGS=(); fi
 TRAIN_CMD=(python -u -m CITNP.experiments.mixed_train
   --data_config "$DATA_CFG"
   --model_config "$MODEL_CFG"
@@ -144,7 +219,7 @@ TRAIN_CMD=(python -u -m CITNP.experiments.mixed_train
   --learning_rate 5e-4 --lr_warmup_ratio 0.02 --lr_schedule cosine
   --save_checkpoint_every_n_steps 2500 --val_iterations 50 --test_iterations 50
   --num_workers 4 --log_step 500 --seed "$SEED" --no_wandb
-  --oracle_bank "$BANK" --oracle_every 2500
+  ${ORACLE_ARGS[@]+"${ORACLE_ARGS[@]}"}
   --run_name "$RUN" --results_path "$OUT"
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"})
 
@@ -165,17 +240,23 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "REPO=$REPO"
   echo "OUT=$OUT"
   echo "RUN=$RUN"
-  echo "DATA_CFG=$DATA_CFG (sha1 $DATA_HASH)"
-  echo "MODEL_CFG=$MODEL_CFG (sha1 $MODEL_HASH)"
+  echo "DATA_CFG=$DATA_CFG (fingerprint $DATA_HASH)"
+  print_config_file_chain "$DATA_CFG"
+  echo "MODEL_CFG=$MODEL_CFG (fingerprint $MODEL_HASH)"
+  print_config_file_chain "$MODEL_CFG"
   if [ -n "$DATASET_CONFIG" ]; then
     echo "DATASET_CONFIG=$DATASET_CONFIG"
     echo "DATA_ROOT=$DATA_ROOT"
     echo "train split config.json fingerprint: $TRAIN_DATA_FINGERPRINT"
   fi
-  echo "BANK=$BANK"
-  if [ -f "$BANK" ]; then echo "# bank exists: not rebuilt"; else
-    echo "# bank missing: built first with ('PID' is the job's process id)"
-    print_cmd "${BANK_CMD[@]}"
+  if [ "$SKIP_ORACLE_BANK" = 1 ]; then
+    echo "# oracle bank: skipped (SKIP_ORACLE_BANK=1)"
+  else
+    echo "BANK=$BANK"
+    if [ -f "$BANK" ]; then echo "# bank exists: not rebuilt"; else
+      echo "# bank missing: built first with ('PID' is the job's process id)"
+      print_cmd "${BANK_CMD[@]}"
+    fi
   fi
   if [ -n "$RESUME" ] && [ "$RECORD_HASHES" = 1 ]; then
     echo "# resume: yes, FORCE_RESUME=1 (current hashes recorded to $HASHES)"
@@ -197,7 +278,7 @@ nvidia-smi
 python -c "import torch; assert torch.cuda.is_available(); print('torch', torch.__version__, 'CUDA', torch.version.cuda, torch.cuda.get_device_name(0))"
 
 mkdir -p "$OUT/banks" "$OUT/run_hashes"
-if [ ! -f "$BANK" ]; then
+if [ "$SKIP_ORACLE_BANK" != 1 ] && [ ! -f "$BANK" ]; then
   # Build to a temporary name so a failed or concurrent build never leaves a
   # truncated bank under the final name.
   python -m CITNP.evaluation.oracle_bank \
@@ -205,6 +286,10 @@ if [ ! -f "$BANK" ]; then
   mv "$BANK.tmp.$$" "$BANK"
 fi
 if [ "$RECORD_HASHES" = 1 ]; then echo "$WANT_HASHES" > "$HASHES"; fi
-echo "=== Run $RUN, bank $BANK"
+if [ "$SKIP_ORACLE_BANK" = 1 ]; then
+  echo "=== Run $RUN, oracle bank skipped (SKIP_ORACLE_BANK=1)"
+else
+  echo "=== Run $RUN, bank $BANK"
+fi
 if [ -n "$RESUME" ]; then echo "=== Resuming from $CKPT"; fi
 "${TRAIN_CMD[@]}"

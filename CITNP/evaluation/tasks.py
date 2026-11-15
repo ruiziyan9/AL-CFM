@@ -8,6 +8,7 @@ explicitly and draw in a fixed order, so results are reproducible.
 
 import itertools
 import random
+import re
 import time
 
 import numpy as np
@@ -204,6 +205,22 @@ def node_pools(scm: LinearSCM, k_max: int, do_dist: dict, rng) -> dict:
     return pools
 
 
+def observational_pool(scm: LinearSCM, k_max: int, rng) -> tuple:
+    """A pool of k_max purely OBSERVATIONAL rows from `scm`, nested in k like
+    the interventional pools of `node_pools`: the first k rows are the k-row
+    context. The intervention mask is all False and no node is a target (the
+    per-row target array is all -1), so a context built from this pool has no
+    intervened nodes. Drawn from `rng` alone, so it does not disturb the draw
+    order of any other pool.
+
+    Returns:
+    ----------
+    (x [k_max, D], int_mask [k_max, D] all False, target node per row all -1).
+    """
+    x, m = scm.sample(k_max, None, None, rng)
+    return x, m, np.full(k_max, -1)
+
+
 def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
     """K-shot experiment pools, nested in k. For each design in DESIGNS:
     (x [k_max, D], int_mask [k_max, D], target node per row). Thin wrapper
@@ -219,10 +236,126 @@ def make_pools(scm: LinearSCM, k_max: int, do_scale: float, rng) -> dict:
 # Tasks drawn from the training prior (kshot-prior)
 # --------------------------------------------------------------------------- #
 PRIOR_DESIGNS = ["random", "do(T)", "do(Y)", "do(other)"]
+# One more design, optional (see `run_kshot_prior`): extra OBSERVATIONAL rows
+# from the same model, nested like the interventional pools. It shows how
+# much of the gain at k rows is from more data rather than from intervention.
+OBSERVATIONAL_DESIGN = "observational"
 
 
-def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
-    """SCM, graph and do-value distribution of task `i` of the training prior.
+def prior_design_names(with_observational: bool = False) -> list[str]:
+    """The kshot-prior design names: the four interventional designs and, when
+    `with_observational`, the extra-observational-rows design last."""
+    return PRIOR_DESIGNS + ([OBSERVATIONAL_DESIGN] if with_observational else [])
+
+
+def example_design_name(pool_key) -> str:
+    """Design label for `kshot-example`, named by what the pool adds to the
+    context rather than by a role: "do(X{j+1})" for a pool intervening on node
+    j (node j is variable X_{j+1}), and "random" or "observational" for those
+    pools."""
+    if pool_key in ("random", OBSERVATIONAL_DESIGN):
+        return str(pool_key)
+    return f"do(X{int(pool_key) + 1})"
+
+
+def example_design_names(D: int) -> list[str]:
+    """Every `kshot-example` design, in a fixed order: do(X1) .. do(XD), then
+    the random pool and the extra-observational pool."""
+    return (
+        [example_design_name(j) for j in range(D)]
+        + ["random", OBSERVATIONAL_DESIGN]
+    )
+
+
+def validate_fixed_graph(graph, D: int, cfg) -> np.ndarray:
+    """Check a user-given DAG for the fixed-graph evaluation and return it as
+    a [D, D] int array (graph[i, j] = 1 iff i -> j).
+
+    Raises ValueError unless `graph` is a square 0/1 matrix of side D,
+    without self loops and acyclic, and D is one of `cfg.num_variables`.
+    """
+    from CITNP.datasets.mixed_regime_generator import topological_order
+
+    adj = np.asarray(graph)
+    if adj.ndim != 2 or adj.shape[0] != adj.shape[1]:
+        raise ValueError(f"fixed graph must be square, got shape {adj.shape}")
+    if adj.shape[0] != D:
+        raise ValueError(
+            f"fixed graph has {adj.shape[0]} nodes but D = {D}"
+        )
+    if D not in [int(d) for d in cfg.num_variables]:
+        raise ValueError(
+            f"D = {D} is not in the data config's num_variables "
+            f"{list(cfg.num_variables)}"
+        )
+    if not np.isin(adj, (0, 1)).all():
+        raise ValueError("fixed graph must contain only 0 and 1")
+    if np.diag(adj).any():
+        raise ValueError("fixed graph has a self loop")
+    adj = adj.astype(int)
+    try:
+        topological_order(adj)
+    except ValueError as error:
+        raise ValueError(f"fixed graph has a cycle ({error})") from error
+    return adj
+
+
+def format_graph_edges(graph) -> str:
+    """Edge list of a DAG as text, "0->1,0->2,1->2" (graph[i, j] = 1 gives
+    "i->j"), sorted by source and then target; "" for a graph without edges."""
+    sources, targets = np.nonzero(np.asarray(graph))
+    return ",".join(f"{int(i)}->{int(j)}" for i, j in zip(sources, targets))
+
+
+def parse_graph_edges(text: str, D: int) -> np.ndarray:
+    """Adjacency matrix from an edge list such as "0->1, 1->2, 0->2": 0-based
+    node indices, "i->j" meaning i -> j, edges separated by commas (spaces
+    are ignored).
+
+    Returns:
+    ----------
+    [D, D] int array, adjacency[i, j] = 1 iff the list has "i->j".
+
+    Raises ValueError for an empty list, an entry that is not "i->j" with
+    non-negative integers, an index >= D, a repeated edge, a self loop and a
+    cycle.
+    """
+    entries = [e.strip() for e in text.replace(" ", "").split(",")]
+    if text.strip() == "":
+        raise ValueError("the edge list is empty")
+    adjacency = np.zeros((D, D), dtype=int)
+    for entry in entries:
+        match = re.fullmatch(r"(\d+)->(\d+)", entry)
+        if match is None:
+            raise ValueError(
+                f"bad edge {entry!r}: expected 'source->target' with "
+                "non-negative integer node indices, e.g. '0->1,1->2'"
+            )
+        source, target = int(match.group(1)), int(match.group(2))
+        if max(source, target) >= D:
+            raise ValueError(
+                f"edge {entry!r} uses a node index >= D = {D} (indices are "
+                "0-based)"
+            )
+        if source == target:
+            raise ValueError(f"edge {entry!r} is a self loop")
+        if adjacency[source, target]:
+            raise ValueError(f"edge {entry!r} is repeated")
+        adjacency[source, target] = 1
+    from CITNP.datasets.mixed_regime_generator import topological_order
+
+    try:
+        topological_order(adjacency)
+    except ValueError as error:
+        raise ValueError(f"the edges form a cycle ({error})") from error
+    return adjacency
+
+
+def prior_scm(
+    cfg, i: int, base_seed: int = 9101, D: int = 3, fixed_graph=None
+):
+    """SCM, graph and do-value distribution of task `i` of the training prior,
+    optionally with the graph fixed.
 
     Calls the training generator with key make_key(SOURCE_ADHOC, D,
     base_seed, i) and keeps only the SCM, graph and do_dist; the generator's
@@ -230,6 +363,13 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     base_seed, D, i): D sits in the key's split slot, so tasks with the same
     i but different D use unrelated random streams. Other SOURCE_ADHOC
     callers use split 0 and D >= 1, so these keys collide with none of them.
+
+    With `fixed_graph` the graph is not sampled and the variables are not
+    permuted: every task has that DAG in that variable order. Mechanisms
+    (weights, noise variances) and the do-value distribution are drawn by the
+    same code and the same prior as for a sampled graph, so only the graph
+    differs from the prior's tasks. The random stream differs from the
+    prior's for the same (base_seed, D, i), since no graph is drawn.
 
     Args:
     ----------
@@ -245,6 +385,11 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     D : int
         Number of variables.
 
+    fixed_graph : np.ndarray | None
+        [D, D] 0/1 adjacency, fixed_graph[i, j] = 1 meaning i -> j. None
+        draws each task's graph from the training prior, with the prior's
+        random variable permutation (the default).
+
     Returns:
     ----------
     (LinearSCM, graph [D, D] int in the task's variable order, do_dist dict,
@@ -258,11 +403,15 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
 
     require_exact_oracle(cfg)
+    if fixed_graph is not None:
+        fixed_graph = validate_fixed_graph(fixed_graph, D, cfg)
     task, debug = generate_task(
         cfg,
         make_key(SOURCE_ADHOC, D, base_seed, i),
+        graph=fixed_graph,
         num_variables=D,
         return_debug=True,
+        permute=fixed_graph is None,
     )
     lg = scm_from_debug(debug)
     if not np.allclose(lg.c, 0.0):
@@ -275,16 +424,22 @@ def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3):
     )
 
 
-def pair_design_pools(T: int, Y: int, D: int) -> dict:
+def pair_design_pools(
+    T: int, Y: int, D: int, with_observational: bool = False
+) -> dict:
     """Pool(s) used by each design for the query pair (T, Y): "random" -> the
     random pool, "do(T)" -> pool T, "do(Y)" -> pool Y, "do(other)" -> the list
-    of the remaining D - 2 nodes' pools."""
-    return {
+    of the remaining D - 2 nodes' pools. With `with_observational`,
+    "observational" -> the extra-observational pool, the same for every pair."""
+    pools: dict = {
         "random": "random",
         "do(T)": T,
         "do(Y)": Y,
         "do(other)": [j for j in range(D) if j not in (T, Y)],
     }
+    if with_observational:
+        pools[OBSERVATIONAL_DESIGN] = OBSERVATIONAL_DESIGN
+    return pools
 
 
 def default_n_obs(cfg) -> int:

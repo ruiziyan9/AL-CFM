@@ -17,6 +17,7 @@ GOLDEN = REPO / "testing" / "golden" / "prior"
 N_TASKS = 20
 D = 3
 CONFIGS = REPO / "CITNP" / "experiments" / "configs"
+FIXTURES = REPO / "testing" / "fixtures"
 
 # Same settings as BASE in testing/test_signed_mean_prior.py, weight_mean = 1.
 SIGNED_MEAN = dict(
@@ -30,9 +31,11 @@ SIGNED_MEAN = dict(
     qry_mode="grouped",
     weight_mean=1.0,
 )
-# name -> yaml file name, or a dict of MixedRegimeConfig kwargs
-GENERATOR_SETTINGS: dict[str, str | dict] = {
-    "oracle_d3": "oracle_d3.yaml",
+# name -> yaml file name in CONFIGS, the path of a yaml file, or a dict of
+# MixedRegimeConfig kwargs. oracle_d3.yaml is the older prior, kept as a test
+# fixture only.
+GENERATOR_SETTINGS: dict[str, str | Path | dict] = {
+    "oracle_d3": FIXTURES / "oracle_d3.yaml",
     "oracle_d3_strong_v9": "oracle_d3_strong_v9.yaml",
     "signed_mean": SIGNED_MEAN,
 }
@@ -57,8 +60,8 @@ def generator_config(name: str):
     from CITNP.datasets.mixed_regime_generator import MixedRegimeConfig
 
     spec = GENERATOR_SETTINGS[name]
-    if isinstance(spec, str):
-        return load_config(CONFIGS / spec)
+    if isinstance(spec, (str, Path)):
+        return load_config(CONFIGS / spec)  # an absolute path stays as it is
     return MixedRegimeConfig(**spec)
 
 

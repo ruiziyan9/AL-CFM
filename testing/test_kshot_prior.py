@@ -3,6 +3,8 @@ designs, and the identity E[excess] = E[KL(oracle||model)] with injected
 predictors (CPU, no checkpoint)."""
 
 import functools
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,7 +20,7 @@ from CITNP.datasets.mixed_regime_generator import (
     make_key,
     sample_do_values,
 )
-from CITNP.evaluation import tasks
+from CITNP.evaluation import experiments, tasks
 from CITNP.evaluation.experiments import _build_contexts, run_kshot_prior
 from CITNP.evaluation.metrics import (
     mix_logpdf,
@@ -26,8 +28,12 @@ from CITNP.evaluation.metrics import (
     oracle_moments,
     oracle_weights,
 )
+from CITNP.evaluation.model_api import predict_mixture
 from CITNP.evaluation.oracle import LinGaussOracle, all_dags, dag_key
 from CITNP.prior_diagnostics.linear_gaussian import scm_from_debug
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from golden_spec import tiny_model_cfg
 
 CFG = MixedRegimeConfig(
     function_generator="linear_iw",
@@ -43,6 +49,37 @@ CFG = MixedRegimeConfig(
     n_obs_min=10,
 )
 SEED = 9101
+# Five variables: more than the exact oracle enumerates (max_oracle_nodes).
+CFG_FIVE_VARIABLES = MixedRegimeConfig(
+    function_generator="linear_iw",
+    alpha0=1.5,
+    num_variables=[5],
+    graph_type=["ER"],
+    graph_degrees={5: [3, 5]},
+    normalise=False,
+    k_max=2,
+    n_ctx_range=(30, 40),
+    n_qry=6,
+    qry_mode="grouped",
+    n_obs_min=10,
+)
+# Columns of the two result tables that need the oracle: missing values when
+# run_kshot_prior runs with with_oracle=False.
+ORACLE_COLUMNS = [
+    "kl_truth_oracle",
+    "kl_oracle_model",
+    "excess_kl_truth",
+    "slope_oracle",
+    "var_ratio_model_oracle",
+    "log_prior_true_graph",
+    "true_graph_in_prior",
+]
+ORACLE_COLUMNS_BY_DO_VALUE = [
+    "kl_truth_oracle",
+    "kl_oracle_model",
+    "mean_oracle",
+    "sd_oracle",
+]
 
 
 def uniform_prior(D: int) -> dict:
@@ -95,6 +132,33 @@ def make_oracle_predictor(D: int, log_graph_prior: dict, n_mc: int):
     return predict
 
 
+def untrained_model_predictor(D: int):
+    """Predictor of a small randomly initialised model for D variables (the
+    size-s model config, seed 0)."""
+    from CITNP.models.mixed_context_model import MixedContextMoGModel
+    from CITNP.utils.configs import CausalInfModelConfig
+
+    m = tiny_model_cfg()
+    cfg = CausalInfModelConfig(
+        d_model=m["d_model"],
+        emb_depth=m["emb_depth"],
+        dim_feedforward=m["dim_feedforward"],
+        nhead=m["nhead"],
+        dropout=0.0,
+        num_layers_encoder=m["num_layers_encoder"],
+        num_nodes=D,
+        sample_attn_mode=m["sample_attn_mode"],
+        linear_attention=m.get("linear_attention", False),
+        mean_loss_across_samples=False,
+        device="cpu",
+        dtype="float32",
+        num_mixture_components=m["num_mixture_components"],
+    )
+    torch.manual_seed(0)
+    model = MixedContextMoGModel(cfg).eval()
+    return functools.partial(predict_mixture, model, device="cpu")
+
+
 def run(D, n_tasks, k_list, predict, n_mc=50, **kw):
     """run_kshot_prior on CFG; the oracle uses `empirical_prior(D)` unless
     `log_graph_prior` is passed (None: run_kshot_prior's own default)."""
@@ -121,6 +185,55 @@ def task_means(df: pd.DataFrame, col: str, by=("design", "k")):
     return per_task.mean(axis=1), per_task.std(axis=1) / np.sqrt(
         per_task.shape[1]
     )
+
+
+# --------------------------------------------------------------------------- #
+# 1b. prior_scm with a fixed graph
+# --------------------------------------------------------------------------- #
+FIXED_EDGES = [(0, 1), (1, 2), (2, 4), (0, 3), (3, 4), (0, 2)]
+
+
+def _fixed_graph(D=5, edges=FIXED_EDGES):
+    graph = np.zeros((D, D), dtype=int)
+    for source, target in edges:
+        graph[source, target] = 1
+    return graph
+
+
+def test_prior_scm_fixed_graph_is_returned_and_weights_follow_it():
+    graph = _fixed_graph()
+    weights = []
+    for i in range(3):
+        scm, returned, do_dist, _ = tasks.prior_scm(
+            CFG_FIVE_VARIABLES, i, SEED, 5, fixed_graph=graph
+        )
+        assert np.array_equal(returned, graph)
+        assert np.array_equal(scm.adj, graph)
+        assert np.array_equal(scm.B != 0, graph.astype(bool))
+        assert "kind" in do_dist
+        weights.append(scm.B)
+    assert not np.allclose(weights[0], weights[1])
+    assert not np.allclose(weights[1], weights[2])
+
+
+@pytest.mark.parametrize(
+    "bad_graph, message",
+    [
+        (np.zeros((5, 4)), "square"),
+        (np.zeros((4, 4)), "4 nodes but D = 5"),
+        (np.eye(5), "self loop"),
+        (_fixed_graph(edges=[(0, 1), (1, 2), (2, 0)]), "cycle"),
+        (2 * _fixed_graph(), "only 0 and 1"),
+    ],
+)
+def test_prior_scm_rejects_invalid_fixed_graph(bad_graph, message):
+    with pytest.raises(ValueError, match=message):
+        tasks.prior_scm(CFG_FIVE_VARIABLES, 0, SEED, 5, fixed_graph=bad_graph)
+
+
+def test_prior_scm_rejects_fixed_graph_outside_num_variables():
+    with pytest.raises(ValueError, match="num_variables"):
+        tasks.prior_scm(CFG, 0, SEED, 5, fixed_graph=_fixed_graph())
 
 
 # --------------------------------------------------------------------------- #
@@ -206,10 +319,11 @@ def test_one_fit_per_context_shared_by_pairs():
 
     # counts calls only: any graph prior will do
     df, _ = run(D, 2, [0, 2, 4], spy, log_graph_prior=uniform_prior(D))
-    # per task: obs + (D + 1) pools x 2 positive k
-    assert len(calls) == 2 * (1 + (D + 1) * 2)
+    # per task: obs + (D + 1 interventional + 1 observational) pools x 2 k
+    assert len(calls) == 2 * (1 + (D + 2) * 2)
     assert all(n == D * (D - 1) for _, n in calls)
-    assert len(df) == 2 * 6 * (1 + 4 * 2)  # obs + 4 designs x 2 k
+    # obs + 4 interventional + observational designs x 2 k
+    assert len(df) == 2 * 6 * (1 + 5 * 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +341,66 @@ def test_pair_design_pools_cover_each_node_once(D):
             assert sorted([p["do(T)"], p["do(Y)"], *p["do(other)"]]) == list(
                 range(D)
             )
+            # the observational design maps to the observational pool, the
+            # same pool for every pair
+            with_obs = tasks.pair_design_pools(T, Y, D, with_observational=True)
+            assert set(with_obs) == {*tasks.PRIOR_DESIGNS, "observational"}
+            assert with_obs["observational"] == "observational"
+
+
+# --------------------------------------------------------------------------- #
+# 3b. Extra observational pool
+# --------------------------------------------------------------------------- #
+def test_observational_pool_is_nested_and_has_no_interventions():
+    scm, _, _, _ = tasks.prior_scm(CFG, 0, SEED, 3)
+    rng = np.random.default_rng([SEED, 3, 0, 23])
+    x, mask, targets = tasks.observational_pool(scm, 5, rng)
+    assert x.shape == (5, 3) and mask.shape == (5, 3)
+    assert not mask.any()  # purely observational: no intervention flags
+    assert (targets == -1).all()  # no target node
+    # nested in k: the first k rows do not depend on the pool size
+    rng = np.random.default_rng([SEED, 3, 0, 23])
+    x3, _, _ = tasks.observational_pool(scm, 3, rng)
+    assert np.array_equal(x[:3], x3)
+
+
+def test_observational_design_appears_for_every_pair():
+    df, _ = run(3, 2, [0, 2], normal_predictor, log_graph_prior=uniform_prior(3))
+    obs = df[df["design"] == "observational"]
+    # every ordered pair (T, Y), every task, at k = 2 (not k = 0: shared "obs")
+    assert set(zip(obs["T"], obs["Y"])) == {
+        (T, Y) for T in range(3) for Y in range(3) if T != Y
+    }
+    assert set(obs["k"]) == {2}
+    assert (obs["n_other"] == 0).all()
+    assert (obs["intervened_nodes"] == "").all()  # no intervened nodes
+
+
+@pytest.mark.parametrize(
+    "D, with_oracle", [(3, True), (5, False)]
+)
+def test_observational_pool_leaves_other_designs_unchanged(D, with_oracle):
+    cfg = CFG if D == 3 else CFG_FIVE_VARIABLES
+    kw = dict(log_graph_prior=uniform_prior(D)) if with_oracle else {}
+    predict = normal_predictor if with_oracle else untrained_model_predictor(D)
+
+    def evaluate(flag):
+        df, df_t = run_kshot_prior(
+            predict, cfg, D=D, device="cpu", k_list=[0, 2], n_tasks=2,
+            base_seed=SEED, n_y=16, n_t=5, n_mc=50, with_oracle=with_oracle,
+            with_observational_pool=flag, **kw,
+        )  # fmt: skip
+        return df, df_t
+
+    on, on_t = evaluate(True)
+    off, off_t = evaluate(False)
+    assert "observational" in set(on["design"])
+    assert "observational" not in set(off["design"])
+    # the pre-existing designs' rows are identical with and without the pool
+    shared = on[on["design"] != "observational"].reset_index(drop=True)
+    shared_t = on_t[on_t["design"] != "observational"].reset_index(drop=True)
+    pd.testing.assert_frame_equal(shared, off.reset_index(drop=True))
+    pd.testing.assert_frame_equal(shared_t, off_t.reset_index(drop=True))
 
 
 def test_check_context_size():
@@ -278,7 +452,7 @@ def test_d4_smoke():
     other = df[df["design"] == "do(other)"]
     assert len(other) > 0 and (other["n_other"] == 2).all()
     assert (df[df["design"] != "do(other)"]["n_other"] == 0).all()
-    assert set(df["design"]) == {"obs", *tasks.PRIOR_DESIGNS}
+    assert set(df["design"]) == {"obs", *tasks.prior_design_names(True)}
     assert set(df["D"]) == {4}
     assert {"q", "t"} <= set(df_t.columns)
     assert df["kl_oracle_model"].notna().all()
@@ -395,3 +569,145 @@ def test_mix_logpdf_chunked_matches_unchunked(chunk):
     torch.testing.assert_close(
         mix_logpdf(y, mu, sd, logw, chunk=chunk), mix_logpdf(y, mu, sd, logw)
     )
+
+
+# --------------------------------------------------------------------------- #
+# model evaluation without the oracle
+# --------------------------------------------------------------------------- #
+def forbid_the_oracle(monkeypatch):
+    """Make any use of the oracle or of its graph prior fail."""
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the oracle must not be used")
+
+    monkeypatch.setattr(experiments, "LinGaussOracle", forbidden)
+    monkeypatch.setattr(experiments, "empirical_graph_prior", forbidden)
+
+
+def test_model_scores_do_not_depend_on_the_oracle(monkeypatch):
+    D = 3
+    predict = untrained_model_predictor(D)
+    kw = dict(flag_ablation=True)
+    # log_graph_prior=None: the oracle run estimates its own graph prior,
+    # which reseeds the global generators; the tasks must not depend on it
+    with_oracle = run(D, 3, [0, 2], predict, log_graph_prior=None, **kw)
+    forbid_the_oracle(monkeypatch)
+    model_only = run(
+        D, 3, [0, 2], predict, log_graph_prior=None, with_oracle=False, **kw
+    )
+    for both, alone, oracle_columns in zip(
+        with_oracle,
+        model_only,
+        (
+            [*ORACLE_COLUMNS, "kl_oracle_model_noflag"],
+            ORACLE_COLUMNS_BY_DO_VALUE,
+        ),
+    ):
+        # same layout: identical columns in identical order
+        assert list(alone.columns) == list(both.columns)
+        assert both[oracle_columns].notna().all().all()
+        assert alone[oracle_columns].isna().all().all()
+        # every other column, the model scores among them, is exactly equal
+        pd.testing.assert_frame_equal(
+            alone.drop(columns=oracle_columns),
+            both.drop(columns=oracle_columns),
+            check_exact=True,
+        )
+    df = model_only[0]
+    assert np.isfinite(df[["kl_truth_model", "slope_model"]]).all().all()
+    assert df["kl_truth_model"].nunique() > 1
+
+
+def flag_sensitive_predictor(x, m, Ts, Ys, grid, zero_flags=False):
+    """N(0, 1) with the intervention flags, N(0.5, 4) with them zeroed."""
+    mu, sd, logw = normal_predictor(x, m, Ts, Ys, grid)
+    return (mu + 0.5, 2.0 * sd, logw) if zero_flags else (mu, sd, logw)
+
+
+def flags_always_zeroed_predictor(x, m, Ts, Ys, grid, zero_flags=False):
+    """What `flag_sensitive_predictor` predicts with the flags zeroed."""
+    return flag_sensitive_predictor(x, m, Ts, Ys, grid, zero_flags=True)
+
+
+@pytest.mark.parametrize("with_oracle", [True, False])
+def test_flag_ablation_against_truth(with_oracle):
+    kw = dict(log_graph_prior=uniform_prior(3), with_oracle=with_oracle)
+    df, _ = run(3, 2, [0, 2], flag_sensitive_predictor, flag_ablation=True, **kw)
+    # the flag-ablated model, scored as the model on the same truth samples
+    zeroed, _ = run(3, 2, [0, 2], flags_always_zeroed_predictor, **kw)
+    assert np.array_equal(df["kl_truth_model_noflag"], zeroed["kl_truth_model"])
+    assert (df["kl_truth_model_noflag"] != df["kl_truth_model"]).all()
+    assert df["kl_oracle_model_noflag"].notna().all() == with_oracle
+    # neither flag-ablation column without flag_ablation
+    assert not [c for c in zeroed.columns if c.endswith("noflag")]
+
+
+def test_model_only_five_variables(monkeypatch):
+    D = 5
+    forbid_the_oracle(monkeypatch)
+    df, df_t = run_kshot_prior(
+        untrained_model_predictor(D),
+        CFG_FIVE_VARIABLES,
+        D=D,
+        device="cpu",
+        k_list=[0, 2],
+        n_tasks=2,
+        base_seed=SEED,
+        n_y=16,
+        n_t=5,
+        with_oracle=False,
+    )
+    # obs + 4 interventional + observational designs at k = 2, per ordered pair
+    assert len(df) == 2 * D * (D - 1) * 6
+    assert len(df_t) == len(df) * 5
+    assert set(df["design"]) == {"obs", *tasks.prior_design_names(True)}
+    assert (df[df["design"] == "do(other)"]["n_other"] == D - 2).all()
+    model_columns = ["kl_truth_model", "slope_truth", "slope_model"]
+    assert np.isfinite(df[model_columns]).all().all()
+    assert np.isfinite(
+        df_t[["kl_truth_model", "mean_truth", "mean_model", "sd_model"]]
+    ).all().all()  # fmt: skip
+    assert df[ORACLE_COLUMNS].isna().all().all()
+    assert df_t[ORACLE_COLUMNS_BY_DO_VALUE].isna().all().all()
+
+
+def test_fixed_graph_model_only_five_variables(monkeypatch):
+    D = 5
+    forbid_the_oracle(monkeypatch)
+
+    def evaluate(fixed_graph):
+        return run_kshot_prior(
+            untrained_model_predictor(D),
+            CFG_FIVE_VARIABLES,
+            D=D,
+            device="cpu",
+            k_list=[0, 2],
+            n_tasks=3,
+            base_seed=SEED,
+            n_y=16,
+            n_t=5,
+            with_oracle=False,
+            fixed_graph=fixed_graph,
+        )
+
+    df, df_t = evaluate(_fixed_graph())
+    prior_df, _ = evaluate(None)
+    assert list(df.columns) == list(prior_df.columns)
+    assert df["fixed_graph"].eq("0->1,0->2,0->3,1->2,2->4,3->4").all()
+    assert prior_df["fixed_graph"].eq("").all()
+    assert np.isfinite(df[["kl_truth_model", "slope_truth"]]).all().all()
+    assert np.isfinite(df_t[["kl_truth_model", "mean_truth"]]).all().all()
+    assert df["task"].nunique() == 3
+    assert df[ORACLE_COLUMNS].isna().all().all()
+
+
+def test_large_d_error_points_to_the_model_only_mode():
+    with pytest.raises(ValueError, match="with_oracle=False"):
+        run_kshot_prior(
+            normal_predictor,
+            CFG_FIVE_VARIABLES,
+            D=5,
+            device="cpu",
+            k_list=[0, 1],
+            n_tasks=1,
+        )

@@ -99,6 +99,7 @@ from CITNP.trainer.callbacks import (
 )
 from CITNP.trainer.mixed_context_trainer import MixedContextTrainer
 from CITNP.trainer.monitor_callbacks import OracleGapCallback, TrainStatsCallback
+from CITNP.utils.config_files import load_config_mapping
 from CITNP.utils.configs import CausalInfModelConfig
 from CITNP.utils.default_args import overwrite_debug_args, parse_default_args
 from CITNP.utils.utils import (
@@ -263,11 +264,11 @@ def parse_args(argv=None) -> argparse.Namespace:
 def apply_model_config(args: argparse.Namespace) -> None:
     """Copy the --model_config YAML onto args (YAML values override the
     command line, as before), except that a selection key given in both
-    places must have the same value."""
+    places must have the same value. The YAML is read with everything it
+    inherits through `extends` (CITNP/utils/config_files.py)."""
     if not args.model_config:
         return
-    with open(args.model_config) as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg = load_config_mapping(args.model_config)
     for k, v in cfg.items():
         if k not in MODEL_KEYS:
             raise ValueError(f"Unknown model_config key {k!r}")
@@ -615,8 +616,20 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     # --model_config; run-level data options go to their own file.
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
         yaml.safe_dump(resolved, f, sort_keys=False)
+    with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
+        yaml.safe_dump(resolved, f, sort_keys=False)
+
+    # Save run-level data options (e.g. same_numregimes_per_batch).
     with open(model_save_dir / RESOLVED_DATA_OPTIONS_FILE, "w") as f:
         yaml.safe_dump(resolved_data_options(args), f, sort_keys=False)
+
+    # Save the fully resolved data configuration after YAML inheritance
+    # and dataclass defaults have been applied.
+    with open(model_save_dir / "resolved_data_config.yaml", "w") as f:
+        yaml.safe_dump(
+            _json_round_trip(dataclasses.asdict(data_cfg)), f, sort_keys=False
+        )
+
 
     if args.dataset_config:
         record_presimulated_data(args, chunk_directories, model_save_dir)

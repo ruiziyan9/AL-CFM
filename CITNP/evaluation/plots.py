@@ -17,6 +17,10 @@ written by `kshot-prior` (ONLY these show a true oracle lower bound; per D):
                                    over tasks, pairs averaged within a task first
     <prefix>_D{D}_by_relation.png  excess KL by question class (the bound need
                                    not hold within a class)
+  after a run without the oracle (`kshot-prior --no_oracle`: the oracle's
+  columns are entirely missing) the same two files show the model only:
+    <prefix>_D{D}_main.png         KL(truth || model) against k, per design
+    <prefix>_D{D}_by_relation.png  KL(truth || model) by question class
 Training monitoring, from oracle_gap.csv / train_stats.csv in run directories:
     plot_monitoring(run_dirs, out)
 Flag probe, from <prefix>.csv written by `probe-flag`:
@@ -34,7 +38,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from CITNP.evaluation.tasks import DESIGNS, MAIN_QUERY, QUERIES, qname
+from CITNP.evaluation.tasks import (
+    DESIGNS,
+    MAIN_QUERY,
+    OBSERVATIONAL_DESIGN,
+    QUERIES,
+    example_design_names,
+    qname,
+)
 
 COLORS = {
     "random": "C0",
@@ -352,6 +363,22 @@ PRIOR_COLORS = {
     "do(Y)": "C3",
     "do(other)": "C2",
 }
+# The extra-observational design is not interventional, so it is drawn set
+# apart from the four interventional designs: grey and dashed.
+_OBSERVATIONAL_COLOR = "0.45"
+_OBSERVATIONAL_LINESTYLE = "--"
+
+
+def _plot_observational_design(ax, dd: pd.DataFrame, col: str) -> None:
+    """Draw the extra-observational design on `ax` as a grey dashed line, if
+    the rows contain it (a CSV without the design is drawn unchanged)."""
+    if OBSERVATIONAL_DESIGN not in set(dd["design"]):
+        return
+    mu, se = _prior_curve(dd, OBSERVATIONAL_DESIGN, [col])
+    band(
+        ax, mu[col], se[col], _OBSERVATIONAL_COLOR,
+        ls=_OBSERVATIONAL_LINESTYLE, label=OBSERVATIONAL_DESIGN,
+    )  # fmt: skip
 _ID_COLS = ["D", "task", "T", "Y", "design", "k"]
 
 
@@ -361,6 +388,32 @@ def _prior_curve(df: pd.DataFrame, design: str, cols: list[str]):
     return seed_curve(with_k0(df, design), cols, unit="task")
 
 
+# Oracle scores the kshot-prior figures draw: entirely missing after a run
+# without the oracle.
+_PRIOR_ORACLE_COLUMNS = ["kl_truth_oracle", "excess_kl_truth", "kl_oracle_model"]
+
+
+def _has_oracle_scores(df: pd.DataFrame) -> bool:
+    """Whether kshot-prior rows hold any oracle score: False for a run
+    without the oracle, which leaves the oracle's columns entirely missing."""
+    present = [c for c in _PRIOR_ORACLE_COLUMNS if c in df]
+    return bool(df[present].notna().any().any())
+
+
+def _fixed_graph_title(dd: pd.DataFrame) -> str:
+    """Title line naming the fixed graph of kshot-prior rows, e.g. "fixed
+    graph 0->1, 0->2"; "" when the rows come from the training prior (also
+    for CSV files written before the column `fixed_graph` existed)."""
+    if "fixed_graph" not in dd:
+        return ""
+    graphs = dd["fixed_graph"].fillna("").unique()
+    if len(graphs) == 1 and graphs[0] == "":
+        return ""
+    if len(graphs) == 1:
+        return "fixed graph " + graphs[0].replace(",", ", ")
+    return "several graphs (fixed and training-prior tasks mixed)"
+
+
 def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
     """One figure <prefix>_D{D}_main.png per D, from kshot-prior rows.
 
@@ -368,9 +421,33 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
     (b) excess KL(truth) = KL(truth || model) - KL(truth || oracle), +/- s.e.
     over tasks (>= 0 in expectation: the oracle is a lower bound);
     (c) KL(oracle || model), which equals (b) in expectation.
+
+    Without oracle scores (a run without the oracle) the figure has one
+    panel: KL(truth || model) against k per design, +/- s.e. over tasks.
+    Rows with a fixed graph (column `fixed_graph`) add a line naming it, so
+    that they are not mistaken for training-prior results. The
+    extra-observational design, when present, is drawn as a grey dashed line.
     """
     for D, dd in df.groupby("D"):
         ks = sorted(dd.k.unique())
+        if not _has_oracle_scores(dd):
+            fig, ax = plt.subplots(figsize=(7, 5))
+            for d, c in PRIOR_COLORS.items():
+                mu, se = _prior_curve(dd, d, ["kl_truth_model"])
+                band(ax, mu["kl_truth_model"], se["kl_truth_model"], c,
+                     label=d)  # fmt: skip
+            _plot_observational_design(ax, dd, "kl_truth_model")
+            ax.axhline(0, color="k", lw=0.5)
+            finish(
+                ax, ks,
+                f"D={D}: KL(truth || model), model only (oracle not run)",
+                "KL(truth || model), nats per query point",
+            )  # fmt: skip
+            ax.legend(fontsize=7)
+            if _fixed_graph_title(dd):
+                fig.suptitle(_fixed_graph_title(dd), fontsize=9)
+            _save(fig, f"{prefix}_D{D}_main.png")
+            continue
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         for d in PRIOR_COLORS:
             c = PRIOR_COLORS[d]
@@ -386,6 +463,9 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
                  label=d)  # fmt: skip
             band(axes[2], mu["kl_oracle_model"], se["kl_oracle_model"], c,
                  label=d)  # fmt: skip
+        _plot_observational_design(axes[0], dd, "kl_truth_model")
+        _plot_observational_design(axes[1], dd, "excess_kl_truth")
+        _plot_observational_design(axes[2], dd, "kl_oracle_model")
         titles = [
             f"D={D}: KL(truth || ·)",
             f"D={D}: excess KL(truth) = KL(truth||model) - KL(truth||oracle)",
@@ -397,14 +477,35 @@ def plot_kshot_prior_main(df: pd.DataFrame, prefix: str) -> None:
         axes[0].set_ylabel("KL, nats per query point")
         axes[0].legend(fontsize=7, ncol=2)
         axes[1].legend(fontsize=7)
+        if _fixed_graph_title(dd):
+            fig.suptitle(_fixed_graph_title(dd), fontsize=9)
         _save(fig, f"{prefix}_D{D}_main.png")
 
 
 def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
     """One figure <prefix>_D{D}_by_relation.png per D: excess KL(truth) by
     design, one panel per question class. The lower bound holds on average
-    over the whole prior, not within a class, so a facet may dip below 0."""
+    over the whole prior, not within a class, so a facet may dip below 0.
+
+    Without oracle scores (a run without the oracle) the panels show
+    KL(truth || model) in place of the excess. Rows with a fixed graph add a
+    line naming it to the title. The extra-observational design, when
+    present, is drawn as a grey dashed line."""
     for D, dd in df.groupby("D"):
+        if _has_oracle_scores(dd):
+            col = "excess_kl_truth"
+            ylabel = "excess KL(truth), nats per query point"
+            title = (
+                f"D={D}: excess KL by question class (the bound >= 0 need "
+                "not hold within a class)"
+            )
+        else:
+            col = "kl_truth_model"
+            ylabel = "KL(truth || model), nats per query point"
+            title = (
+                f"D={D}: KL(truth || model) by question class, model only "
+                "(oracle not run)"
+            )
         rels = sorted(dd["relation"].unique())
         ks = sorted(dd.k.unique())
         fig, axes = plt.subplots(
@@ -414,24 +515,24 @@ def plot_kshot_prior_by_relation(df: pd.DataFrame, prefix: str) -> None:
         for ax, rel in zip(axes[0], rels):
             sub = dd[dd["relation"] == rel]
             for d, c in PRIOR_COLORS.items():
-                mu, se = _prior_curve(sub, d, ["excess_kl_truth"])
-                band(ax, mu["excess_kl_truth"], se["excess_kl_truth"], c,
-                     label=d)  # fmt: skip
+                mu, se = _prior_curve(sub, d, [col])
+                band(ax, mu[col], se[col], c, label=d)
+            _plot_observational_design(ax, sub, col)
             ax.axhline(0, color="k", lw=0.5)
             finish(ax, ks, rel)
-        axes[0][0].set_ylabel("excess KL(truth), nats per query point")
+        axes[0][0].set_ylabel(ylabel)
         axes[0][0].legend(fontsize=7)
-        fig.suptitle(
-            f"D={D}: excess KL by question class (the bound >= 0 need not "
-            "hold within a class)"
-        )
+        if _fixed_graph_title(dd):
+            title += "\n" + _fixed_graph_title(dd)
+        fig.suptitle(title)
         _save(fig, f"{prefix}_D{D}_by_relation.png")
 
 
 def plot_kshot_prior_all(csv_paths: list[str], prefix: str | None = None) -> None:
     """Every kshot-prior figure from one or more CSV parts (array jobs over
     task_offset), concatenated. Raises if a (D, task, T, Y, design, k) row
-    appears twice, i.e. parts overlap."""
+    appears twice, i.e. parts overlap. Parts of a run without the oracle
+    give the model-only versions of the figures."""
     df = pd.concat([pd.read_csv(p) for p in csv_paths], ignore_index=True)
     if df.duplicated(_ID_COLS).any():
         raise ValueError("overlapping parts: duplicate rows")
@@ -445,6 +546,150 @@ def plot_kshot_prior_all(csv_paths: list[str], prefix: str | None = None) -> Non
         for s in ("_main", "_by_relation")
     ]
     print("wrote " + ", ".join(written))
+
+
+# --------------------------------------------------------------------------- #
+# One fixed example (kshot-example)
+# --------------------------------------------------------------------------- #
+EXAMPLE_XLAB = "number of added context rows (k)"
+
+
+def example_design_order(df: pd.DataFrame, designs=None) -> list[str]:
+    """The kshot-example designs to draw, in legend order: `designs` (a list,
+    or a comma-separated string of design names as they appear in the legend)
+    or, by default, every design do(X1) .. do(XD), random and observational.
+
+    Raises ValueError, listing the valid names, for an unknown design."""
+    valid = example_design_names(int(df["D"].iloc[0]))
+    if designs is None:
+        return valid
+    if isinstance(designs, str):
+        designs = [d.strip() for d in designs.split(",") if d.strip()]
+    unknown = [d for d in designs if d not in valid]
+    if unknown:
+        raise ValueError(
+            f"unknown design(s) {unknown}; the valid names are {valid}"
+        )
+    return list(designs)
+
+
+def _example_design_color(design: str, D: int) -> str:
+    """Colour of a kshot-example design: a distinct colour per interventional
+    design (do(X1) .. do(XD), then random), and grey for the observational
+    design (which is also drawn dashed)."""
+    if design == OBSERVATIONAL_DESIGN:
+        return _OBSERVATIONAL_COLOR
+    order = [f"do(X{j + 1})" for j in range(D)] + ["random"]
+    return f"C{order.index(design) % 10}"
+
+
+def _example_linestyle(design: str) -> str:
+    """Dashed for the (non-interventional) observational design, solid else."""
+    return _OBSERVATIONAL_LINESTYLE if design == OBSERVATIONAL_DESIGN else "-"
+
+
+def _example_curve(df: pd.DataFrame, design: str, col: str):
+    """Mean and s.e. over repetitions of `col` against k, k = 0 prepended."""
+    return seed_curve(with_k0(df, design), col, unit="rep")
+
+
+def _example_effect_band(df: pd.DataFrame, design: str):
+    """Mean and the central-80% interval (10th, 90th percentiles) over
+    repetitions of the estimated effect `slope_model` against k, k = 0
+    prepended."""
+    per_rep = with_k0(df, design).groupby(["rep", "k"])["slope_model"].mean()
+    g = per_rep.groupby("k")
+    return g.mean(), g.quantile(0.1), g.quantile(0.9)
+
+
+def _example_header(df: pd.DataFrame):
+    """(D, T, Y, repetitions, graph text with X names, query text) of a
+    kshot-example CSV."""
+    D = int(df["D"].iloc[0])
+    T, Y = int(df["T"].iloc[0]), int(df["Y"].iloc[0])
+    reps = df["rep"].nunique()
+    edges = str(df["graph"].iloc[0]) if df["graph"].notna().iloc[0] else ""
+    named = ", ".join(
+        f"X{int(s) + 1}->X{int(t) + 1}"
+        for s, t in (e.split("->") for e in edges.split(",") if e)
+    )
+    query = f"X{Y + 1} | do(X{T + 1} = t)"
+    return D, T, Y, reps, named, query
+
+
+def plot_kshot_example_kl(
+    df: pd.DataFrame, prefix: str, designs=None
+) -> None:
+    """<prefix>_kl.png: KL(truth || model) against k, one line per design
+    (mean over repetitions, +/- s.e. band), the observational design grey and
+    dashed. `designs` selects and orders the lines (see `example_design_order`).
+    """
+    D, T, Y, reps, named, query = _example_header(df)
+    chosen = example_design_order(df, designs)
+    ks = sorted(df.k.unique())
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for d in chosen:
+        mu, se = _example_curve(df, d, "kl_truth_model")
+        band(
+            ax, mu, se, _example_design_color(d, D),
+            ls=_example_linestyle(d), label=d,
+        )  # fmt: skip
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks(ks)
+    ax.set_xlabel(EXAMPLE_XLAB)
+    ax.set_ylabel("KL(truth || model), nats per query point")
+    ax.set_title(
+        f"{query}  on  {named}\n"
+        f"KL(truth || model) vs k, mean of {reps} repetitions"
+    )
+    ax.legend(fontsize=8)
+    _save(fig, prefix + "_kl.png")
+
+
+def plot_kshot_example_effect(
+    df: pd.DataFrame, prefix: str, designs=None
+) -> None:
+    """<prefix>_effect.png: the model's estimated effect (slope of its
+    predictive mean) against k, one line per design (mean over repetitions,
+    band = central 80% of repetitions), with a red dashed line at the true
+    effect. `designs` selects and orders the lines."""
+    D, T, Y, reps, named, query = _example_header(df)
+    chosen = example_design_order(df, designs)
+    true_effect = float(df["slope_truth"].iloc[0])
+    ks = sorted(df.k.unique())
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for d in chosen:
+        mu, lo, hi = _example_effect_band(df, d)
+        color = _example_design_color(d, D)
+        ax.plot(
+            mu.index, mu.values, _example_linestyle(d), marker="o", ms=3,
+            color=color, label=d,
+        )  # fmt: skip
+        ax.fill_between(mu.index, lo.values, hi.values, color=color, alpha=0.15)
+    ax.axhline(
+        true_effect, color="r", ls="--", lw=1.2,
+        label=f"true effect ({true_effect:+.3f})",
+    )  # fmt: skip
+    ax.set_xticks(ks)
+    ax.set_xlabel(EXAMPLE_XLAB)
+    ax.set_ylabel("estimated total effect (slope of predictive mean)")
+    ax.set_title(
+        f"{query}  on  {named}\n"
+        f"estimated effect vs k, band = central 80% of {reps} repetitions"
+    )
+    ax.legend(fontsize=8)
+    _save(fig, prefix + "_effect.png")
+
+
+def plot_kshot_example_all(csv_path: str, designs=None) -> None:
+    """Both kshot-example figures from <prefix>.csv: the KL and the effect
+    against k. `designs` (a comma-separated list of design names, or None for
+    all) selects and orders the lines in both."""
+    prefix = csv_path.removesuffix(".csv")
+    df = pd.read_csv(csv_path)
+    plot_kshot_example_kl(df, prefix, designs)
+    plot_kshot_example_effect(df, prefix, designs)
+    print(f"wrote {prefix}_kl.png and {prefix}_effect.png")
 
 
 # --------------------------------------------------------------------------- #

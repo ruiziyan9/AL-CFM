@@ -4,7 +4,12 @@
            [--k_list 0,1,3,5,10,20,50] [--n_seeds 100] [--random_weights] --out kshot.csv
     python -m CITNP.evaluation kshot-prior --ckpt ... --model_config ... \
            --data_config ... [--num_variables 3,4] [--n_tasks 500] \
-           [--task_offset 0] [--k_list 0,1,3,5,10] --out kshot_prior.csv
+           [--task_offset 0] [--k_list 0,1,3,5,10] [--no_oracle] \
+           [--fixed_graph_edges 0->1,1->2] --out kshot_prior.csv
+    python -m CITNP.evaluation kshot-example --ckpt ... --model_config ... \
+           --data_config ... --fixed_graph_edges 0->1,1->2,2->4,0->3,3->4,0->2 \
+           --treatment 2 --outcome 4 [--repetitions 200] [--no_oracle] \
+           [--example_file model.yaml] --out kshot_example.csv
     python -m CITNP.evaluation scm-suite --ckpt ... --model_config ... \
            --data_config ... --out suite.csv
     python -m CITNP.evaluation bank --data_config ... --out bank.pkl
@@ -13,6 +18,8 @@
     python -m CITNP.evaluation plot-kshot kshot.csv     # all k-shot figures, no GPU
     python -m CITNP.evaluation plot-kshot-prior part0.csv [part1.csv ...] \
            [--prefix P]            # merges array-job parts (same settings)
+    python -m CITNP.evaluation plot-kshot-example kshot_example.csv \
+           [--designs "do(X3),random,observational"]   # redraw the 2 figures
     python -m CITNP.evaluation plot-monitoring RUN_DIR [RUN_DIR ...] --out monitoring.png
     python -m CITNP.evaluation probe-flag --ckpt ... --model_config ... \
            --bank bank.pkl --out probe.csv               # + probe.png
@@ -24,7 +31,15 @@ E[KL(oracle||model)] >= 0. Its prior comes from the data config (graph,
 variable permutation, weights, noise, do-value distribution, D, default
 n_obs, oracle priors); the CLI only sets the protocol (k_list, n_tasks,
 task_offset, base_seed, n_y, n_mc, grid_eps) and how many graphs estimate
-the oracle's graph prior (graph_prior_samples).
+the oracle's graph prior (graph_prior_samples). `kshot-prior --no_oracle`
+evaluates the model against the truth only: it works for any D (the exact
+oracle is limited to D <= max_oracle_nodes), gives the same model scores as
+a run with the oracle, and leaves the oracle's columns empty.
+`kshot-prior --fixed_graph_edges` gives every task one given DAG (0-based
+node indices, fixed variable order) with weights, noise and do-value
+distribution still drawn from the data config; there the oracle is no longer
+a guaranteed lower bound, because the tasks are not drawn from the training
+prior.
 
 See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
 and `probe-flag` compute,
@@ -116,6 +131,28 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                         "task's do_dist")  # fmt: skip
     p.add_argument("--flag_ablation", action="store_true",
                    help="also score the model with intervention flags zeroed")  # fmt: skip
+    p.add_argument("--no_observational_pool", action="store_true",
+                   help="drop the extra 'observational' design (a pool of "
+                        "more observational rows from the same model, nested "
+                        "like the interventional pools and scored for every "
+                        "query); on by default, it shows how much of the gain "
+                        "at k rows is from more data rather than intervention")  # fmt: skip
+    p.add_argument("--no_oracle", action="store_true",
+                   help="evaluate the model against the truth only: the "
+                        "exact oracle is not run and its columns are left "
+                        "empty; works for any D, and gives the same model "
+                        "scores as a run with the oracle (--n_mc, "
+                        "--min_graph_prob, --max_oracle_nodes, "
+                        "--graph_prior_samples and --oracle_budget then "
+                        "have no effect)")  # fmt: skip
+    p.add_argument("--fixed_graph_edges", default=None,
+                   help="use this DAG for every task instead of drawing "
+                        "graphs from the training prior, as 0-based "
+                        "'source->target' edges, e.g. \"0->1,1->2,0->2\" "
+                        "(node j is variable X_{j+1}); weights, noise and "
+                        "do-values are still drawn from the data config. "
+                        "Needs exactly one D (--num_variables). The oracle "
+                        "is then not a guaranteed lower bound")  # fmt: skip
     p.add_argument("--max_oracle_nodes", type=int, default=4,
                    help="largest D for exact DAG enumeration")  # fmt: skip
     p.add_argument("--graph_prior_samples", type=int, default=None,
@@ -126,6 +163,62 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                    default="total",
                    help="oracle MC draws: n_mc in total (default) or n_mc "
                         "per retained DAG")  # fmt: skip
+
+
+def _kshot_example_parser(p: argparse.ArgumentParser) -> None:
+    _kshot_common_args(
+        p,
+        n_mc=2000,
+        out="kshot_example.csv",
+        k_list_help="comma-separated numbers of added context rows "
+        "(default 0,1,3,5,10; 0 is always added)",
+    )
+    p.add_argument("--example_file", default=None,
+                   help="YAML example model (CITNP.evaluation.example_model); "
+                        "overrides --fixed_graph_edges")  # fmt: skip
+    p.add_argument("--fixed_graph_edges", default=None,
+                   help="when --example_file is not given, draw the model from "
+                        "--data_config's prior on this DAG and save it next to "
+                        "--out; 0-based 'source->target' edges, node j being "
+                        "variable X_{j+1}, e.g. \"0->1,1->2,0->2\"")  # fmt: skip
+    p.add_argument("--example_seed", type=int, default=9101,
+                   help="seed for drawing the model from the prior")  # fmt: skip
+    p.add_argument("--treatment", type=int, required=True,
+                   help="0-based treatment node index T of the query")  # fmt: skip
+    p.add_argument("--outcome", type=int, required=True,
+                   help="0-based outcome node index Y of the query (Y != T)")  # fmt: skip
+    p.add_argument("--repetitions", type=int, default=200,
+                   help="independent context draws from the fixed model")  # fmt: skip
+    p.add_argument("--base_seed", type=int, default=9101,
+                   help="seed of the repetition stream")  # fmt: skip
+    p.add_argument("--n_obs", type=int, default=None,
+                   help="observational rows (default: from the data config)")  # fmt: skip
+    p.add_argument("--grid_eps", type=float, default=0.02,
+                   help="do-value grid: quantiles [eps, 1 - eps] of the "
+                        "model's do_dist")  # fmt: skip
+    p.add_argument("--no_oracle", action="store_true",
+                   help="evaluate the model against the truth only (needed "
+                        "above the oracle's variable limit)")  # fmt: skip
+    p.add_argument("--max_oracle_nodes", type=int, default=4,
+                   help="largest D for exact DAG enumeration")  # fmt: skip
+    p.add_argument("--graph_prior_samples", type=int, default=None,
+                   help="graphs sampled for the oracle's graph prior "
+                        "(default: 20000 for D = 3, 500000 for D >= 4)")  # fmt: skip
+    p.add_argument("--designs", default=None,
+                   help="comma-separated design names for the figures, in "
+                        "legend order, e.g. \"do(X3),random,observational\"; "
+                        "default: every design. The evaluation always stores "
+                        "all designs; this only chooses which the figures show")  # fmt: skip
+    p.add_argument("--plot_only", default=None,
+                   help="<out>.csv from a previous run: only redraw the "
+                        "figures (respects --designs)")  # fmt: skip
+
+
+def _plot_kshot_example_parser(p: argparse.ArgumentParser) -> None:
+    p.add_argument("csv", help="<out>.csv written by kshot-example")
+    p.add_argument("--designs", default=None,
+                   help="comma-separated design names for the figures, in "
+                        "legend order; default: every design")  # fmt: skip
 
 
 def _plot_kshot_prior_parser(p: argparse.ArgumentParser) -> None:
@@ -275,7 +368,11 @@ def _print_prior_summary(df) -> None:
     which slightly truncates the prior relative to the oracle), design x k
     means (pairs averaged within a task first, then mean and s.e. over
     tasks) and the identity check: mean excess KL(truth) vs mean
-    KL(oracle||model)."""
+    KL(oracle||model).
+
+    Columns that are entirely missing are skipped: after a run without the
+    oracle only KL(truth||model) is summarised, with no graph-prior line and
+    no identity check."""
     import pandas as pd
 
     cols = [
@@ -286,19 +383,28 @@ def _print_prior_summary(df) -> None:
     ]
     with pd.option_context("display.width", 220, "display.max_rows", 500):
         for D, dd in df.groupby("D"):
+            present = [c for c in cols if dd[c].notna().any()]
             per_t = dd.drop_duplicates("task")
-            missing = float((~per_t["true_graph_in_prior"]).mean())
             resampled = float((per_t["resample_attempts"] > 0).mean())
+            in_prior = per_t["true_graph_in_prior"]
+            graph_line = "the oracle was not run; "
+            if in_prior.notna().any():
+                missing = float((~in_prior.astype(bool)).mean())
+                graph_line = (
+                    "true graph missing from the oracle's graph prior: "
+                    f"{missing:.2%}; "
+                )
             print(
-                f"\n=== D={D}: {len(per_t)} tasks; true graph missing from "
-                f"the oracle's graph prior: {missing:.2%}; resampled by the "
-                f"generator (resample_attempts > 0): {resampled:.2%}"
+                f"\n=== D={D}: {len(per_t)} tasks; {graph_line}resampled by "
+                f"the generator (resample_attempts > 0): {resampled:.2%}"
             )
-            per_task = dd.groupby(["task", "design", "k"])[cols].mean()
+            per_task = dd.groupby(["task", "design", "k"])[present].mean()
             g = per_task.groupby(["design", "k"])
             mean, se = g.mean(), g.sem()
             print(f"\n=== D={D}: mean over tasks, by design and k (nats)")
             print(mean.round(4))
+            if not {"excess_kl_truth", "kl_oracle_model"} <= set(present):
+                continue
             check = pd.DataFrame({
                 "excess": mean["excess_kl_truth"],
                 "excess_se": se["excess_kl_truth"],
@@ -335,8 +441,12 @@ def _run_kshot_prior(
     from CITNP.evaluation.model_api import load_model
     from CITNP.evaluation.tasks import (
         default_n_obs,
+        format_graph_edges,
+        parse_graph_edges,
         resolve_graph_prior_samples,
+        validate_fixed_graph,
     )
+    from CITNP.utils.config_files import config_fingerprint
 
     device = a.device or _default_device()
     data_cfg = load_config(a.data_config)
@@ -346,12 +456,29 @@ def _run_kshot_prior(
         Ds = [int(D) for D in a.num_variables.split(",")]
     if not set(Ds) <= set(all_D):
         parser.error(f"--num_variables {Ds} not a subset of {all_D}")
+    fixed_graph = None
+    if a.fixed_graph_edges is not None:
+        if len(Ds) != 1:
+            parser.error(
+                "--fixed_graph_edges needs exactly one D: pass "
+                f"--num_variables (data config has {all_D})"
+            )
+        try:
+            fixed_graph = parse_graph_edges(a.fixed_graph_edges, Ds[0])
+            fixed_graph = validate_fixed_graph(fixed_graph, Ds[0], data_cfg)
+        except ValueError as error:
+            parser.error(f"--fixed_graph_edges: {error}")
     k_list = sorted({int(k) for k in (a.k_list or "0,1,3,5,10").split(",")})
     n_obs = a.n_obs if a.n_obs is not None else default_n_obs(data_cfg)
 
+    with_oracle = not a.no_oracle
+    with_observational_pool = not a.no_observational_pool
+    # graphs sampled for the oracle's graph prior, per D (none without it)
     n_graphs = {
-        D: resolve_graph_prior_samples(D, a.graph_prior_samples) for D in Ds
-    }
+        D: resolve_graph_prior_samples(D, a.graph_prior_samples) if with_oracle
+        else None
+        for D in Ds
+    }  # fmt: skip
 
     t0 = time.time()
     dfs, dfs_t = [], []
@@ -365,6 +492,8 @@ def _run_kshot_prior(
             min_graph_prob=a.min_graph_prob, flag_ablation=a.flag_ablation,
             max_oracle_nodes=a.max_oracle_nodes,
             graph_prior_samples=n_graphs[D], oracle_budget=a.oracle_budget,
+            with_oracle=with_oracle, fixed_graph=fixed_graph,
+            with_observational_pool=with_observational_pool,
         )  # fmt: skip
         dfs.append(df)
         dfs_t.append(df_t)
@@ -382,18 +511,32 @@ def _run_kshot_prior(
             "param_min": float(d["do_scale_or_width"].min()),
             "param_max": float(d["do_scale_or_width"].max()),
         }
+    # sha256: the named file alone; fingerprint: every file it is built from
+    # through `extends` (CITNP.utils.config_files.config_fingerprint)
     meta = {
-        "data_config": {"path": a.data_config, "sha256": _sha256(a.data_config)},
+        "data_config": {
+            "path": a.data_config, "sha256": _sha256(a.data_config),
+            "fingerprint": config_fingerprint(a.data_config),
+        },
         "model_config": {
             "path": a.model_config, "sha256": _sha256(a.model_config),
+            "fingerprint": config_fingerprint(a.model_config),
         },
         "ckpt": a.ckpt,
+        "with_oracle": with_oracle,
+        "with_observational_pool": with_observational_pool,
+        # canonical sorted edge list, None for the prior's own graphs
+        "fixed_graph": (
+            None if fixed_graph is None else format_graph_edges(fixed_graph)
+        ),
         "git_commit": _git_commit(),
         "args": vars(a),
         "num_variables": Ds,
         "k_list": k_list,
         "n_obs": n_obs,
-        "graph_prior_samples": {str(D): n for D, n in n_graphs.items()},
+        "graph_prior_samples": (
+            {str(D): n for D, n in n_graphs.items()} if with_oracle else None
+        ),
         "oracle_budget": a.oracle_budget,
         "torch_threads": n_threads,
         "do_dist_summary": do_summary,
@@ -406,12 +549,196 @@ def _run_kshot_prior(
     _print_prior_summary(df)
 
 
+def _plot_kshot_example(
+    csv_path: str, designs, parser: argparse.ArgumentParser
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from CITNP.evaluation.plots import plot_kshot_example_all
+
+    try:
+        plot_kshot_example_all(csv_path, designs)
+    except ValueError as error:  # an unknown --designs name
+        parser.error(str(error))
+
+
+def _print_example_summary(df) -> None:
+    """Mean over repetitions of the model's KL to the truth and its implied
+    effect, by design and k (oracle columns too when present)."""
+    import pandas as pd
+
+    cols = [
+        c
+        for c in ("kl_truth_model", "slope_model", "excess_kl_truth")
+        if df[c].notna().any()
+    ]
+    with pd.option_context("display.width", 200, "display.max_rows", 200):
+        print("\n=== mean over repetitions, by design and k")
+        print(df.groupby(["design", "k"])[cols].mean().round(4))
+
+
+def _run_kshot_example(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
+    import json
+    import os
+    import time
+
+    import torch
+
+    if a.plot_only:
+        _plot_kshot_example(a.plot_only, a.designs, parser)
+        return
+    if not (a.ckpt and a.model_config):
+        parser.error("--ckpt and --model_config are required")
+
+    n_threads = int(os.environ.get("OMP_NUM_THREADS", "1"))
+    torch.set_num_threads(n_threads)
+
+    from CITNP.datasets.create_mixed_regime_chunks import (
+        _git_commit,
+        load_config,
+    )
+    from CITNP.evaluation.example_model import (
+        draw_example_model,
+        example_model_to_dict,
+        load_example_model,
+        write_example_model,
+    )
+    from CITNP.evaluation.experiments import run_kshot_example
+    from CITNP.evaluation.model_api import load_model
+    from CITNP.evaluation.tasks import default_n_obs, parse_graph_edges
+    from CITNP.utils.config_files import config_fingerprint
+
+    with_oracle = not a.no_oracle
+    data_cfg = load_config(a.data_config) if a.data_config else None
+    prefix = a.out.removesuffix(".csv")
+
+    # The fixed model: read from a file, or drawn from the prior on a graph.
+    if a.example_file:
+        model = load_example_model(a.example_file)
+        example_path = a.example_file
+    else:
+        if not a.fixed_graph_edges:
+            parser.error(
+                "supply the model with --example_file, or with "
+                "--fixed_graph_edges and --data_config to draw one"
+            )
+        if data_cfg is None:
+            parser.error(
+                "--fixed_graph_edges needs --data_config to draw the model"
+            )
+        all_D = [int(D) for D in data_cfg.num_variables]
+        if len(all_D) != 1:
+            parser.error(
+                "--fixed_graph_edges needs a data config with a single number "
+                f"of variables (this one has {all_D})"
+            )
+        try:
+            graph = parse_graph_edges(a.fixed_graph_edges, all_D[0])
+        except ValueError as error:
+            parser.error(f"--fixed_graph_edges: {error}")
+        model = draw_example_model(
+            data_cfg, graph, a.example_seed, data_config_path=a.data_config
+        )
+        example_path = prefix + "_example.yaml"
+        write_example_model(example_path, model)
+        print(f"drew the example model from the prior, saved to {example_path}")
+
+    D = model.num_variables
+    T, Y = a.treatment, a.outcome
+    if not (0 <= T < D and 0 <= Y < D and T != Y):
+        parser.error(
+            "--treatment and --outcome must be distinct 0-based indices below "
+            f"D = {D}"
+        )
+    print(
+        f"true effect of X{T + 1} on X{Y + 1}: "
+        f"slope {model.true_effect(T, Y):+.4f}"
+    )
+    if with_oracle and data_cfg is None:
+        parser.error("the oracle needs --data_config (or pass --no_oracle)")
+
+    # validate --designs now, before the (slow) evaluation
+    from CITNP.evaluation.tasks import example_design_names
+
+    valid_designs = example_design_names(D)
+    if a.designs is not None:
+        chosen = [d.strip() for d in a.designs.split(",") if d.strip()]
+        unknown = [d for d in chosen if d not in valid_designs]
+        if unknown:
+            parser.error(
+                f"--designs: unknown design(s) {unknown}; the valid names are "
+                f"{valid_designs}"
+            )
+
+    if a.n_obs is not None:
+        n_obs = a.n_obs
+    elif data_cfg is not None:
+        n_obs = default_n_obs(data_cfg)
+    else:
+        parser.error("pass --n_obs (there is no data config to take it from)")
+    k_list = sorted({int(k) for k in (a.k_list or "0,1,3,5,10").split(",")})
+    device = a.device or _default_device()
+    model_nn = load_model(a.ckpt, a.model_config, device, num_nodes=D)
+
+    t0 = time.time()
+    df, df_t = run_kshot_example(
+        model_nn, model.scm, model.graph, model.do_dist, T=T, Y=Y,
+        device=device, k_list=k_list, n_obs=n_obs, repetitions=a.repetitions,
+        base_seed=a.base_seed, grid_eps=a.grid_eps, n_t=a.n_t, n_y=a.n_y,
+        n_mc=a.n_mc, min_graph_prob=a.min_graph_prob, with_oracle=with_oracle,
+        data_cfg=data_cfg, max_oracle_nodes=a.max_oracle_nodes,
+        graph_prior_samples=a.graph_prior_samples,
+    )  # fmt: skip
+    df.to_csv(a.out, index=False)
+    df_t.to_csv(prefix + "_by_t.csv", index=False)
+
+    def _config_meta(path: str) -> dict:
+        return {
+            "path": path, "sha256": _sha256(path),
+            "fingerprint": config_fingerprint(path),
+        }  # fmt: skip
+
+    meta = {
+        "model_config": _config_meta(a.model_config),
+        "data_config": _config_meta(a.data_config) if a.data_config else None,
+        "ckpt": a.ckpt,
+        "with_oracle": with_oracle,
+        "example_file": example_path,
+        "example_model": example_model_to_dict(model),
+        "treatment": T,
+        "outcome": Y,
+        "true_effect": model.true_effect(T, Y),
+        "repetitions": a.repetitions,
+        "base_seed": a.base_seed,
+        "k_list": k_list,
+        "n_obs": n_obs,
+        "grid_eps": a.grid_eps,
+        "git_commit": _git_commit(),
+        "args": vars(a),
+        "torch_threads": n_threads,
+        "seconds": time.time() - t0,
+    }
+    with open(prefix + "_meta.json", "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+    print(f"wrote {a.out}, {prefix}_by_t.csv and {prefix}_meta.json")
+    _print_example_summary(df)
+    _plot_kshot_example(a.out, a.designs, parser)
+
+
 # Settings that must agree across kshot-prior parts before they are merged:
 # label -> key path in <out>_meta.json (missing keys read as None).
 _MERGE_FIELDS = {
     "data_config sha256": ("data_config", "sha256"),
+    "data_config fingerprint": ("data_config", "fingerprint"),
     "ckpt": ("ckpt",),
     "model_config sha256": ("model_config", "sha256"),
+    "model_config fingerprint": ("model_config", "fingerprint"),
+    "with_oracle": ("with_oracle",),
+    "with_observational_pool": ("with_observational_pool",),
+    "fixed_graph": ("fixed_graph",),
     "base_seed": ("args", "base_seed"),
     "k_list": ("k_list",),
     "n_mc": ("args", "n_mc"),
@@ -420,10 +747,39 @@ _MERGE_FIELDS = {
     "graph_prior_samples": ("graph_prior_samples",),
     "oracle_budget": ("oracle_budget",),
 }
+# Meta files written before a key existed do not have it. What a missing
+# key stands for: before `--no_oracle` the oracle was always run, before
+# `--fixed_graph_edges` every graph came from the training prior (None), and
+# before the observational pool existed no run had it (False), so an old part
+# is never merged with a new part that has the pool.
+_MERGE_DEFAULTS = {
+    "with_oracle": True,
+    "fixed_graph": None,
+    "with_observational_pool": False,
+}
+# Fields that older meta files do not record and that have no default: they
+# are compared among the parts that record them. The config fingerprints
+# cover the files a config is built from through `extends`; the sha256 of
+# the named file alone, which every meta file records, is always compared.
+_MERGE_FIELDS_IF_RECORDED = {
+    "data_config fingerprint",
+    "model_config fingerprint",
+}
+# Fields that only describe the oracle: not compared when no part ran it.
+_ORACLE_MERGE_FIELDS = {"n_mc", "graph_prior_samples", "oracle_budget"}
 
 
 def _meta_mismatches(metas: dict) -> dict:
     """Fields of `_MERGE_FIELDS` on which the parts' metas disagree.
+
+    Meta files written by older versions are accepted: a missing
+    `with_oracle` reads as True, a missing `fixed_graph` as no fixed graph, a
+    missing `with_observational_pool` as off, and the config fingerprints are
+    compared only among the parts that record them. Parts run with and
+    without the oracle always disagree (on `with_oracle`), parts with
+    different fixed graphs or with and without one disagree (on
+    `fixed_graph`), and a part with the observational pool is never merged
+    with one without it (on `with_observational_pool`).
 
     Args:
     ----------
@@ -437,15 +793,22 @@ def _meta_mismatches(metas: dict) -> dict:
     """
     import json
 
+    def value(meta: dict, field: str):
+        v = meta
+        for key in _MERGE_FIELDS[field]:
+            v = v.get(key) if isinstance(v, dict) else None
+        return _MERGE_DEFAULTS.get(field) if v is None else v
+
+    any_oracle = any(value(meta, "with_oracle") for meta in metas.values())
     out = {}
-    for field, keys in _MERGE_FIELDS.items():
-        vals = {}
-        for part, meta in metas.items():
-            v = meta
-            for key in keys:
-                v = v.get(key) if isinstance(v, dict) else None
-            vals[part] = v
-        if len({json.dumps(v, sort_keys=True) for v in vals.values()}) > 1:
+    for field in _MERGE_FIELDS:
+        if field in _ORACLE_MERGE_FIELDS and not any_oracle:
+            continue
+        vals = {part: value(meta, field) for part, meta in metas.items()}
+        compared = list(vals.values())
+        if field in _MERGE_FIELDS_IF_RECORDED:
+            compared = [v for v in compared if v is not None]
+        if len({json.dumps(v, sort_keys=True) for v in compared}) > 1:
             out[field] = vals
     return out
 
@@ -587,6 +950,10 @@ COMMANDS = {
         _kshot_prior_parser,
         "k-shot evaluation on tasks drawn from the training prior",
     ),
+    "kshot-example": (
+        _kshot_example_parser,
+        "one fixed model and query over repeated context draws (+ figures)",
+    ),
     "scm-suite": (
         _suite_parser,
         "fixed SCMs x context designs vs truth and oracle",
@@ -600,6 +967,10 @@ COMMANDS = {
     "plot-kshot-prior": (
         _plot_kshot_prior_parser,
         "figures from kshot-prior CSV parts (same settings only)",
+    ),
+    "plot-kshot-example": (
+        _plot_kshot_example_parser,
+        "redraw the kshot-example figures from a saved CSV",
     ),
     "plot-monitoring": (
         _plot_monitoring_parser,
@@ -626,6 +997,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_kshot(a, parsers["kshot"])
     elif a.command == "kshot-prior":
         _run_kshot_prior(a, parsers["kshot-prior"])
+    elif a.command == "kshot-example":
+        _run_kshot_example(a, parsers["kshot-example"])
     elif a.command == "scm-suite":
         _run_suite(a)
     elif a.command == "bank":
@@ -638,6 +1011,8 @@ def main(argv: list[str] | None = None) -> None:
         _plot_kshot(a.csv)
     elif a.command == "plot-kshot-prior":
         _run_plot_kshot_prior(a, parsers["plot-kshot-prior"])
+    elif a.command == "plot-kshot-example":
+        _plot_kshot_example(a.csv, a.designs, parsers["plot-kshot-example"])
     elif a.command == "probe-flag":
         _run_probe_flag(a, parsers["probe-flag"])
     else:

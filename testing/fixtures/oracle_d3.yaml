@@ -1,3 +1,4 @@
+# Test fixture only, for the older prior: not an experiment config.
 # D=3 conjugate linear-Gaussian prior: the exact Bayes oracle
 # (CITNP/evaluation/oracle.py) is optimal for models trained on this.
 function_generator: linearnonidentifiable

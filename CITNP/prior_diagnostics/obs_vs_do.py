@@ -21,7 +21,7 @@ Rows:
      >= 3 nats is strong). 0 by construction in the identical classes.
 
     python -m CITNP.prior_diagnostics obs-vs-do \
-        --config CITNP/experiments/configs/oracle_d3.yaml \
+        --config CITNP/experiments/configs/oracle_d3_iw_a15.yaml \
         --num_tasks 2000 --out obs_vs_do.pdf [--png] [--num_variables 3]
 
 Exact for the linearnonidentifiable family (linear_gaussian.py). Questions are

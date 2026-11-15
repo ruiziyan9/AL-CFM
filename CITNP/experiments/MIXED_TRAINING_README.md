@@ -173,6 +173,54 @@ before the transformer stack. It works with all three encodings; with
 `extra_node` the INT_META column gets nothing. With `none` no parameters are
 created, so existing checkpoints load strictly. Configs: `*_stats.yaml`.
 
+## Config inheritance
+
+A data or model config may name the file(s) it builds on with the top-level
+key `extends` and state only what differs
+([`configs/oracle_d5_iw_a15.yaml`](configs/oracle_d5_iw_a15.yaml)):
+
+```yaml
+extends: oracle_d3_iw_a15.yaml
+num_variables: [5]
+graph_degrees: {5: [2, 4, 6, 8]}
+```
+
+- `extends` is one path or a list of paths, relative to the directory of the
+  file that names them.
+- Parents are resolved recursively. The files are merged in the order parents
+  (as listed), then the file itself; a later file wins.
+- Top-level keys are replaced whole. Nothing is merged below the top level: the
+  child's `graph_degrees` above fully replaces the parent's dictionary.
+- A cycle (a file that reaches itself through the files it extends) is an
+  error.
+- The `extends` key is not part of the resolved config, and a file without
+  `extends` loads exactly as before.
+- **Single line.** `extends` must be written on one line, `extends: a.yaml` or
+  `extends: [a.yaml, b.yaml]`, with paths free of spaces. `bmrc/train.sh` reads
+  that line as text (its dry run needs no Python), so a list spread over
+  several lines is rejected when the config is loaded.
+- **Fingerprints cover the whole chain.** The fingerprint `bmrc/train.sh` uses
+  for the oracle bank name and the resume guard is the sha1 of every file the
+  config is built from, parents first, the file last. Editing a parent changes
+  the fingerprint of every config that extends it: the oracle bank is rebuilt
+  and an existing run of such a config is not resumed. The fingerprint of a
+  file without `extends` is unchanged. `DRY_RUN=1` lists the files of a config
+  that uses `extends`. The `prior_config_fingerprint` recorded in a data
+  directory's `config.json` is computed the same way (`config_fingerprint`).
+- **YAML only.** `extends` inside a `.json` config is an error, because
+  `bmrc/train.sh` could not see it and the fingerprint would miss the parents.
+- **Unique base names.** Run names and oracle bank names derive from the file
+  name without its directory (`<data>__<model>__s<SEED>`,
+  `banks/<data>__<fingerprint>.pkl`), so two config files must not share a base
+  name, even in different directories.
+
+All Python code reads configs through `load_config_mapping` in
+`CITNP/utils/config_files.py` (`config_file_chain` lists the files a config is
+built from). A run directory records what was actually used:
+`resolved_model_config.yaml` and `resolved_data_config.yaml` (the data config
+after inheritance, with defaults filled in). Dataset configs in
+`configs/datasets/` do not support `extends`.
+
 ## Training from pre-simulated datasets
 
 Instead of generating tasks on the fly, a run can read tasks that were
@@ -241,6 +289,178 @@ best validation loss, so the first validation after resuming may overwrite
 a NEW run from a checkpoint's model weights only (strict match, fresh optimiser,
 step 0, new warmup and cosine schedule, new run directory). The two flags are
 mutually exclusive.
+
+## Training without an oracle bank
+
+`bmrc/train.sh` normally builds an oracle bank for the data config (when it is
+missing) and passes it to `mixed_train.py`, which then logs the model's gap to
+the exact oracle every 2500 steps. `SKIP_ORACLE_BANK=1` trains without one: no
+bank is built and `--oracle_bank` / `--oracle_every` are not passed, so that
+gap is not logged; everything else, including the resume guard, is unchanged.
+Use it for data configs the exact oracle does not support yet, such as the
+five-variable [`configs/oracle_d5_iw_a15.yaml`](configs/oracle_d5_iw_a15.yaml):
+
+```bash
+SKIP_ORACLE_BANK=1 DATA_CFG=CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    sbatch CITNP/experiments/bmrc/train.sh
+```
+
+## Evaluating on the training prior: `kshot-prior`, with or without the oracle
+
+`python -m CITNP.evaluation kshot-prior` draws true models from the training
+prior (the data config), builds nested k-shot contexts (observational rows
+plus the first k rows of an interventional pool) and scores the trained model
+against the closed-form truth: `kl_truth_model`, KL(truth || model) in nats
+per query point, for every ordered pair (T, Y) and the designs `obs`,
+`random`, `do(T)`, `do(Y)`, `do(other)`. By default it also runs the exact
+Bayesian oracle on every context, which adds `kl_truth_oracle`,
+`kl_oracle_model`, `excess_kl_truth` and the oracle's slope and variance
+columns; this is the only evaluation in which the oracle is a true lower
+bound. It writes `<out>.csv`, `<out>_by_t.csv` (one row per do-value) and
+`<out>_meta.json`; `plot-kshot-prior` merges parts and draws the figures.
+
+The exact oracle enumerates every graph, so it is limited to
+`--max_oracle_nodes` variables (default 4). `--no_oracle` evaluates the model
+alone, at any number of variables:
+
+```bash
+python -m CITNP.evaluation kshot-prior --no_oracle \
+    --ckpt RUN/best_model.pt \
+    --model_config CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    --data_config CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+    --n_tasks 500 --k_list 0,1,3,5,10 --out RUN/kshot_prior.csv
+python -m CITNP.evaluation plot-kshot-prior RUN/kshot_prior.csv
+```
+
+- **Same model numbers.** The truth samples have their own random generator,
+  so every model-against-truth column is identical with and without the
+  oracle, on the same tasks.
+- **Same table layout.** Without the oracle, every oracle-derived column
+  (including `log_prior_true_graph`, `true_graph_in_prior` and the oracle
+  columns of `<out>_by_t.csv`) is present and empty.
+- **Flag ablation.** `--flag_ablation` adds `kl_truth_model_noflag`,
+  KL(truth || model with the intervention flags zeroed), in both modes, and
+  `kl_oracle_model_noflag` with the oracle.
+- **Extra observational rows.** By default a design `observational` is added:
+  a pool of more observational rows from the same model, nested in k like the
+  interventional pools and scored for every query (and by the oracle, where it
+  runs). It shows how much of the gain at k rows is from simply having more
+  data, as opposed to interventional data. Its pool is drawn from a separate
+  generator, so every other design's rows are identical with or without it.
+  `--no_observational_pool` drops it. In the figures it is a grey dashed line.
+- **Figures.** Without the oracle, `<prefix>_D<D>_main.png` shows
+  KL(truth || model) against k per design, and `<prefix>_D<D>_by_relation.png`
+  shows it by question class (with the oracle: the excess over the oracle).
+- **Merging.** `<out>_meta.json` records `with_oracle`,
+  `with_observational_pool` and a fingerprint of each config that covers its
+  `extends` parents; `plot-kshot-prior` refuses to merge parts that differ in
+  any of them. Parts run with and without the oracle, or with and without the
+  observational pool, cannot be merged (an old meta file with no
+  `with_observational_pool` key counts as "without").
+- **Options without effect.** `--n_mc`, `--min_graph_prob`,
+  `--max_oracle_nodes`, `--graph_prior_samples` and `--oracle_budget` only
+  concern the oracle.
+- **The data config** must still be a linear-Gaussian family with
+  `normalise: false`: the closed-form truth needs it too.
+
+### One fixed graph
+
+`--fixed_graph_edges` gives every task the same DAG, in a fixed variable
+order, instead of a graph drawn from the training prior. Weights, noise
+variances and the do-value distribution are still drawn from the data config
+exactly as in training; contexts, designs, questions, scores, CSV layout and
+figures are unchanged. Edges are 0-based `source->target` pairs, and node `j`
+is variable `X_{j+1}`: the example below is `X1 -> X2`, `X2 -> X3`,
+`X3 -> X5`, `X1 -> X4`, `X4 -> X5`, `X1 -> X3`.
+
+```bash
+python -m CITNP.evaluation kshot-prior --no_oracle \
+    --ckpt RUN/best_model.pt \
+    --model_config CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    --data_config CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+    --fixed_graph_edges "0->1,1->2,2->4,0->3,3->4,0->2" \
+    --n_tasks 500 --k_list 0,1,3,5,10 --out RUN/kshot_fixed_graph.csv
+```
+
+- **One D.** The graph fixes D, so `--num_variables` must name one value
+  (not needed when the data config has one, as `oracle_d5_iw_a15.yaml`).
+  The edge list is checked before anything runs: bad syntax, a repeated
+  edge, a self loop, an index outside the nodes or a cycle is an error.
+- **Table.** The column `fixed_graph` holds the sorted edge list on every row
+  (empty without the option), and the figure titles name the graph, so these
+  results are not mistaken for training-prior ones.
+- **The oracle is no longer a lower bound.** With the oracle (D <= 4) the
+  tasks are not drawn from the training prior it assumes, so
+  KL(truth || oracle) can exceed KL(truth || model), and the excess can be
+  negative on average.
+- **Merging.** `<out>_meta.json` records the graph as a sorted edge list;
+  parts with different graphs, or a fixed-graph part and a prior part, cannot
+  be merged. A meta file from before the option counts as "no fixed graph".
+- **Tasks.** Task `i` uses new random streams, so its weights differ from
+  task `i` of the prior run (no graph is drawn).
+
+On the cluster, `bmrc/eval_kshot_prior.sh` runs the evaluation as a CPU array
+(the oracle dominates the cost); `NO_ORACLE=1` passes `--no_oracle`, and a
+model-only run is cheap enough for a single GPU job (see the script's header).
+`FIXED_GRAPH_EDGES="0->1,1->2,2->4,0->3,3->4,0->2"` passes
+`--fixed_graph_edges` (quoted; `DRY_RUN=1` shows the command), and
+`NO_OBSERVATIONAL_POOL=1` passes `--no_observational_pool`.
+
+### One fixed example: `kshot-example`
+
+`kshot-prior` averages over many tasks and query types. `kshot-example` is the
+single worked example instead: one fixed graph, fixed weights and noise, and
+one query (for example `X5 | do(X3 = t)`), evaluated over repeated context
+draws from that one model. It shows how the model's answer to this one query
+moves as nested observational or interventional rows are added, exactly as in
+`kshot-prior`. It writes `<out>.csv`, `<out>_by_t.csv`, `<out>_meta.json` (with
+the example model's contents) and two figures.
+
+```bash
+python -m CITNP.evaluation kshot-example --no_oracle \
+    --ckpt RUN/best_model.pt \
+    --model_config CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
+    --data_config CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+    --fixed_graph_edges "0->1,1->2,2->4,0->3,3->4,0->2" \
+    --treatment 2 --outcome 4 --repetitions 200 --out RUN/kshot_example.csv
+python -m CITNP.evaluation plot-kshot-example RUN/kshot_example.csv
+```
+
+- **The model.** It comes from `--example_file`, a small YAML file that fully
+  specifies one linear-Gaussian model (number of variables, edges with
+  weights, noise variances, the do-value distribution of the interventional
+  rows, and its provenance). When `--example_file` is not given, the model is
+  drawn from `--data_config`'s prior on `--fixed_graph_edges` (with weights and
+  noise drawn as in training) with `--example_seed`, saved next to `--out` as
+  `<out>_example.yaml`, and its true effect for the query is printed; re-running
+  with that saved file reproduces the results. `--fixed_graph_edges` uses
+  0-based `source->target` edges, node `j` being `X_{j+1}`, and needs a
+  single-D data config.
+- **The query.** `--treatment` and `--outcome` are 0-based node indices.
+- **Designs.** Each repetition draws a fresh context and fresh pools from the
+  same model and builds the nested contexts as `kshot-prior` does: one pool per
+  node, the random pool and the observational pool. Designs are named by what
+  they add: `do(X1)` .. `do(XD)`, `random`, `observational`.
+- **Columns.** For every (repetition, design, k): `kl_truth_model`
+  (KL(truth || model) over the grid), `slope_model` (the model's estimated
+  total effect, in the model's raw units), `slope_truth` (the true effect) and
+  the oracle columns (empty with `--no_oracle`, which is needed above the
+  oracle's variable limit). The do-value grid defaults to the quantile grid
+  `kshot-prior` uses, from the model's do-value distribution.
+- **Figures.** `<out>_kl.png` is KL(truth || model) against k (mean over
+  repetitions, +/- s.e.), one line per design, the observational design grey
+  and dashed. `<out>_effect.png` is the estimated effect against k (band =
+  central 80% of repetitions) with a red dashed line at the true effect.
+  `--designs "do(X3),random,observational"` chooses and orders the curves in
+  both figures (an unknown name is refused); the evaluation always stores every
+  design, so the same CSV redraws with any selection through
+  `plot-kshot-example`.
+
+On the cluster, `bmrc/eval_kshot_example.sh` runs it as a single CPU job (no
+array); `NO_ORACLE=1` passes `--no_oracle`, `FIXED_GRAPH_EDGES` or
+`EXAMPLE_FILE` supplies the model, and `DESIGNS="do(X3),random,observational"`
+passes `--designs` (quoted; `DRY_RUN=1` shows the command).
 
 ## Information-parity grid (2 x 2)
 
