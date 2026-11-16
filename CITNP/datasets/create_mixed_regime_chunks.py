@@ -195,9 +195,6 @@ def write_config(
             None
             if prior_config_file is None
             else config_fingerprint(prior_config_file)
-            None
-            if prior_config_file is None
-            else file_fingerprint(prior_config_file)
         ),
         "generation_procedure": GENERATION_PROCEDURE,
         "config": dataclasses.asdict(cfg),

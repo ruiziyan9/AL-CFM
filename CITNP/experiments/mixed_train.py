@@ -616,8 +616,6 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
     # --model_config; run-level data options go to their own file.
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
         yaml.safe_dump(resolved, f, sort_keys=False)
-    with open(model_save_dir / "resolved_model_config.yaml", "w") as f:
-        yaml.safe_dump(resolved, f, sort_keys=False)
 
     # Save run-level data options (e.g. same_numregimes_per_batch).
     with open(model_save_dir / RESOLVED_DATA_OPTIONS_FILE, "w") as f:
