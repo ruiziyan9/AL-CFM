@@ -1,0 +1,11 @@
+# Joint prediction head on the model of the current D = 5 marginal run
+# (oracle_d3_model_m_layerwise_stats_shared.yaml; model configs do not depend
+# on D). Its model_class LayerwiseMixedContextMoGModel resolves to
+# JointLayerwiseMixedContextMoGModel with prediction_head: joint.
+#
+# joint_covariance_rank: with one intervened variable at D = 5 the density is
+# over four variables, so rank 4 already gives a full covariance; 8 is kept so
+# the config carries to larger D (the head itself does not depend on D).
+extends: oracle_d3_model_m_layerwise_stats_shared.yaml
+prediction_head: joint
+joint_covariance_rank: 8

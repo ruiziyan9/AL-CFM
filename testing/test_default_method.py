@@ -8,6 +8,7 @@ edited model config, must show up here as a deliberate edit.
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
@@ -69,6 +70,13 @@ EXPECTED = {
     CONFIGS / "oracle_d3_model_m_reg_axis_full_stats.yaml": (
         "RegimeAxisFullMixedContextMoGModel", None,
     ),
+    # joint prediction head (layer-wise, shared)
+    CONFIGS / "smoke_d5_model_joint.yaml": (
+        "JointLayerwiseMixedContextMoGModel", True,
+    ),
+    CONFIGS / "oracle_d5_model_m_layerwise_stats_shared_joint.yaml": (
+        "JointLayerwiseMixedContextMoGModel", True,
+    ),
     # fixtures of the abandoned r1 encoding (evaluation regression tests)
     FIXTURES / "r1_model_s.yaml": ("MixedContextMoGModel", None),
     FIXTURES / "r1_model_m.yaml": ("MixedContextMoGModel", None),
@@ -80,7 +88,7 @@ def _is_model_config(path: Path) -> bool:
 
 
 def _args(model_config: Path) -> argparse.Namespace:
-    base = {k: None for k in MODEL_KEYS}
+    base: dict[str, Any] = {k: None for k in MODEL_KEYS}
     base["model_config"] = str(model_config)
     return argparse.Namespace(**base)
 
@@ -109,7 +117,9 @@ def test_config_builds_expected_model(path):
     # the training script resolves the same class and the same option
     args = _args(path)
     apply_model_config(args)
-    cls, _ = resolve_model_class(args.intervention_encoding, args.model_class)
+    cls, _ = resolve_model_class(
+        args.intervention_encoding, args.model_class, args.prediction_head
+    )
     assert cls.__name__ == class_name
     if share is not None:
         assert _share_intervention_encoder(args) is share

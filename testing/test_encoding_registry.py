@@ -13,6 +13,9 @@ from CITNP.experiments.mixed_train import MODEL_KEYS, apply_model_config
 from CITNP.models.mixed_context_model import (
     DEFAULT_INTERVENTION_ENCODING,
     INTERVENTION_ENCODINGS,
+    JOINT_INTERVENTION_ENCODINGS,
+    JointLayerwiseMixedContextMoGModel,
+    JointMixedContextMoGModel,
     LayerwiseMixedContextMoGModel,
     MixedContextMoGModel,
     resolve_model_class,
@@ -47,6 +50,32 @@ def test_default_is_shared_layerwise():
 def test_every_encoding_resolves(name):
     cls, got = resolve_model_class(intervention_encoding=name)
     assert cls is INTERVENTION_ENCODINGS[name] and got == name
+
+
+@pytest.mark.parametrize("name", sorted(INTERVENTION_ENCODINGS))
+def test_every_encoding_resolves_joint(name):
+    cls, got = resolve_model_class(intervention_encoding=name,
+                                   prediction_head="joint")  # fmt: skip
+    assert cls is JOINT_INTERVENTION_ENCODINGS[name] and got == name
+    marginal, _ = resolve_model_class(name, prediction_head="marginal")
+    assert marginal is INTERVENTION_ENCODINGS[name]
+
+
+def test_joint_registry_has_every_encoding():
+    assert set(JOINT_INTERVENTION_ENCODINGS) == set(INTERVENTION_ENCODINGS)
+
+
+def test_unknown_prediction_head_raises():
+    with pytest.raises(ValueError, match="Unknown prediction_head"):
+        resolve_model_class(prediction_head="both")
+
+
+def test_yaml_cli_prediction_head_conflict_raises(tmp_path):
+    p = tmp_path / "m.yaml"
+    p.write_text("prediction_head: joint\n")
+    a = _args(model_config=str(p), prediction_head="marginal")
+    with pytest.raises(ValueError, match="contradicts"):
+        apply_model_config(a)
 
 
 @pytest.mark.parametrize(
@@ -134,6 +163,11 @@ def test_existing_layerwise_config_still_resolves():
         (
             {"model_class": "LayerwiseMixedContextMoGModel"},
             LayerwiseMixedContextMoGModel,
+        ),
+        ({"prediction_head": "joint"}, JointLayerwiseMixedContextMoGModel),
+        (
+            {"intervention_encoding": "r1", "prediction_head": "joint"},
+            JointMixedContextMoGModel,
         ),
     ],
 )

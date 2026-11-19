@@ -1,9 +1,13 @@
 """Full regime-axis (reg_axis_full) intervention encoding; see README.md."""
 
-from CITNP.models.regime_axis_full.encoder import RegimeAxisFullEncoder
+from CITNP.models.regime_axis_full.encoder import (
+    JointRegimeAxisFullEncoder,
+    RegimeAxisFullEncoder,
+)
 from CITNP.models.regime_axis_full.model import (
     REG_AXIS_FULL_CONFIG_KEYS,
     REG_AXIS_FULL_PARAM_PREFIXES,
+    JointRegimeAxisFullMixedContextMoGModel,
     RegimeAxisFullMixedContextModel,
     RegimeAxisFullMixedContextMoGModel,
 )
@@ -16,6 +20,8 @@ from CITNP.models.regime_axis_full.packing import (
 __all__ = [
     "REG_AXIS_FULL_CONFIG_KEYS",
     "REG_AXIS_FULL_PARAM_PREFIXES",
+    "JointRegimeAxisFullEncoder",
+    "JointRegimeAxisFullMixedContextMoGModel",
     "RegimeAxisFullEncoder",
     "RegimeAxisFullMixedContextModel",
     "RegimeAxisFullMixedContextMoGModel",

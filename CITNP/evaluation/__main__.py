@@ -6,6 +6,9 @@
            --data_config ... [--num_variables 3,4] [--n_tasks 500] \
            [--task_offset 0] [--k_list 0,1,3,5,10] [--no_oracle] \
            [--fixed_graph_edges 0->1,1->2] --out kshot_prior.csv
+    python -m CITNP.evaluation kshot-prior-joint --ckpt ... --model_config ... \
+           --data_config ... [--num_variables 5] [--n_tasks 500] \
+           [--k_list 0,1,3,5,10] --out kshot_prior_joint.csv   # joint models
     python -m CITNP.evaluation kshot-example --ckpt ... --model_config ... \
            --data_config ... --fixed_graph_edges 0->1,1->2,2->4,0->3,3->4,0->2 \
            --treatment 2 --outcome 4 [--repetitions 200] [--no_oracle] \
@@ -41,8 +44,14 @@ distribution still drawn from the data config; there the oracle is no longer
 a guaranteed lower bound, because the tasks are not drawn from the training
 prior.
 
-See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`, `scm-suite`
-and `probe-flag` compute,
+`kshot-prior-joint` evaluates a joint model's interventional joint over the
+non-intervened variables on the same tasks and contexts as `kshot-prior`:
+KL(truth || model joint), KL(truth || product of its marginals) and the
+correlation error, against the exact joint of the linear-Gaussian truth (no
+oracle). Joint models only; `kshot-prior` scores their marginals as usual.
+
+See CITNP.evaluation.experiments for what `kshot`, `kshot-prior`,
+`kshot-prior-joint`, `scm-suite` and `probe-flag` compute,
 CITNP.evaluation.tasks.build_bank for the bank and CITNP.evaluation.plots for
 the figures.
 """
@@ -163,6 +172,37 @@ def _kshot_prior_parser(p: argparse.ArgumentParser) -> None:
                    default="total",
                    help="oracle MC draws: n_mc in total (default) or n_mc "
                         "per retained DAG")  # fmt: skip
+
+
+def _kshot_prior_joint_parser(p: argparse.ArgumentParser) -> None:
+    _model_args(p, required=False)
+    p.add_argument("--k_list", default=None,
+                   help="comma-separated numbers of interventional rows "
+                        "(default 0,1,3,5,10; 0 is always added)")  # fmt: skip
+    p.add_argument("--n_t", type=int, default=13, help="query grid points")
+    p.add_argument("--n_y", type=int, default=64,
+                   help="truth samples per grid point for the KLs")  # fmt: skip
+    p.add_argument("--out", default="kshot_prior_joint.csv")
+    p.add_argument(
+        "--device", default=None, help="default: cuda if available, else cpu"
+    )
+    p.add_argument("--num_variables", default=None,
+                   help="comma-separated D values, a subset of the data "
+                        "config's num_variables (default: all)")  # fmt: skip
+    p.add_argument("--n_tasks", type=int, default=500)
+    p.add_argument("--task_offset", type=int, default=0,
+                   help="first task index (split work across array jobs)")  # fmt: skip
+    p.add_argument("--base_seed", type=int, default=9101)
+    p.add_argument("--n_obs", type=int, default=None,
+                   help="observational rows (default: from the data config)")  # fmt: skip
+    p.add_argument("--grid_eps", type=float, default=0.02,
+                   help="do-value grid: quantiles [eps, 1 - eps] of each "
+                        "task's do_dist")  # fmt: skip
+    p.add_argument("--no_observational_pool", action="store_true",
+                   help="drop the extra 'observational' design")  # fmt: skip
+    p.add_argument("--fixed_graph_edges", default=None,
+                   help="use this DAG for every task (as in kshot-prior); "
+                        "needs exactly one D (--num_variables)")  # fmt: skip
 
 
 def _kshot_example_parser(p: argparse.ArgumentParser) -> None:
@@ -547,6 +587,106 @@ def _run_kshot_prior(
     print(f"wrote {a.out}, {prefix}_by_t.csv and {prefix}_meta.json")
     print(f"do-value distributions of the tasks: {do_summary}")
     _print_prior_summary(df)
+
+
+def _run_kshot_prior_joint(
+    a: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
+    import json
+    import os
+    import time
+
+    import pandas as pd
+    import torch
+
+    if not (a.ckpt and a.model_config and a.data_config):
+        parser.error("--ckpt, --model_config and --data_config are required")
+    torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "1")))
+
+    from CITNP.datasets.create_mixed_regime_chunks import (
+        _git_commit,
+        load_config,
+    )
+    from CITNP.evaluation.experiments import run_kshot_prior_joint
+    from CITNP.evaluation.model_api import load_model
+    from CITNP.evaluation.plots import plot_kshot_prior_joint_all
+    from CITNP.evaluation.tasks import (
+        default_n_obs,
+        format_graph_edges,
+        parse_graph_edges,
+        validate_fixed_graph,
+    )
+    from CITNP.utils.config_files import config_fingerprint
+
+    device = a.device or _default_device()
+    data_cfg = load_config(a.data_config)
+    all_D = [int(D) for D in data_cfg.num_variables]
+    Ds = all_D
+    if a.num_variables:
+        Ds = [int(D) for D in a.num_variables.split(",")]
+    if not set(Ds) <= set(all_D):
+        parser.error(f"--num_variables {Ds} not a subset of {all_D}")
+    fixed_graph = None
+    if a.fixed_graph_edges is not None:
+        if len(Ds) != 1:
+            parser.error("--fixed_graph_edges needs exactly one D")
+        try:
+            fixed_graph = parse_graph_edges(a.fixed_graph_edges, Ds[0])
+            fixed_graph = validate_fixed_graph(fixed_graph, Ds[0], data_cfg)
+        except ValueError as error:
+            parser.error(f"--fixed_graph_edges: {error}")
+    k_list = sorted({int(k) for k in (a.k_list or "0,1,3,5,10").split(",")})
+    n_obs = a.n_obs if a.n_obs is not None else default_n_obs(data_cfg)
+
+    t0 = time.time()
+    dfs = []
+    for D in Ds:
+        model = load_model(a.ckpt, a.model_config, device, num_nodes=D)
+        if getattr(model, "prediction_head", "marginal") != "joint":
+            parser.error(
+                "kshot-prior-joint applies to joint models only "
+                "(prediction_head: joint); use kshot-prior for this model"
+            )
+        dfs.append(
+            run_kshot_prior_joint(
+                model, data_cfg, D=D, device=device, k_list=k_list,
+                n_tasks=a.n_tasks, task_offset=a.task_offset,
+                base_seed=a.base_seed, n_obs=n_obs, grid_eps=a.grid_eps,
+                n_t=a.n_t, n_y=a.n_y, fixed_graph=fixed_graph,
+                with_observational_pool=not a.no_observational_pool,
+            )  # fmt: skip
+        )
+    df = pd.concat(dfs, ignore_index=True)
+    prefix = a.out.removesuffix(".csv")
+    df.to_csv(a.out, index=False)
+    meta = {
+        "data_config": {
+            "path": a.data_config, "sha256": _sha256(a.data_config),
+            "fingerprint": config_fingerprint(a.data_config),
+        },
+        "model_config": {
+            "path": a.model_config, "sha256": _sha256(a.model_config),
+            "fingerprint": config_fingerprint(a.model_config),
+        },
+        "ckpt": a.ckpt,
+        "fixed_graph": (
+            None if fixed_graph is None else format_graph_edges(fixed_graph)
+        ),
+        "git_commit": _git_commit(),
+        "args": vars(a),
+        "num_variables": Ds,
+        "k_list": k_list,
+        "n_obs": n_obs,
+        "seconds": time.time() - t0,
+    }  # fmt: skip
+    with open(prefix + "_meta.json", "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+    written = plot_kshot_prior_joint_all([a.out], prefix)
+    print(f"wrote {a.out}, {prefix}_meta.json and " + ", ".join(written))
+    cols = ["kl_truth_model_joint", "kl_truth_model_product",
+            "kl_dependence_gain", "correlation_error"]  # fmt: skip
+    per_task = df.groupby(["D", "design", "k", "task"])[cols].mean()
+    print(per_task.groupby(["D", "design", "k"]).mean().to_string())
 
 
 def _plot_kshot_example(
@@ -950,6 +1090,11 @@ COMMANDS = {
         _kshot_prior_parser,
         "k-shot evaluation on tasks drawn from the training prior",
     ),
+    "kshot-prior-joint": (
+        _kshot_prior_joint_parser,
+        "joint models: interventional joint vs the exact truth (KLs, "
+        "correlation error) on training-prior tasks (+ figures)",
+    ),
     "kshot-example": (
         _kshot_example_parser,
         "one fixed model and query over repeated context draws (+ figures)",
@@ -997,6 +1142,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_kshot(a, parsers["kshot"])
     elif a.command == "kshot-prior":
         _run_kshot_prior(a, parsers["kshot-prior"])
+    elif a.command == "kshot-prior-joint":
+        _run_kshot_prior_joint(a, parsers["kshot-prior-joint"])
     elif a.command == "kshot-example":
         _run_kshot_example(a, parsers["kshot-example"])
     elif a.command == "scm-suite":
@@ -1031,6 +1178,7 @@ def _command(name: str):
 
 kshot_cli = _command("kshot")
 kshot_prior_cli = _command("kshot-prior")
+kshot_prior_joint_cli = _command("kshot-prior-joint")
 scm_suite_cli = _command("scm-suite")
 bank_cli = _command("bank")
 plot_kshot_cli = _command("plot-kshot")

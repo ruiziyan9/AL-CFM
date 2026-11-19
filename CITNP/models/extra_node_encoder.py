@@ -22,6 +22,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from CITNP.models.causaltransformercomponents import CausalInfEncoder
+from CITNP.models.prediction_heads import OutcomeFreeEmbeddingMixin
 from CITNP.models.scale_conditioning import (
     ScaleConditioning,
     check_scale_conditioning,
@@ -175,3 +176,13 @@ class ExtraNodeMixedCausalInfEncoder(CausalInfEncoder):
             variable_mask=variable_mask,
         )
         return representation[:, :, :num_nodes], num_target
+
+
+class JointExtraNodeMixedCausalInfEncoder(
+    OutcomeFreeEmbeddingMixin, ExtraNodeMixedCausalInfEncoder
+):
+    """ExtraNodeMixedCausalInfEncoder without the outcome role (joint
+    prediction head). The metadata position is dropped before the head, so
+    the head sees D variables. The learned variable-index embeddings make the
+    model as a whole not node-permutation equivariant and tie it to at most
+    num_nodes variables; the joint head itself stays equivariant."""

@@ -37,6 +37,15 @@ class CausalInfModelConfig(BaseModelConfig):
     # layerwise encoding only: True (the default) reuses `context_intervened`
     # as the injection code; False builds a separate `flag_code` MLP.
     share_intervention_encoder: bool = True
+    # "marginal" (default): p(X_Y | do(X_T), context), one variable;
+    # "joint": p(X_{-T} | do(X_T), context), all non-intervened variables
+    # (CITNP/models/prediction_heads.py). The joint_* keys apply to the joint
+    # head only.
+    prediction_head: str = "marginal"
+    joint_covariance_rank: int = 8
+    joint_minimum_variance: float = 1.0e-4  # standardised scale
+    # self-attention layers over each query row's variables before the head
+    joint_head_node_attention_layers: int = 0
 
 
 @dataclass

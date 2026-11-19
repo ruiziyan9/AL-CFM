@@ -18,8 +18,12 @@ import torch
 
 from CITNP.datasets.linear_gaussian_prior import LinearGaussianPrior
 from CITNP.evaluation.metrics import (
+    correlation_error,
     implied_slope,
     kl_mc,
+    kl_truth_joint_model,
+    kl_truth_product_of_marginals,
+    mean_abs_correlation,
     mix_logpdf,
     mixture_moments,
     naive_slope,
@@ -29,14 +33,20 @@ from CITNP.evaluation.metrics import (
     oracle_weights,
     sample_oracle,
     sample_truth,
+    sample_truth_joint,
+    truth_joint_logpdf,
     truth_logpdf,
     variance_ratio,
 )
 from CITNP.evaluation.model_api import (
     context_states,
     effective_components,
+    joint_log_density,
+    joint_marginal_mixture,
+    joint_mixture_mean_and_covariance,
     mixture_cdf,
     mixture_logpdf,
+    predict_joint_mixture,
     predict_mixture,
     probe_points,
 )
@@ -989,6 +999,208 @@ def run_kshot_prior(
             print(f"D={D}: {i - task_offset + 1}/{n_tasks} tasks done")
 
     return pd.DataFrame(rows), pd.DataFrame(rows_t)
+
+
+# --------------------------------------------------------------------------- #
+# Joint models: the interventional joint on tasks drawn from the training prior
+# --------------------------------------------------------------------------- #
+# Truth samples of the joint evaluation come from their own stream, distinct
+# from the k-shot streams above.
+_JOINT_TRUTH_SAMPLE_STREAM = 97
+
+# Treatment-relative designs of the joint evaluation (no outcome Y): the pool
+# of the treatment itself, the pools of the other D - 1 nodes (averaged), the
+# random pool and, optionally, the extra-observational pool.
+JOINT_PRIOR_DESIGNS = ["random", "do(T)", "do(other)"]
+
+JOINT_PRIOR_FIELDS = [
+    "kl_truth_model_joint",
+    "kl_truth_model_product",
+    "kl_dependence_gain",
+    "correlation_error",
+]
+
+
+def joint_prior_design_names(with_observational: bool = False) -> list[str]:
+    """The kshot-prior-joint design names (observational last if present)."""
+    observational = [OBSERVATIONAL_DESIGN] if with_observational else []
+    return JOINT_PRIOR_DESIGNS + observational
+
+
+def _joint_design(pool_key, T: int) -> str:
+    """Treatment-relative design of a pool for treatment T."""
+    if pool_key in ("random", OBSERVATIONAL_DESIGN):
+        return str(pool_key)
+    return "do(T)" if int(pool_key) == T else "do(other)"
+
+
+def _score_joint_treatment(jp, mean_cov, T, scm, grid, g, rng, n_y, device):
+    """Joint scores of one treatment T in one context, averaged over the
+    do-value grid: KL(truth || model joint), KL(truth || product of the
+    model's marginals), their difference (what modelling dependence gains)
+    and the correlation error; all over the non-intervened variables."""
+    slopes, covariance = scm.do_joint_dist(T)
+    rows_np = sample_truth_joint(slopes, covariance, T, grid, n_y, rng)
+    rows = torch.tensor(rows_np, dtype=torch.float64, device=device)
+    lp_truth = truth_joint_logpdf(slopes, covariance, T, g, rows)
+    query = jp.select(torch.tensor([T], device=jp.log_weights.device))
+    lp_model = joint_log_density(query, rows[None])[0]  # [n_t, n_y]
+    marginals = {}
+    for j in range(len(slopes)):
+        if j != T:
+            mu, sd, logw = joint_marginal_mixture(query, j)
+            marginals[j] = (mu[0], sd[0], logw[0])
+    kl_joint = kl_truth_joint_model(lp_truth, lp_model)
+    kl_product = kl_truth_product_of_marginals(lp_truth, marginals, rows)
+    model_covariance = mean_cov[1][T].cpu().numpy()  # [n_t, D, D]
+    corr = correlation_error(model_covariance, covariance, T)
+    return {
+        "kl_truth_model_joint": float(np.mean(kl_joint)),
+        "kl_truth_model_product": float(np.mean(kl_product)),
+        "kl_dependence_gain": float(np.mean(kl_product - kl_joint)),
+        "correlation_error": float(np.mean(corr)),
+    }
+
+
+def run_kshot_prior_joint(
+    model,
+    data_cfg,
+    *,
+    D: int,
+    device: str,
+    k_list: list[int],
+    n_tasks: int = 500,
+    task_offset: int = 0,
+    base_seed: int = 9101,
+    n_obs: int | None = None,
+    grid_eps: float = 0.02,
+    n_t: int = 13,
+    n_y: int = 64,
+    fixed_graph: np.ndarray | None = None,
+    with_observational_pool: bool = True,
+) -> pd.DataFrame:
+    """Direct evaluation of a JOINT model's interventional joint
+    p(X_{-T} | do(X_T = t), context) on tasks drawn from the training prior.
+
+    Marginal k-shot scores cannot show whether dependence between variables
+    was learned (two joints with identical marginals can have any
+    correlation). The true task is a linear-Gaussian SCM, whose
+    interventional joint is exact (`LinearSCM.do_joint_dist`), so no joint
+    oracle is needed.
+
+    Tasks, observational rows, pools and the nested k-shot contexts are those
+    of `run_kshot_prior` (same seeds, so task i is the same task); the
+    do-value grid is the task's quantile grid. Per context the model is run
+    once for every treatment T = 0..D-1 (`predict_joint_mixture`); per
+    treatment, n_y truth rows per do-value are drawn (stream
+    [base_seed, D, i, context number, k, 97]) and scored, all over the D - 1
+    non-intervened variables:
+    - kl_truth_model_joint: KL(truth || model joint), nats per do-value;
+    - kl_truth_model_product: KL(truth || product of the model's own
+      marginals);
+    - kl_dependence_gain: the second minus the first, what the joint head
+      gains by modelling dependence (near zero on tasks with correlated
+      outcomes means it learned none);
+    - correlation_error: mean |off-diagonal correlation of the model's
+      mixture covariance - that of the truth|.
+    Each is averaged over the do-value grid. Designs are relative to the
+    treatment: do(T), do(other) (the D - 1 other nodes' pools, averaged;
+    n_other), random, observational (with_observational_pool) and obs
+    (k = 0). `truth_mean_abs_correlation` is the mean |off-diagonal
+    correlation| of the true joint (how dependent the outcomes are).
+
+    Args as for `run_kshot_prior` (no oracle arguments: the oracle is never
+    run). Raises ValueError unless `model` is a joint model.
+
+    Returns:
+    ----------
+    One row per task, treatment, design and k.
+    """
+    from CITNP.datasets.mixed_regime_generator import do_dist_quantile
+
+    if getattr(model, "prediction_head", "marginal") != "joint":
+        raise ValueError(
+            "kshot-prior-joint applies to joint models only "
+            "(prediction_head: joint); use kshot-prior for marginal models"
+        )
+    if D not in list(data_cfg.num_variables):
+        raise ValueError(f"D={D} not in data_cfg.num_variables")
+    require_exact_oracle(data_cfg)  # the closed-form truth needs it
+    if fixed_graph is not None:
+        fixed_graph = validate_fixed_graph(fixed_graph, D, data_cfg)
+    fixed_graph_edges = (
+        "" if fixed_graph is None else format_graph_edges(fixed_graph)
+    )
+    ks = sorted(set(k_list) | {0})
+    k_pos = [k for k in ks if k > 0]
+    n_obs = default_n_obs(data_cfg) if n_obs is None else n_obs
+    check_context_size(data_cfg, n_obs, ks[-1])
+    q_levels = np.linspace(grid_eps, 1.0 - grid_eps, n_t)
+    pool_keys: list = list(range(D)) + ["random"]
+    if with_observational_pool:
+        pool_keys.append(OBSERVATIONAL_DESIGN)
+    treatments = np.arange(D)
+
+    rows_out: list[dict] = []
+    for i in range(task_offset, task_offset + n_tasks):
+        scm, graph, do_dist, attempts = prior_scm(
+            data_cfg, i, base_seed, D, fixed_graph=fixed_graph
+        )
+        grid = do_dist_quantile(do_dist, q_levels)
+        g = torch.tensor(grid, dtype=torch.float64, device=device)
+        rng = np.random.default_rng([base_seed, D, i, 7])
+        obs_x, obs_m = scm.sample(n_obs, None, None, rng)
+        pools = node_pools(scm, ks[-1], do_dist, rng) if k_pos else {}
+        if with_observational_pool and k_pos:
+            obs_pool_rng = np.random.default_rng(
+                [base_seed, D, i, _OBSERVATIONAL_POOL_STREAM]
+            )
+            pools[OBSERVATIONAL_DESIGN] = observational_pool(
+                scm, ks[-1], obs_pool_rng
+            )
+        contexts = _build_contexts(
+            obs_x, obs_m, pools, k_pos, [base_seed, D, i], designs=pool_keys
+        )
+        acc: dict = {}  # (T, design, k) -> [(scores, intervened nodes)]
+        for c_i, (key, k, x, m, nodes) in enumerate(contexts):
+            jp = predict_joint_mixture(
+                model, x, m, treatments, grid, device=device
+            )
+            mean_cov = joint_mixture_mean_and_covariance(jp)
+            truth_rng = np.random.default_rng(
+                [base_seed, D, i, c_i, k, _JOINT_TRUTH_SAMPLE_STREAM]
+            )
+            for T in range(D):
+                scores = _score_joint_treatment(
+                    jp, mean_cov, T, scm, grid, g, truth_rng, n_y, device
+                )
+                design = "obs" if key == "obs" else _joint_design(key, T)
+                acc.setdefault((T, design, k), []).append((scores, nodes))
+
+        scale = do_dist.get("scale", do_dist.get("width"))
+        designs = ["obs"] + joint_prior_design_names(with_observational_pool)
+        for T in range(D):
+            dependence = mean_abs_correlation(scm.do_joint_dist(T)[1], T)
+            for design in designs:
+                for k in [0] if design == "obs" else k_pos:
+                    items = acc.get((T, design, k))
+                    if items is None:
+                        continue
+                    nodes = frozenset().union(*(n for _, n in items))
+                    rows_out.append({
+                        "D": D, "task": i, "T": T, "design": design, "k": k,
+                        "n_other": len(items) if design == "do(other)" else 0,
+                        "intervened_nodes": "".join(map(str, sorted(nodes))),
+                        **_mean_dicts([sc for sc, _ in items]),
+                        "truth_mean_abs_correlation": dependence,
+                        "do_kind": do_dist["kind"],
+                        "do_scale_or_width": scale,
+                        "resample_attempts": attempts,
+                        "fixed_graph": fixed_graph_edges,
+                    })  # fmt: skip
+        if (i - task_offset + 1) % 10 == 0:
+            print(f"D={D}: {i - task_offset + 1}/{n_tasks} tasks done")
+    return pd.DataFrame(rows_out)
 
 
 # --------------------------------------------------------------------------- #

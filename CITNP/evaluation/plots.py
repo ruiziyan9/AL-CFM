@@ -21,6 +21,13 @@ written by `kshot-prior` (ONLY these show a true oracle lower bound; per D):
   columns are entirely missing) the same two files show the model only:
     <prefix>_D{D}_main.png         KL(truth || model) against k, per design
     <prefix>_D{D}_by_relation.png  KL(truth || model) by question class
+Joint models, from the CSV part(s) written by `kshot-prior-joint` (per D):
+    <prefix>_D{D}_joint.png        against k, per treatment-relative design:
+                                   (a) KL(truth || model joint), (b) KL(truth ||
+                                   product of the model's marginals), (c) their
+                                   difference (dependence gain), (d) correlation
+                                   error; mean +/- s.e. over tasks, treatments
+                                   averaged within a task first
 Training monitoring, from oracle_gap.csv / train_stats.csv in run directories:
     plot_monitoring(run_dirs, out)
 Flag probe, from <prefix>.csv written by `probe-flag`:
@@ -546,6 +553,57 @@ def plot_kshot_prior_all(csv_paths: list[str], prefix: str | None = None) -> Non
         for s in ("_main", "_by_relation")
     ]
     print("wrote " + ", ".join(written))
+
+
+# --------------------------------------------------------------------------- #
+# Joint models on tasks drawn from the training prior (kshot-prior-joint)
+# --------------------------------------------------------------------------- #
+JOINT_PRIOR_COLORS = {"random": "C0", "do(T)": "C1", "do(other)": "C2"}
+_JOINT_ID_COLS = ["D", "task", "T", "design", "k"]
+_JOINT_PANELS = [
+    ("kl_truth_model_joint", "KL(truth || model joint)"),
+    ("kl_truth_model_product", "KL(truth || product of model marginals)"),
+    ("kl_dependence_gain", "dependence gain = product KL - joint KL"),
+    ("correlation_error", "mean |correlation error|"),
+]
+
+
+def plot_kshot_prior_joint(df: pd.DataFrame, prefix: str) -> None:
+    """One figure <prefix>_D{D}_joint.png per D, from kshot-prior-joint rows:
+    the four scores of `run_kshot_prior_joint` against k per design, mean
+    +/- s.e. over tasks (treatments averaged within a task first), the
+    extra-observational design grey and dashed. All KLs are over the D - 1
+    non-intervened variables, in nats per do-value, so they are not
+    comparable with the marginal kshot-prior KLs."""
+    for D, dd in df.groupby("D"):
+        ks = sorted(dd.k.unique())
+        fig, axes = plt.subplots(1, len(_JOINT_PANELS), figsize=(24, 5))
+        for ax, (col, title) in zip(axes, _JOINT_PANELS):
+            for design, color in JOINT_PRIOR_COLORS.items():
+                mu, se = _prior_curve(dd, design, [col])
+                band(ax, mu[col], se[col], color, label=design)
+            _plot_observational_design(ax, dd, col)
+            ax.axhline(0, color="k", lw=0.5)
+            finish(ax, ks, f"D={D}: {title}")
+        axes[0].set_ylabel("nats per do-value (non-intervened variables)")
+        axes[0].legend(fontsize=7)
+        if _fixed_graph_title(dd):
+            fig.suptitle(_fixed_graph_title(dd), fontsize=9)
+        _save(fig, f"{prefix}_D{D}_joint.png")
+
+
+def plot_kshot_prior_joint_all(
+    csv_paths: list[str], prefix: str | None = None
+) -> list[str]:
+    """Every kshot-prior-joint figure from one or more CSV parts,
+    concatenated; raises if parts overlap. Returns the files written."""
+    df = pd.concat([pd.read_csv(p) for p in csv_paths], ignore_index=True)
+    if df.duplicated(_JOINT_ID_COLS).any():
+        raise ValueError("overlapping parts: duplicate rows")
+    if prefix is None:
+        prefix = re.sub(r"_part\d+$", "", csv_paths[0].removesuffix(".csv"))
+    plot_kshot_prior_joint(df, prefix)
+    return [f"{prefix}_D{D}_joint.png" for D in sorted(df["D"].unique())]
 
 
 # --------------------------------------------------------------------------- #

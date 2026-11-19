@@ -16,11 +16,20 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
   intervention information enters the model (default layerwise).
   --model_class <name> is still accepted (legacy). reg_axis reads the optional
   model_config keys reg_axis_num_blocks, reg_axis_num_memory_tokens,
-  reg_axis_target_flag and reg_axis_count_feature (CITNP/models/regime_axis/README.md). reg_axis_full
-  reads the same keys except reg_axis_num_memory_tokens, which it rejects
+  reg_axis_target_flag and reg_axis_count_feature
+  (CITNP/models/regime_axis/README.md). reg_axis_full reads the same keys
+  except reg_axis_num_memory_tokens, which it rejects
   (CITNP/models/regime_axis_full/README.md). layerwise reads
   the optional model_config key share_intervention_encoder (default true: the
   injection reuses context_intervened; false: separate flag_code MLP).
+- --prediction_head {marginal,joint}: marginal (default) predicts
+  p(X_Y | do(X_T), context); joint predicts p(X_{-T} | do(X_T), context),
+  all non-intervened variables, as a mixture of multivariate Gaussians with
+  low-rank-plus-diagonal covariances (CITNP/models/prediction_heads.py). The
+  joint head reads joint_covariance_rank, joint_minimum_variance and
+  joint_head_node_attention_layers (each also a command-line option), which
+  are rejected for a marginal model. Warm starts (--init_from_upstream,
+  --init_from_r1) do not apply to the joint head.
 - --scale_conditioning {none,stats}: stats feeds each variable's standardisation
   (log std, mean / std) to the model (information parity with the oracle;
   default none: no new parameters).
@@ -88,6 +97,11 @@ from CITNP.models.regime_axis_full import (
     RegimeAxisFullMixedContextModel,
     RegimeAxisFullMixedContextMoGModel,
 )
+from CITNP.models.prediction_heads import (
+    JOINT_CONFIG_KEYS,
+    PREDICTION_HEADS,
+    check_joint_head_settings,
+)
 from CITNP.models.scale_conditioning import SCALE_CONDITIONING_OPTIONS
 
 from CITNP.trainer.callbacks import (
@@ -153,11 +167,18 @@ MODEL_KEYS = (
     "scale_conditioning",
     *REG_AXIS_CONFIG_KEYS,
     "share_intervention_encoder",
+    "prediction_head",
+    *JOINT_CONFIG_KEYS,
 )
 
 # Keys that select the method: if given both on the command line and in the
 # model YAML, they must agree.
-SELECTION_KEYS = ("model_class", "intervention_encoding", "scale_conditioning")
+SELECTION_KEYS = (
+    "model_class",
+    "intervention_encoding",
+    "scale_conditioning",
+    "prediction_head",
+)
 
 # Run-level data options (how tasks are batched; not part of the prior or of
 # the model), written next to resolved_model_config.yaml.
@@ -195,6 +216,36 @@ def parse_args(argv=None) -> argparse.Namespace:
         choices=sorted(INTERVENTION_ENCODINGS),
         help="how intervention information enters the model "
         "(default: layerwise)",
+    )
+
+    extra.add_argument(
+        "--prediction_head",
+        default=None,
+        choices=list(PREDICTION_HEADS),
+        help="marginal: p(X_Y | do(X_T), context); joint: all non-intervened "
+        "variables (default: marginal)",
+    )
+    extra.add_argument(
+        "--joint_covariance_rank",
+        type=int,
+        default=None,
+        help="joint head only: rank of each component's covariance factor "
+        "(default 8)",
+    )
+    extra.add_argument(
+        "--joint_minimum_variance",
+        type=float,
+        default=None,
+        help="joint head only: floor of the covariance diagonal on the "
+        "standardised scale (default 1e-4)",
+    )
+    extra.add_argument(
+        "--joint_head_node_attention_layers",
+        type=int,
+        default=None,
+        help="joint head only: self-attention layers over each query row's "
+        "variables before the head (default 0; 1 for reg_axis and "
+        "reg_axis_full)",
     )
 
     extra.add_argument(
@@ -513,6 +564,18 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
             for split in ("val", "test")
         )
 
+    model_cls, encoding = resolve_model_class(
+        args.intervention_encoding, args.model_class, args.prediction_head
+    )
+    is_joint = getattr(model_cls, "prediction_head", "marginal") == "joint"
+    # joint_* keys given (command line or YAML) are checked against the
+    # resolved head before the dataclass is built; absent keys keep its
+    # defaults
+    joint_settings = check_joint_head_settings(
+        vars(args),
+        "joint" if is_joint else "marginal",
+        args.num_mixture_components,
+    )
     model_config = CausalInfModelConfig(
         d_model=args.d_model,
         emb_depth=args.emb_depth,
@@ -537,9 +600,8 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         },
         # layerwise only; absent means the shared flag network (default)
         share_intervention_encoder=_share_intervention_encoder(args),
-    )
-    model_cls, encoding = resolve_model_class(
-        args.intervention_encoding, args.model_class
+        prediction_head="joint" if is_joint else "marginal",
+        **joint_settings,
     )
     is_reg_axis = issubclass(
         model_cls, (RegimeAxisMixedContextModel, RegimeAxisMixedContextMoGModel)
@@ -569,6 +631,16 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         raise ValueError(
             "share_intervention_encoder only applies to the layerwise encoding"
         )
+    for option, value in (
+        ("--init_from_upstream", args.init_from_upstream),
+        ("--init_from_r1", args.init_from_r1),
+    ):
+        if value and is_joint:
+            raise ValueError(
+                f"{option} does not apply to the joint prediction head: warm "
+                "starts from a marginal checkpoint are not supported; train "
+                "the joint model from scratch"
+            )
     if (is_reg_axis or is_reg_axis_full) and args.init_from_upstream:
         raise ValueError(
             f"--init_from_upstream does not apply to {encoding}: its "
@@ -619,6 +691,11 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         )
     if encoding in INTERVENTION_ENCODINGS:
         resolved["intervention_encoding"] = encoding
+    # Only joint runs record the head, so marginal runs' files are unchanged.
+    if is_joint:
+        resolved["prediction_head"] = "joint"
+        for k in JOINT_CONFIG_KEYS:
+            resolved[k] = getattr(model_config, k)
     # Model keys only (all in MODEL_KEYS), so the file can be passed back as
     # --model_config; run-level data options go to their own file.
     with open(model_save_dir / "resolved_model_config.yaml", "w") as f:

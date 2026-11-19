@@ -30,10 +30,24 @@ initialisation.
 The regime-axis encodings live in their own packages and are only registered
 here: `reg_axis` (CITNP/models/regime_axis) and `reg_axis_full`
 (CITNP/models/regime_axis_full).
+
+Default method: `layerwise` with the shared flag network
+(share_intervention_encoder: true). R1 stays fully supported.
+
+Prediction heads (CITNP/models/prediction_heads.py). Every family's forward
+is `_encode_query_tokens` (query tokens [B, Nq, D, d_model]) followed by
+`_predict_from_query_tokens`. The marginal head (default) reads the outcome
+token. The joint head (`prediction_head: joint`, the Joint* classes, one per
+encoding in `JOINT_INTERVENTION_ENCODINGS`) predicts
+p(X_{-T} | do(X_T = t), context) for every query row as a mixture of
+multivariate Gaussians with low-rank-plus-diagonal covariances, from the
+tokens of all variables, and embeds no variable with the outcome role.
+`resolve_model_class` maps (intervention_encoding, model_class,
+prediction_head) to the class for both training and evaluation.
 """
 
 from os import PathLike
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -47,13 +61,24 @@ from CITNP.models.causaltransformercomponents import (
     CausalInfEncoder,
     CausalInfTransformerEncoder,
 )
-from CITNP.models.extra_node_encoder import ExtraNodeMixedCausalInfEncoder
+from CITNP.models.extra_node_encoder import (
+    ExtraNodeMixedCausalInfEncoder,
+    JointExtraNodeMixedCausalInfEncoder,
+)
 from CITNP.models.nncomponents import build_mlp
+from CITNP.models.prediction_heads import (
+    PREDICTION_HEADS,
+    JointPredictionHeadMixin,
+    MarginalPredictionHeadMixin,
+    OutcomeFreeEmbeddingMixin,
+)
 from CITNP.models.regime_axis import (
+    JointRegimeAxisMixedContextMoGModel,
     RegimeAxisMixedContextModel,  # noqa: F401  # resolvable as model_class
     RegimeAxisMixedContextMoGModel,
 )
 from CITNP.models.regime_axis_full import (
+    JointRegimeAxisFullMixedContextMoGModel,
     RegimeAxisFullMixedContextModel,  # noqa: F401  # resolvable as model_class
     RegimeAxisFullMixedContextMoGModel,
 )
@@ -61,7 +86,6 @@ from CITNP.models.scale_conditioning import (
     ScaleConditioning,
     check_scale_conditioning,
 )
-from CITNP.utils.outputs import ModelOutput
 from CITNP.utils.utils import (
     reshape_back_node_attention,
     reshape_back_sample_attention,
@@ -371,18 +395,26 @@ class LayerwiseMixedCausalInfEncoder(MixedCausalInfEncoder):
         return {"flag_code": torch.cat([code, pad], dim=1)}
 
 
-# The mixin calls upstream model methods; give type checkers that base only.
-if TYPE_CHECKING:
-    _MixinBase = CausalInferenceModel
-else:
-    _MixinBase = object
+class JointMixedCausalInfEncoder(
+    OutcomeFreeEmbeddingMixin, MixedCausalInfEncoder
+):
+    """MixedCausalInfEncoder without the outcome role (joint prediction head)."""
 
 
-class _MixedContextMixin(_MixinBase):
+class JointLayerwiseMixedCausalInfEncoder(
+    OutcomeFreeEmbeddingMixin, LayerwiseMixedCausalInfEncoder
+):
+    """LayerwiseMixedCausalInfEncoder without the outcome role (joint
+    prediction head)."""
+
+
+class _MixedContextMixin(MarginalPredictionHeadMixin):
     """Swaps in MixedCausalInfEncoder and passes context_int_mask to it.
 
     Must come first in the bases, so its __init__ / forward wrap the upstream
-    model's (predictor and loss come from the upstream class).
+    model's (predictor and loss come from the upstream class). The forward
+    pass is `_encode_query_tokens` followed by the prediction head
+    (`_predict_from_query_tokens`, marginal unless a joint mixin precedes).
     """
 
     encoder_cls: type[CausalInfEncoder] = MixedCausalInfEncoder
@@ -417,7 +449,7 @@ class _MixedContextMixin(_MixinBase):
         context_data: torch.Tensor,
         target_data: torch.Tensor,
         intervention_index: torch.Tensor,
-        outcome_index: torch.Tensor,
+        outcome_index: Optional[torch.Tensor] = None,
         context_int_mask: Optional[torch.Tensor] = None,
         variable_mask: Optional[torch.Tensor] = None,
         context_scale: Optional[torch.Tensor] = None,
@@ -432,35 +464,56 @@ class _MixedContextMixin(_MixinBase):
         context_scale [B, D, 2] holds each variable's (log std, mean / std) before
         standardisation. Required when scale_conditioning == "stats", ignored
         when "none".
+
+        outcome_index may be None only for models without an outcome role
+        (the joint models); the marginal head raises without it.
         """
+        query_tokens = self._encode_query_tokens(
+            context_data=context_data,
+            target_data=target_data,
+            intervention_index=intervention_index,
+            outcome_index=outcome_index,
+            context_int_mask=context_int_mask,
+            variable_mask=variable_mask,
+            context_scale=context_scale,
+        )
+        return self._predict_from_query_tokens(
+            query_tokens, intervention_index, outcome_index
+        )
+
+    def _encode_query_tokens(
+        self,
+        context_data: torch.Tensor,
+        target_data: torch.Tensor,
+        intervention_index: torch.Tensor,
+        outcome_index: Optional[torch.Tensor],
+        context_int_mask: Optional[torch.Tensor],
+        variable_mask: Optional[torch.Tensor],
+        context_scale: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """The encoder part of `forward`: the tokens of every variable of
+        every query row, [B, Nq, D, d_model]. Arguments as for `forward`;
+        without outcome_index the encoder gets intervention_index as its
+        outcome_indices (only outcome-free encoders are called that way)."""
         if self.scale_conditioning == "stats" and context_scale is None:
             raise ValueError("scale_conditioning=stats needs context_scale")
         masked_target_data = self._mask_target_data(
             target_data=target_data, intervention_index=intervention_index
         )
-        # shape rep: (batch_size, num_target, num_nodes, d_model)
+        # shape rep: (batch_size, num_context + num_target, num_nodes, d_model)
         rep, num_trgt = self.encoder.encode(
             context_data=context_data,
             target_data=masked_target_data,
             target_train_data=None,
-            outcome_indices=outcome_index,
+            outcome_indices=(
+                intervention_index if outcome_index is None else outcome_index
+            ),
             intervention_indices=intervention_index,
             variable_mask=variable_mask,
             context_int_mask=context_int_mask,
             context_scale=context_scale,
         )
-        # shape outcome_encoding: (batch_size, num_target, d_model)
-        outcome_encoding, _ = self._extract_outcome_representation(
-            representation=rep,
-            outcome_index=outcome_index,
-            num_trgt=num_trgt,
-        )
-        if self.predictor.output_heads == ("mean", "std"):
-            mean, std = self._predict(outcome_encoding)
-            return ModelOutput(pred_mean=mean, pred_std=std)
-        elif self.predictor.output_heads == ("mean", "std", "weights"):
-            mean, std, weights = self._predict(outcome_encoding)
-            return ModelOutput(pred_mean=mean, pred_std=std, weights=weights)
+        return rep[:, -num_trgt:]
 
 
 class MixedContextModel(_MixedContextMixin, CausalInferenceModel):
@@ -512,6 +565,40 @@ class ExtraNodeMixedContextMoGModel(_MixedContextMixin, MoGCausalInferenceModel)
 
 
 # ---------------------------------------------------------------------------
+# Joint prediction head (CITNP/models/prediction_heads.py): one class per
+# encoding, each the marginal mixture model with the joint head first in the
+# bases (so the issubclass checks of the marginal class still hold) and its
+# outcome-free encoder. Forgetting `encoder_cls` would silently keep the
+# outcome role.
+# ---------------------------------------------------------------------------
+
+
+class JointMixedContextMoGModel(JointPredictionHeadMixin, MixedContextMoGModel):
+    """r1 encoding with the joint prediction head."""
+
+    encoder_cls = JointMixedCausalInfEncoder
+
+
+class JointLayerwiseMixedContextMoGModel(
+    JointPredictionHeadMixin, LayerwiseMixedContextMoGModel
+):
+    """Layer-wise encoding with the joint prediction head."""
+
+    encoder_cls = JointLayerwiseMixedCausalInfEncoder
+
+
+class JointExtraNodeMixedContextMoGModel(
+    JointPredictionHeadMixin, ExtraNodeMixedContextMoGModel
+):
+    """Extra-node encoding with the joint prediction head. The learned
+    variable-index embeddings make the model as a whole not
+    node-permutation equivariant and tie it to at most num_nodes variables;
+    the head itself stays equivariant."""
+
+    encoder_cls = JointExtraNodeMixedCausalInfEncoder
+
+
+# ---------------------------------------------------------------------------
 # Intervention-encoding switch. The single place that maps a method name to a
 # model class: mixed_train.py and evaluation/model_api.py both resolve here.
 # ---------------------------------------------------------------------------
@@ -526,12 +613,24 @@ INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
 }
 
 
+# The joint-head class of every encoding (same keys as INTERVENTION_ENCODINGS).
+JOINT_INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
+    "r1": JointMixedContextMoGModel,
+    "layerwise": JointLayerwiseMixedContextMoGModel,
+    "extra_node": JointExtraNodeMixedContextMoGModel,
+    "reg_axis": JointRegimeAxisMixedContextMoGModel,
+    "reg_axis_full": JointRegimeAxisFullMixedContextMoGModel,
+}
+
+
 def resolve_model_class(
     intervention_encoding: Optional[str] = None,
     model_class: Optional[str] = None,
+    prediction_head: Optional[str] = None,
 ) -> tuple[type[CausalInferenceModel], str]:
     """Return (model class, encoding name).
 
+    Without prediction_head (or "marginal"):
     - Neither given: the default encoding (layerwise; with the dataclass
       default share_intervention_encoder=True it is the layer-wise model with
       the shared flag network).
@@ -539,6 +638,17 @@ def resolve_model_class(
     - model_class only (legacy configs): that class from this module; the
       returned name is its encoding if registered, else the class name.
     - Both: allowed only if they agree.
+
+    prediction_head ("marginal" | "joint"), in this order:
+    - model_class none, "joint": the joint class of the resolved encoding
+      (layer-wise by default).
+    - a registered marginal mixture class, "joint": its joint counterpart.
+    - a joint class, None or "joint": that class; "marginal" raises (a
+      contradiction).
+    - a Gaussian-head or other unregistered class, "joint": raises (no joint
+      counterpart).
+    The returned encoding name of a joint class is the encoding of its
+    marginal counterpart.
     """
     if (
         intervention_encoding is not None
@@ -548,22 +658,50 @@ def resolve_model_class(
             f"Unknown intervention_encoding {intervention_encoding!r}; "
             f"choose from {sorted(INTERVENTION_ENCODINGS)}"
         )
+    if prediction_head is not None and prediction_head not in PREDICTION_HEADS:
+        raise ValueError(
+            f"Unknown prediction_head {prediction_head!r}; "
+            f"choose from {list(PREDICTION_HEADS)}"
+        )
+    joint = prediction_head == "joint"
     if model_class is None:
         name = intervention_encoding or DEFAULT_INTERVENTION_ENCODING
-        return INTERVENTION_ENCODINGS[name], name
+        registry = (
+            JOINT_INTERVENTION_ENCODINGS if joint else INTERVENTION_ENCODINGS
+        )
+        return registry[name], name
 
     cls = globals().get(model_class)
     if not (isinstance(cls, type) and issubclass(cls, CausalInferenceModel)):
         raise ValueError(
             f"Unknown model_class {model_class!r} (not a model class in {__name__})"
         )
-    matches = [k for k, v in INTERVENTION_ENCODINGS.items() if v is cls]
+    joint_matches = [
+        k for k, v in JOINT_INTERVENTION_ENCODINGS.items() if v is cls
+    ]
+    marginal_matches = [k for k, v in INTERVENTION_ENCODINGS.items() if v is cls]
+    matches = joint_matches or marginal_matches
     name = matches[0] if matches else cls.__name__
     if intervention_encoding is not None and intervention_encoding != name:
         raise ValueError(
             f"model_class={model_class!r} is encoding {name!r}, which "
             f"contradicts intervention_encoding={intervention_encoding!r}"
         )
+    if joint_matches:
+        if prediction_head == "marginal":
+            raise ValueError(
+                f"model_class={model_class!r} has the joint prediction head, "
+                "which contradicts prediction_head='marginal'"
+            )
+        return cls, name
+    if joint:
+        if not matches:
+            raise ValueError(
+                f"model_class={model_class!r} has no joint counterpart: the "
+                "joint prediction head extends the registered "
+                f"mixture-of-Gaussians classes {sorted(INTERVENTION_ENCODINGS)}"
+            )
+        return JOINT_INTERVENTION_ENCODINGS[name], name
     return cls, name
 
 

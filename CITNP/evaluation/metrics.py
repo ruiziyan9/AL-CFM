@@ -108,6 +108,121 @@ def kl_mc(lp_p: torch.Tensor, lp_q: torch.Tensor) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
+# Joint interventional distributions (joint models), over the non-intervened
+# variables only. The truth is X | do(X_T = t) ~ N(slopes t, covariance)
+# (`LinearSCM.do_joint_dist`); the model's joint log densities come from
+# `model_api.joint_log_density` and its marginals from
+# `model_api.joint_marginal_mixture`.
+# --------------------------------------------------------------------------- #
+def _non_intervened(D: int, T: int) -> np.ndarray:
+    return np.array([j for j in range(D) if j != T], dtype=int)
+
+
+def sample_truth_joint(
+    slopes: np.ndarray,
+    covariance: np.ndarray,
+    T: int,
+    grid: np.ndarray,
+    n_y: int,
+    rng,
+) -> np.ndarray:
+    """Full rows [n_t, n_y, D] of the true interventional joint at each
+    do-value t of `grid`: non-intervened variables ~ N(slopes t, covariance)
+    (their block), X_T = t exactly."""
+    D = len(slopes)
+    keep = _non_intervened(D, T)
+    chol = np.linalg.cholesky(covariance[np.ix_(keep, keep)])
+    rows = slopes[None, None, :] * grid[:, None, None]
+    rows = np.repeat(rows, n_y, axis=1)  # [n_t, n_y, D]
+    noise = rng.standard_normal((len(grid), n_y, len(keep))) @ chol.T
+    rows[..., keep] += noise
+    rows[..., T] = grid[:, None]
+    return rows
+
+
+def truth_joint_logpdf(
+    slopes: np.ndarray,
+    covariance: np.ndarray,
+    T: int,
+    g: torch.Tensor,
+    rows: torch.Tensor,
+) -> torch.Tensor:
+    """log N(rows of the non-intervened variables; slopes t, covariance) for
+    rows [n_t, n_y, D] at do-values g [n_t] (float64 tensors) -> [n_t, n_y]."""
+    keep = _non_intervened(len(slopes), T)
+    dev = rows.device
+    mean = torch.tensor(slopes[keep], device=dev)[None] * g[:, None]  # [n_t, d]
+    cov = torch.tensor(covariance[np.ix_(keep, keep)], device=dev)
+    dist = torch.distributions.MultivariateNormal(mean[:, None], cov)
+    return dist.log_prob(rows[..., torch.as_tensor(keep, device=dev)])
+
+
+def kl_truth_joint_model(
+    lp_truth: torch.Tensor, lp_model_joint: torch.Tensor
+) -> np.ndarray:
+    """Monte Carlo KL(truth || model) of the joint over the non-intervened
+    variables, per do-value: log densities [n_t, n_y] at truth samples (from
+    `truth_joint_logpdf` and `model_api.joint_log_density`) -> [n_t]."""
+    return kl_mc(lp_truth, lp_model_joint)
+
+
+def kl_truth_product_of_marginals(
+    lp_truth: torch.Tensor,
+    marginals: dict,
+    rows: torch.Tensor,
+) -> np.ndarray:
+    """Monte Carlo KL(truth || product of the model's own marginals) over the
+    non-intervened variables, per do-value -> [n_t].
+
+    marginals: {variable j: (mu, sd, logw) [n_t, K]} for every
+    non-intervened j (`model_api.joint_marginal_mixture`); rows: the truth
+    samples [n_t, n_y, D] behind lp_truth [n_t, n_y].
+
+    Subtracting `kl_truth_joint_model` gives what the joint head gains by
+    modelling dependence: near zero on tasks with correlated outcomes means
+    it learned none."""
+    lp_product = sum(
+        mix_logpdf(rows[..., j], mu, sd, logw)
+        for j, (mu, sd, logw) in marginals.items()
+    )
+    return kl_mc(lp_truth, lp_product)
+
+
+def correlation_matrix(covariance: np.ndarray) -> np.ndarray:
+    """Correlations [..., d, d] of covariances [..., d, d]."""
+    sd = np.sqrt(np.diagonal(covariance, axis1=-2, axis2=-1))
+    return covariance / (sd[..., :, None] * sd[..., None, :])
+
+
+def correlation_error(
+    model_covariance: np.ndarray, truth_covariance: np.ndarray, T: int
+) -> np.ndarray:
+    """Mean absolute difference between the off-diagonal correlations of the
+    model's mixture covariance [n_t, D, D] (`model_api.
+    joint_mixture_mean_and_covariance`) and of the true covariance [D, D],
+    over pairs of non-intervened variables, per do-value -> [n_t]. NaN when
+    fewer than two variables are not intervened."""
+    keep = _non_intervened(truth_covariance.shape[-1], T)
+    if len(keep) < 2:
+        return np.full(len(model_covariance), np.nan)
+    upper = np.triu_indices(len(keep), k=1)
+    model = correlation_matrix(model_covariance[:, keep][:, :, keep])
+    truth = correlation_matrix(truth_covariance[np.ix_(keep, keep)])
+    return np.abs(model[:, upper[0], upper[1]] - truth[upper]).mean(-1)
+
+
+def mean_abs_correlation(covariance: np.ndarray, T: int) -> float:
+    """Mean |off-diagonal correlation| of the non-intervened variables of a
+    covariance [D, D] (how dependent the outcomes of do(X_T) are)."""
+    keep = _non_intervened(covariance.shape[-1], T)
+    if len(keep) < 2:
+        return float("nan")
+    upper = np.triu_indices(len(keep), k=1)
+    corr = correlation_matrix(covariance[np.ix_(keep, keep)])
+    return float(np.abs(corr[upper]).mean())
+
+
+# --------------------------------------------------------------------------- #
 # Moments, implied effects, variance ratios
 # --------------------------------------------------------------------------- #
 def oracle_moments(

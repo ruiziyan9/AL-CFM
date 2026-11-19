@@ -75,6 +75,7 @@ def prepare_mixed_batch(
     seed: int = 0,
     global_step: int = 0,
     normalise: bool = True,
+    draw_outcome: bool = True,
 ) -> Dict[str, Any]:
     """Turn a grouped batch of B tasks into B * G upstream questions.
 
@@ -96,10 +97,16 @@ def prepare_mixed_batch(
         Target device, trainer seed, current step, and whether to standardise
         each task with the (mean, std) of its non-intervened context cells.
 
+    draw_outcome : bool
+        True (marginal models): draw an outcome Y per group. False (joint
+        models, which predict every non-intervened variable): skip the draw
+        and return "outcome_index": None; everything else is unchanged.
+
     Returns:
     ----------
     dict with "context" [B*G, Nc, D, 1], "target" [B*G, Nq_g, D, 1],
-    "intervention_index" / "outcome_index" [B*G] (long), "context_int_mask"
+    "intervention_index" / "outcome_index" [B*G] (long; outcome_index None
+    without draw_outcome), "context_int_mask"
     [B*G, Nc, D] (bool), "context_scale" [B*G, D, 2] (log std,
     mean / std) of each variable before standardisation (zeros when
     normalise=False: log 1 = 0 and mean 0), "causal_graphs" [B*G, D, D], "group_types" (list,
@@ -158,23 +165,25 @@ def prepare_mixed_batch(
                 meta[b],
             )
 
-    # 4. Outcome Y uniform over {0..D-1} \ {T}.
-    if training:
-        r = th.randint(
-            0, D - 1, (B, G), generator=_train_generator(seed, global_step)
-        )
-    else:
-        r = th.tensor(
-            [
+    # 4. Outcome Y uniform over {0..D-1} \ {T} (marginal models only).
+    Y: Optional[th.Tensor] = None
+    if draw_outcome:
+        if training:
+            r = th.randint(
+                0, D - 1, (B, G), generator=_train_generator(seed, global_step)
+            )
+        else:
+            r = th.tensor(
                 [
-                    _eval_outcome_draw(meta[b]["seed_key"], g, D - 1)
-                    for g in range(G)
-                ]
-                for b in range(B)
-            ],
-            dtype=th.long,
-        )
-    Y = r + (r >= T).long()  # skips T
+                    [
+                        _eval_outcome_draw(meta[b]["seed_key"], g, D - 1)
+                        for g in range(G)
+                    ]
+                    for b in range(B)
+                ],
+                dtype=th.long,
+            )
+        Y = r + (r >= T).long()  # skips T
 
     # 5. Per-task normalisation, shared by the task's groups.
     if normalise:
@@ -204,7 +213,7 @@ def prepare_mixed_batch(
         "context": ctx.to(device=device, dtype=dtype),
         "target": tgt.to(device=device, dtype=dtype),
         "intervention_index": T.reshape(B * G).to(device),
-        "outcome_index": Y.reshape(B * G).to(device),
+        "outcome_index": None if Y is None else Y.reshape(B * G).to(device),
         "context_int_mask": cint.to(device),
         "context_scale": scale_f.to(device=device, dtype=dtype),
         "causal_graphs": graph_f.float().to(device),
@@ -247,6 +256,9 @@ class MixedContextTrainer(CausalInferenceTrainer):
         self.test_loader = loader(self.test_dataset)
 
     def _prepare_batch(self, batch, dtype: th.dtype) -> Dict[str, Any]:
+        # Joint models predict every non-intervened variable: no outcome is
+        # drawn. Upstream models have no prediction_head attribute.
+        head = getattr(self.model, "prediction_head", "marginal")
         return prepare_mixed_batch(
             batch,
             dtype,
@@ -255,6 +267,7 @@ class MixedContextTrainer(CausalInferenceTrainer):
             seed=self.seed,
             global_step=self.global_step,
             normalise=self.normalise,
+            draw_outcome=head == "marginal",
         )
 
     def _forward_pass(
@@ -334,7 +347,11 @@ class MixedContextTrainer(CausalInferenceTrainer):
 
     def test_epoch(self, test_loader, metric_dict):
         """Test loss overall and by stratum: causal direction (T -> Y),
-        group type (seen / unseen), has_obs, K (0, 1, 2+) and G."""
+        group type (seen / unseen), has_obs, K (0, 1, 2+) and G.
+
+        Without outcomes (joint models) the causal-direction stratum, which
+        is defined by the pair (T, Y), is skipped: the upstream keys
+        downstream / upstream / independent then report None."""
         self._eval_batches = True
         losses = defaultdict(list)
         try:
@@ -344,25 +361,29 @@ class MixedContextTrainer(CausalInferenceTrainer):
                 self.model.to(self.device)
                 for batch in tqdm(test_loader, desc="Test", leave=False):
                     prep = self._prepare_batch(batch, dtype=self.eval_dtype)
-                    directions = get_causal_direction(
-                        graphs=prep["causal_graphs"],
-                        intvn_indices=prep["intervention_index"],
-                        outcome_indices=prep["outcome_index"],
-                    )
+                    directions = None
+                    if prep["outcome_index"] is not None:
+                        directions = get_causal_direction(
+                            graphs=prep["causal_graphs"],
+                            intvn_indices=prep["intervention_index"],
+                            outcome_indices=prep["outcome_index"],
+                        )
                     # Per-element losses [B * G].
                     loss = self._forward_pass(prep, test=True)["loss"]
                     G = prep["G"]
                     for i, val in enumerate(loss.tolist()):
                         m = prep["meta"][i // G]
                         k = m["K"]
-                        for key in (
+                        keys = [
                             "all",
-                            directions[i],
                             f"group_type={prep['group_types'][i]}",
                             f"has_obs={m['has_obs']}",
                             f"K={'2+' if k >= 2 else k}",
                             f"G={G}",
-                        ):
+                        ]
+                        if directions is not None:
+                            keys.insert(1, directions[i])
+                        for key in keys:
                             losses[key].append(val)
         finally:
             self._eval_batches = False

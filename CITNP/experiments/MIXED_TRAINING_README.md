@@ -482,6 +482,139 @@ array); `NO_ORACLE=1` passes `--no_oracle`, `FIXED_GRAPH_EDGES` or
 `EXAMPLE_FILE` supplies the model, and `DESIGNS="do(X3),random,observational"`
 passes `--designs` (quoted; `DRY_RUN=1` shows the command).
 
+## Joint prediction head
+
+The default (marginal) head answers one question per forward pass:
+p(X_Y | do(X_T = t), C), a univariate mixture of Gaussians read from the
+outcome node's token. The **joint head** answers, per query row and in one
+forward pass, the joint distribution of all non-intervened variables:
+
+    p(X_{-T} | do(X_T = t), C) = sum_k w_k N(mu_k, F_k F_k^T + diag(v_k))
+
+a K-component mixture of multivariate Gaussians with low-rank-plus-diagonal
+covariances (F_k is D x R). The idea follows the decoder head `GMMNetwork` of
+ACTIVA (Sauter et al.); it is reimplemented without ACTIVA's latent variable,
+and the loss is the exact negative log-likelihood (no KL term).
+
+**Config keys** (model YAML or command line):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `prediction_head` | `marginal` | `marginal` or `joint`; a selection key (command line and YAML must agree) |
+| `joint_covariance_rank` | 8 | R, columns of each factor F_k |
+| `joint_minimum_variance` | 1e-4 | floor of every diagonal entry v_kj (standardised scale) |
+| `joint_head_node_attention_layers` | 0 | self-attention layers over each row's variables before the head |
+
+A `joint_*` key given for a marginal model is an error, so marginal configs
+are unaffected; `num_mixture_components` is K. Only joint runs record
+`prediction_head` (and the three `joint_*` values) in
+`resolved_model_config.yaml`, with the joint class as `model_class`.
+`--init_from_upstream` and `--init_from_r1` are rejected for the joint head
+(no warm starts from marginal checkpoints).
+
+**Encodings.** Every encoding has a joint class
+(`JOINT_INTERVENTION_ENCODINGS` in `CITNP/models/mixed_context_model.py`;
+`intervention_encoding` and `model_class` resolve exactly as before, and
+`prediction_head: joint` selects the joint counterpart, e.g.
+`LayerwiseMixedContextMoGModel` becomes `JointLayerwiseMixedContextMoGModel`).
+The joint head is defined against a contract, not one encoder: an encoding
+supports it if (a) it returns one token per variable for every query row,
+`[B, Nq, D, d_model]`; (b) query rows never exchange information with each
+other; (c) variable roles come from `CausalInfEncoder.embed`, so the outcome
+role can be switched off in one place. A new encoding gets the joint head by
+meeting the contract and adding an outcome-free encoder
+(`OutcomeFreeEmbeddingMixin` + its encoder), a joint model class
+(`JointPredictionHeadMixin` + its marginal mixture class, with `encoder_cls`
+set to the outcome-free encoder) and one registry entry; a test fails if the
+two registries differ.
+
+- `extra_node`: the metadata position is dropped before the head, so the head
+  sees D variables. The learned variable-index embeddings mean the model as a
+  whole is not node-permutation equivariant and is tied to a maximum D; the
+  head itself stays equivariant.
+- `reg_axis` (memory tokens): each regime is compressed per variable, so
+  dependence between variables inside a regime reaches the query only through
+  the variable attention that precedes the compression. Expect it to be the
+  weakest encoding for joint prediction (an empirical question).
+- `reg_axis` and `reg_axis_full`: every block ends with a per-variable read
+  of the context, so the variable tokens reaching the head are not mixed; set
+  `joint_head_node_attention_layers: 1`. In r1, layerwise and extra_node every
+  block ends with attention across variables, so 0 suffices.
+
+**What the model is.** No variable gets the outcome role: the joint model
+embeds every non-intervened node with the variable-role network, in context
+and query rows. The outcome networks stay in the module (unused), so encoder
+parameter names match marginal checkpoints, but the computation differs from
+the marginal model in the embedding as well as in the head, and the two
+models' representations are not expected to agree. Each query row is scored
+at its own do-value and rows never attend to each other, so the model is one
+function t -> p(X_{-T} | do(X_T = t), C) per task and treatment: a
+conditional density estimator. Nothing enforces consistency between the
+predictions for different interventions; that is assessed empirically.
+Contract: exactly one intervened variable per query group (the loss itself
+accepts any intervened mask, per row).
+
+**Initial covariance scale.** The output layers start like the marginal head's
+(weights x 0.01), so at initialisation the diagonal is about
+softplus(0) = 0.693 (standard deviation about 0.83 on standardised data);
+`joint_minimum_variance` is only a floor. **Rank:** with one intervention at
+D = 5 the density is over four variables, so R = 4 already allows any
+covariance; R = 8 keeps the config usable at larger D.
+
+**Loss.** The head outputs all D variables; the loss pads each intervened
+variable into a dummy coordinate (factor row 0, diagonal 1, mean = target),
+evaluates the D x D mixture with a float64 Cholesky factorisation and removes
+the known constant 0.5 log(2 pi) per dummy coordinate. A failed factorisation
+gives a non-finite loss, so the trainer skips that step.
+
+**Reporting rule.** The joint loss is a density over D - 1 variables, the
+marginal loss over one: **never compare the two losses directly.** Compare a
+joint and a marginal model on marginals through `predict_mixture` (every
+k-shot command works on a joint checkpoint: each treatment's joint is
+predicted once and the requested outcome's marginal is read from it), and
+report the joint metrics below separately.
+
+**Evaluation functions** (`CITNP/evaluation/model_api.py`):
+`predict_joint_mixture` (the joint on the raw data scale, `JointPrediction`),
+`joint_marginal_mixture` (one variable's marginal, same meaning as
+`predict_mixture`), `joint_mixture_mean_and_covariance`, `sample_joint_rows`
+(one component per row, intervened column set to its do-value) and
+`joint_log_density` (density of the non-intervened variables).
+
+**Direct evaluation of the joint:** `kshot-prior-joint`. Marginal scores
+cannot show whether dependence was learned (two joints with identical
+marginals can have any correlation). The command reuses the `kshot-prior`
+tasks, pools and nested contexts and scores, per task, treatment,
+treatment-relative design (`do(T)`, `do(other)`, `random`, `observational`;
+`obs` at k = 0) and k, against the exact interventional joint of the
+linear-Gaussian truth (`LinearSCM.do_joint_dist`; no oracle needed):
+
+- `kl_truth_model_joint`: KL(truth || model joint), nats per do-value, over
+  the non-intervened variables;
+- `kl_truth_model_product`: the same KL for the product of the model's own
+  marginals;
+- `kl_dependence_gain`: their difference, what modelling dependence gains (near
+  zero on tasks with correlated outcomes means none was learned;
+  `truth_mean_abs_correlation` says how correlated the outcomes are);
+- `correlation_error`: mean |off-diagonal correlation of the model's mixture
+  covariance - that of the truth|.
+
+```bash
+python -m CITNP.evaluation kshot-prior-joint --ckpt RUN/best_model.pt \
+    --model_config RUN/resolved_model_config.yaml \
+    --data_config CITNP/experiments/configs/oracle_d5_iw_a15.yaml \
+    --n_tasks 200 --k_list 0,1,3,5 --out kshot_prior_joint.csv
+```
+
+It writes `kshot_prior_joint.csv`, `kshot_prior_joint_meta.json` and
+`kshot_prior_joint_D5_joint.png` (the four scores against k), and refuses
+marginal models.
+
+Configs: `smoke_d5.yaml` (data, five variables) with
+`smoke_d5_model_joint.yaml` (the default method with the joint head) for a
+smoke run, and `oracle_d5_model_m_layerwise_stats_shared_joint.yaml` for the
+D = 5 run on `oracle_d5_iw_a15.yaml` (train with `SKIP_ORACLE_BANK=1`).
+
 ## Information-parity grid (2 x 2)
 
 Question: does a model that sees only the standardised context lose anything

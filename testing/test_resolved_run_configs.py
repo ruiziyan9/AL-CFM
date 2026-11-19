@@ -25,6 +25,7 @@ MODEL_CONFIGS = [
     "oracle_d3_model_m_layerwise_stats_shared.yaml",
     "smoke_d3_model_reg_axis.yaml",
     "smoke_d3_model_reg_axis_full.yaml",
+    "smoke_d5_model_joint.yaml",  # joint head (model configs do not depend on D)
 ]
 
 

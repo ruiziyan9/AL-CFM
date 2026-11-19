@@ -21,7 +21,7 @@ from CITNP.utils.loss import MixtureGaussianLoss
 D, NC, NQ, B = 3, 20, 6, 4
 
 
-def tiny_config() -> CausalInfModelConfig:
+def tiny_config(num_nodes: int = D) -> CausalInfModelConfig:
     return CausalInfModelConfig(
         d_model=32,
         emb_depth=2,
@@ -29,7 +29,7 @@ def tiny_config() -> CausalInfModelConfig:
         nhead=4,
         dropout=0.0,
         num_layers_encoder=4,
-        num_nodes=D,
+        num_nodes=num_nodes,
         sample_attn_mode="MHCA",
         linear_attention=False,
         mean_loss_across_samples=False,

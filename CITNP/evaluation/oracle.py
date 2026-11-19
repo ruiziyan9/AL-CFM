@@ -482,6 +482,26 @@ class LinearSCM:
         A = np.linalg.inv(np.eye(d) - B.T)
         return A[Y, T], float((A[Y] ** 2) @ s2)
 
+    def do_joint_dist(self, T: int) -> tuple[np.ndarray, np.ndarray]:
+        """Exact interventional joint: (slopes [D], covariance [D, D]) with
+        X | do(X_T = t) ~ N(slopes * t, covariance).
+
+        Same algebra as `do_dist` (A = inv(I - B_do^T), slopes = A[:, T],
+        covariance = A diag(s2_do) A^T); slopes[T] = 1 and row and column T
+        of the covariance are zero (X_T is fixed at t), so do_dist(T, Y) is
+        (slopes[Y], covariance[Y, Y])."""
+        d = len(self.s2)
+        B = self.B.copy()
+        B[:, T] = 0.0
+        s2 = self.s2.copy()
+        s2[T] = 0.0
+        A = np.linalg.inv(np.eye(d) - B.T)
+        slopes = A[:, T].copy()
+        covariance = A @ np.diag(s2) @ A.T
+        covariance[T, :] = 0.0
+        covariance[:, T] = 0.0
+        return slopes, covariance
+
     def do_logpdf(self, T, Y, t, y):
         slope, var = self.do_dist(T, Y)
         return -0.5 * (np.log(2 * np.pi * var) + (y - slope * t) ** 2 / var)

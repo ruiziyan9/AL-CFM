@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from CITNP.models.causaltransformercomponents import CausalInfEncoder
+from CITNP.models.prediction_heads import OutcomeFreeEmbeddingMixin
 from CITNP.models.regime_axis.block import RegimeAxisBlock
 from CITNP.models.regime_axis.encoding import FlagInjection
 from CITNP.models.regime_axis.grouping import group_regimes
@@ -138,3 +139,7 @@ class RegimeAxisEncoder(CausalInfEncoder):
                 inject_sample=self.flag.inject(code, i, "sample"),
             )
         return hq, hq.shape[1]
+
+
+class JointRegimeAxisEncoder(OutcomeFreeEmbeddingMixin, RegimeAxisEncoder):
+    """RegimeAxisEncoder without the outcome role (joint prediction head)."""

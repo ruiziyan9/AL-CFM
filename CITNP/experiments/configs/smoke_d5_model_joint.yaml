@@ -1,0 +1,6 @@
+# Smoke-test model config of the joint prediction head: the default method
+# (smoke_d3_model.yaml: layer-wise, shared flag network) with
+# prediction_head: joint. Model configs do not depend on D; pair it with
+# smoke_d5.yaml.
+extends: smoke_d3_model.yaml
+prediction_head: joint

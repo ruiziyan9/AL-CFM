@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from CITNP.networks.attention_layers import MultiHeadSelfAttentionLayer
+
 
 def build_mlp(dim_in, dim_hid, dim_out, depth):
     assert depth >= 2, "MLP depth must be at least 2."
@@ -94,6 +96,165 @@ class MoGPredictor(BasePredictor):
         std = F.softplus(pre_std)  # [B, N, D, K]
         weights = F.softmax(logits, dim=-1)  # [B, N, D, K]
         return mean, std, weights
+
+
+class JointMoGPredictor(nn.Module):
+    """Joint prediction head: per query row, a K-component mixture of
+    D-variate Gaussians with low-rank-plus-diagonal covariances,
+
+        p(x) = sum_k w_k N(x; mu_k, F_k F_k^T + diag(v_k)),
+
+    read from the tokens of all D variables of the row. The idea follows the
+    decoder head `GMMNetwork` of ACTIVA (Sauter et al.,
+    github.com/sa-and/ACTIVA, models.py); this is an independent PyTorch
+    implementation without its latent variable.
+
+    Per query row, with x [D, d_model] the row's variable tokens:
+    1. optional mixing: `node_attention_layers` self-attention layers over the
+       D tokens of the row (rows never attend to each other; no positional
+       information, so the head stays node-permutation equivariant). In the
+       r1, layerwise and extra_node encodings every encoder block ends with
+       attention across variables, so 0 (the default) suffices. In reg_axis
+       and reg_axis_full every block ends with a per-variable read of the
+       context, so what a variable learned in its last read has not reached
+       the other variables; their joint configs should use 1, since the
+       covariance needs the tokens of two variables to agree.
+    2. trunk: hidden = gelu(MLP(x)) per variable (as `BasePredictor.pred`);
+    3. per variable j and component k: mu_kj (Linear(d_model, K)), the factor
+       row F_kj [R] (Linear(d_model, K * R)) and
+       v_kj = softplus(Linear(d_model, K)) + minimum_variance;
+    4. mixture logits: Linear(d_model, K) of the mean of hidden over the D
+       variables.
+    No parameter depends on D, so the head is node-permutation equivariant
+    and works for any number of variables.
+
+    Initial scale: the output layers are initialised like
+    `BasePredictor._init_weights` (Kaiming, zero bias, weights x 0.01), so at
+    initialisation the raw diagonal output is about 0 and the diagonal is
+    about softplus(0) = 0.693 (standard deviation about 0.83 on standardised
+    data), not `minimum_variance`, which is only a floor. Means and factor
+    entries start near 0 and the mixture weights near uniform.
+
+    The parameters output for an intervened variable are auxiliary: the loss
+    never uses them and they are not a prediction for that variable.
+
+    Args:
+    -----
+    - d_model (int): token width.
+    - depth (int): depth of the trunk MLP (>= 2).
+    - num_mixture_components (int): K >= 1.
+    - covariance_rank (int): R >= 1, columns of each factor F_k.
+    - minimum_variance (float): floor added to every diagonal entry v_kj.
+    - node_attention_layers (int): self-attention layers over the variables
+      of a row before the trunk (>= 0).
+    - nhead, dim_feedforward (int): settings of those layers, as for the
+      encoder's node attention (pre-norm, GELU, no dropout, softmax
+      attention).
+    """
+
+    output_heads = (
+        "component_mean",
+        "covariance_factor",
+        "covariance_diagonal",
+        "mixture_logits",
+    )
+
+    def __init__(
+        self,
+        d_model: int,
+        depth: int,
+        num_mixture_components: int,
+        covariance_rank: int,
+        minimum_variance: float,
+        node_attention_layers: int,
+        nhead: int,
+        dim_feedforward: int,
+    ):
+        super().__init__()
+        if num_mixture_components < 1:
+            raise ValueError("num_mixture_components must be >= 1")
+        if covariance_rank < 1:
+            raise ValueError("covariance_rank must be >= 1")
+        if not minimum_variance > 0:
+            raise ValueError("minimum_variance must be > 0")
+        if node_attention_layers < 0:
+            raise ValueError("node_attention_layers must be >= 0")
+        self.num_mixture_components = num_mixture_components
+        self.covariance_rank = covariance_rank
+        self.minimum_variance = float(minimum_variance)
+        self.node_attention = nn.ModuleList(
+            MultiHeadSelfAttentionLayer(
+                embed_dim=d_model,
+                num_heads=nhead,
+                head_dim=d_model // nhead,
+                feedforward_dim=dim_feedforward,
+                p_dropout=0.0,
+                norm_first=True,
+                activation=nn.GELU(),
+                linear=False,
+            )
+            for _ in range(node_attention_layers)
+        )
+        self.pred = build_mlp(d_model, d_model, dim_out=d_model, depth=depth)
+        K, R = num_mixture_components, covariance_rank
+        self.mean_layer = nn.Linear(d_model, K)
+        self.factor_layer = nn.Linear(d_model, K * R)
+        self.diagonal_layer = nn.Linear(d_model, K)
+        self.logits_layer = nn.Linear(d_model, K)
+        self._init_weights()
+
+    def output_layers(self) -> tuple[nn.Linear, ...]:
+        return (
+            self.mean_layer,
+            self.factor_layer,
+            self.diagonal_layer,
+            self.logits_layer,
+        )
+
+    def _init_weights(self):
+        """As `BasePredictor._init_weights`, for each output layer."""
+        for layer in self.output_layers():
+            nn.init.kaiming_normal_(layer.weight)
+            nn.init.zeros_(layer.bias)
+            layer.weight.data *= 0.01
+
+    def forward(self, node_encoding: torch.Tensor):
+        """
+        Args:
+        -----
+        - node_encoding (torch.Tensor): [B, Nq, D, d_model], the tokens of
+            all variables of every query row (any leading dimensions work).
+
+        Returns:
+        --------
+        - component_mean: [B, Nq, K, D].
+        - covariance_factor: [B, Nq, K, D, R].
+        - covariance_diagonal: [B, Nq, K, D], >= minimum_variance.
+        - mixture_logits: [B, Nq, K].
+        """
+        x = node_encoding
+        if len(self.node_attention) > 0:
+            # [B * Nq, D, d_model]: each row's variables attend to each other
+            rows = x.reshape(-1, *x.shape[-2:])
+            for layer in self.node_attention:
+                rows = layer(rows, mask=None)
+            x = rows.reshape(x.shape)
+        K, R = self.num_mixture_components, self.covariance_rank
+        hidden = F.gelu(self.pred(x))  # [B, Nq, D, d_model]
+        # [B, Nq, D, K] -> [B, Nq, K, D]
+        component_mean = self.mean_layer(hidden).transpose(-1, -2)
+        # [B, Nq, D, K * R] -> [B, Nq, D, K, R] -> [B, Nq, K, D, R]
+        factor = self.factor_layer(hidden).unflatten(-1, (K, R))
+        covariance_factor = factor.transpose(-3, -2)
+        diagonal = F.softplus(self.diagonal_layer(hidden)) + self.minimum_variance
+        covariance_diagonal = diagonal.transpose(-1, -2)  # [B, Nq, K, D]
+        mixture_logits = self.logits_layer(hidden.mean(dim=-2))  # [B, Nq, K]
+        return (
+            component_mean,
+            covariance_factor,
+            covariance_diagonal,
+            mixture_logits,
+        )
 
 
 class FlashMHCA(nn.Module):

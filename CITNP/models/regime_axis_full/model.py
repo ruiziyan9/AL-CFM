@@ -3,11 +3,13 @@
 The upstream model supplies the target masking, outcome extraction,
 predictor and loss; `_RegimeAxisFullMixin` swaps in RegimeAxisFullEncoder and
 forwards `context_int_mask`, `context_scale` and (optionally)
-`context_regime` to it. This module must not import
+`context_regime` to it. The forward pass is `_encode_query_tokens` followed
+by the prediction head (`MarginalPredictionHeadMixin`, or
+`JointPredictionHeadMixin` for the joint model). This module must not import
 CITNP.models.mixed_context_model (which imports this package).
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from torch import Tensor
 
@@ -15,9 +17,15 @@ from CITNP.models.causalinferencemodel import (
     CausalInferenceModel,
     MoGCausalInferenceModel,
 )
-from CITNP.models.regime_axis_full.encoder import RegimeAxisFullEncoder
+from CITNP.models.prediction_heads import (
+    JointPredictionHeadMixin,
+    MarginalPredictionHeadMixin,
+)
+from CITNP.models.regime_axis_full.encoder import (
+    JointRegimeAxisFullEncoder,
+    RegimeAxisFullEncoder,
+)
 from CITNP.models.scale_conditioning import check_scale_conditioning
-from CITNP.utils.outputs import ModelOutput
 
 # Parameters that only reg_axis_full models have (no upstream counterpart).
 REG_AXIS_FULL_PARAM_PREFIXES = ("encoder.blocks.", "encoder.flag.")
@@ -29,13 +37,8 @@ REG_AXIS_FULL_CONFIG_KEYS = (
     "reg_axis_count_feature",
 )
 
-if TYPE_CHECKING:
-    _MixinBase = CausalInferenceModel
-else:
-    _MixinBase = object
 
-
-class _RegimeAxisFullMixin(_MixinBase):
+class _RegimeAxisFullMixin(MarginalPredictionHeadMixin):
     """Swaps in RegimeAxisFullEncoder; forward matches
     _MixedContextMixin.forward.
 
@@ -43,12 +46,14 @@ class _RegimeAxisFullMixin(_MixinBase):
     model's). `sample_attn_mode` is ignored; `linear_attention` must be False.
     """
 
+    encoder_cls: type[RegimeAxisFullEncoder] = RegimeAxisFullEncoder
+
     def __init__(self, config):
         super().__init__(config)  # type: ignore[call-arg]
         self.scale_conditioning = check_scale_conditioning(
             getattr(config, "scale_conditioning", "none")
         )
-        self.encoder = RegimeAxisFullEncoder(
+        self.encoder = self.encoder_cls(
             d_model=self.d_model,
             emb_depth=self.emb_depth,
             dim_feedforward=self.dim_feedforward,
@@ -70,16 +75,17 @@ class _RegimeAxisFullMixin(_MixinBase):
         context_data: Tensor,
         target_data: Tensor,
         intervention_index: Tensor,
-        outcome_index: Tensor,
+        outcome_index: Optional[Tensor] = None,
         context_int_mask: Optional[Tensor] = None,
         variable_mask: Optional[Tensor] = None,
         context_scale: Optional[Tensor] = None,
         context_regime: Optional[Tensor] = None,
-    ) -> ModelOutput:
+    ):
         """
         Args:
             context_data: [B, Nc, D, 1]; target_data: [B, Nq, D, 1].
-            intervention_index / outcome_index: [B] long (T / Y).
+            intervention_index / outcome_index: [B] long (T / Y); outcome_index
+                may be None only for the joint model (no outcome role).
             context_int_mask: [B, Nc, D] bool; None = all observational.
             variable_mask: must be None (not supported).
             context_scale: [B, D, 2] (log std, mean / std); required iff
@@ -88,8 +94,38 @@ class _RegimeAxisFullMixin(_MixinBase):
 
         Returns:
             ModelOutput with pred_mean / pred_std (and weights for MoG),
-            each [B, Nq, ...] as for the other mixed-context models.
+            each [B, Nq, ...] as for the other mixed-context models; a
+            JointModelOutput for the joint model.
         """
+        query_tokens = self._encode_query_tokens(
+            context_data=context_data,
+            target_data=target_data,
+            intervention_index=intervention_index,
+            outcome_index=outcome_index,
+            context_int_mask=context_int_mask,
+            variable_mask=variable_mask,
+            context_scale=context_scale,
+            context_regime=context_regime,
+        )
+        return self._predict_from_query_tokens(
+            query_tokens, intervention_index, outcome_index
+        )
+
+    def _encode_query_tokens(
+        self,
+        context_data: Tensor,
+        target_data: Tensor,
+        intervention_index: Tensor,
+        outcome_index: Optional[Tensor],
+        context_int_mask: Optional[Tensor],
+        variable_mask: Optional[Tensor],
+        context_scale: Optional[Tensor],
+        context_regime: Optional[Tensor],
+    ) -> Tensor:
+        """The encoder part of `forward`: query tokens [B, Nq, D, d_model].
+        Arguments as for `forward`; without outcome_index the encoder gets
+        intervention_index as its outcome_indices (only outcome-free encoders
+        are called that way)."""
         if variable_mask is not None:
             raise ValueError("reg_axis_full does not support variable_mask")
         if self.scale_conditioning == "stats" and context_scale is None:
@@ -100,7 +136,9 @@ class _RegimeAxisFullMixin(_MixinBase):
         rep, num_trgt = self.encoder.encode(
             context_data=context_data,
             target_data=masked,
-            outcome_indices=outcome_index,
+            outcome_indices=(
+                intervention_index if outcome_index is None else outcome_index
+            ),
             intervention_indices=intervention_index,
             context_int_mask=context_int_mask,
             context_scale=(
@@ -108,14 +146,7 @@ class _RegimeAxisFullMixin(_MixinBase):
             ),
             context_regime=context_regime,
         )
-        outcome_encoding, _ = self._extract_outcome_representation(
-            representation=rep, outcome_index=outcome_index, num_trgt=num_trgt
-        )
-        if self.predictor.output_heads == ("mean", "std"):
-            mean, std = self._predict(outcome_encoding)
-            return ModelOutput(pred_mean=mean, pred_std=std)
-        mean, std, weights = self._predict(outcome_encoding)
-        return ModelOutput(pred_mean=mean, pred_std=std, weights=weights)
+        return rep[:, -num_trgt:]
 
 
 class RegimeAxisFullMixedContextModel(_RegimeAxisFullMixin, CausalInferenceModel):
@@ -126,3 +157,15 @@ class RegimeAxisFullMixedContextMoGModel(
     _RegimeAxisFullMixin, MoGCausalInferenceModel
 ):
     """Mixture-of-Gaussians model with the full regime-axis encoding."""
+
+
+class JointRegimeAxisFullMixedContextMoGModel(
+    JointPredictionHeadMixin, RegimeAxisFullMixedContextMoGModel
+):
+    """The reg_axis_full encoding with the joint prediction head and no outcome
+    role (CITNP/models/prediction_heads.py). Set
+    joint_head_node_attention_layers to 1: every reg_axis_full block ends with a
+    per-variable read of the context, so the variable tokens reaching the
+    head have not been mixed."""
+
+    encoder_cls = JointRegimeAxisFullEncoder
