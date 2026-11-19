@@ -34,7 +34,7 @@ regime-axis packages (they import it).
 
 import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 import torch
 import torch.nn.functional as F
@@ -285,9 +285,13 @@ class JointPredictionHeadMixin(_ModelMixinBase):
             raise TypeError("the joint head expects a JointModelOutput")
         if target.ndim == 4:
             target = target.squeeze(-1)  # [B, Nq, D]
+        # self.loss / self.eval_loss are typed BaseLoss upstream; this mixin
+        # sets both to JointMixtureGaussianLoss
         if self.training:
-            return self.loss.calculate_loss(model_output, target)
-        return self.eval_loss.calculate_loss(model_output, target, test=test)
+            loss = cast(JointMixtureGaussianLoss, self.loss)
+            return loss.calculate_loss(model_output, target)
+        eval_loss = cast(JointMixtureGaussianLoss, self.eval_loss)
+        return eval_loss.calculate_loss(model_output, target, test=test)
 
 
 class OutcomeFreeEmbeddingMixin(_EncoderMixinBase):

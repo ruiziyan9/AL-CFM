@@ -27,7 +27,7 @@ from CITNP.models.mixed_context_model import (
 from CITNP.utils.config_files import load_config_mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_mixed_context_model import tiny_config  # noqa: E402
+from test_mixed_context_model import tiny_config
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIGS = REPO / "CITNP" / "experiments" / "configs"
