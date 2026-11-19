@@ -1,4 +1,4 @@
-# Mixed-context MACE-TNP training (design R1)
+# Mixed-context MACE-TNP training
 
 The model predicts **p(X_Y | do(X_T = t), C)**, where the context C mixes
 observational rows and rows from interventional experiments.
