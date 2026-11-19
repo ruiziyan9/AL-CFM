@@ -376,7 +376,9 @@ def test_observational_design_appears_for_every_pair():
     assert (obs["intervened_nodes"] == "").all()  # no intervened nodes
 
 
-@pytest.mark.parametrize("D, with_oracle", [(3, True), (5, False)])
+@pytest.mark.parametrize(
+    "D, with_oracle", [(3, True), (5, False)]
+)
 def test_observational_pool_leaves_other_designs_unchanged(D, with_oracle):
     cfg = CFG if D == 3 else CFG_FIVE_VARIABLES
     kw = dict(log_graph_prior=uniform_prior(D)) if with_oracle else {}

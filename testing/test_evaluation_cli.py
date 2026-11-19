@@ -107,12 +107,7 @@ def test_kshot_prior_smoke(tmp_path):
     df = pd.read_csv(out)
     assert (tmp_path / "kp_by_t.csv").stat().st_size > 0
     assert set(df["design"]) == {
-        "obs",
-        "random",
-        "do(T)",
-        "do(Y)",
-        "do(other)",
-        "observational",
+        "obs", "random", "do(T)", "do(Y)", "do(other)", "observational",
     }
     assert set(df["k"]) == {0, 1} and set(df["task"]) == {0, 1}
     assert df["kl_oracle_model"].notna().all()
@@ -220,14 +215,8 @@ def test_kshot_example_draws_from_a_graph_and_evaluates(tmp_path):
     ])  # fmt: skip
     df = pd.read_csv(out)
     assert set(df["design"]) == {
-        "obs",
-        "do(X1)",
-        "do(X2)",
-        "do(X3)",
-        "do(X4)",
-        "do(X5)",
-        "random",
-        "observational",
+        "obs", "do(X1)", "do(X2)", "do(X3)", "do(X4)", "do(X5)",
+        "random", "observational",
     }
     assert (df["T"] == 2).all() and (df["Y"] == 4).all()
     assert df["graph"].eq(_EXAMPLE_GRAPH).all()
@@ -275,9 +264,8 @@ def test_kshot_example_reproduces_from_the_saved_file(tmp_path):
     pd.testing.assert_frame_equal(pd.read_csv(drawn), pd.read_csv(from_file))
 
 
-def _write_example_csv(
-    path, designs=("do(X1)", "do(X2)", "do(X3)", "random", "observational")
-):
+def _write_example_csv(path, designs=("do(X1)", "do(X2)", "do(X3)",
+                                       "random", "observational")):
     """A synthetic kshot-example CSV (no model needed) for the plot tests."""
     import numpy as np
     import pandas as pd
@@ -333,24 +321,15 @@ def test_plot_kshot_example_default_draws_every_design(tmp_path, monkeypatch):
     assert (tmp_path / "ex_kl.png").stat().st_size > 0
     # the KL figure draws every design, in canonical order
     assert labels["ex_kl.png"] == [
-        "do(X1)",
-        "do(X2)",
-        "do(X3)",
-        "random",
-        "observational",
+        "do(X1)", "do(X2)", "do(X3)", "random", "observational"
     ]
     # the effect figure draws the same designs plus the true-effect line
     effect_designs = [
-        la
-        for la in labels["ex_effect.png"]
+        la for la in labels["ex_effect.png"]
         if la.startswith(("do", "ran", "obs"))
     ]
     assert effect_designs == [
-        "do(X1)",
-        "do(X2)",
-        "do(X3)",
-        "random",
-        "observational",
+        "do(X1)", "do(X2)", "do(X3)", "random", "observational"
     ]
 
 
@@ -391,17 +370,13 @@ def test_eval_kshot_example_script_dry_run_both_ways():
         return subprocess.run(
             ["bash", str(script)],
             env={**os.environ, **base, **env},
-            capture_output=True,
-            text=True,
-            check=True,
+            capture_output=True, text=True, check=True,
         ).stdout
 
     # drawn from a graph, model only
     drawn = dry_run(
-        DATA_CFG="d5.yaml",
-        FIXED_GRAPH_EDGES="0->1,1->2,2->4,0->3,3->4,0->2",
-        NO_ORACLE="1",
-        DESIGNS="do(X3),random,observational",
+        DATA_CFG="d5.yaml", FIXED_GRAPH_EDGES="0->1,1->2,2->4,0->3,3->4,0->2",
+        NO_ORACLE="1", DESIGNS="do(X3),random,observational",
     )
     assert "kshot-example" in drawn
     assert '--fixed_graph_edges "0->1,1->2,2->4,0->3,3->4,0->2"' in drawn
@@ -739,26 +714,17 @@ def test_plot_kshot_prior_names_the_fixed_graph(tmp_path, monkeypatch):
         save(fig, path, dpi)
 
     monkeypatch.setattr(plots, "_save", save_and_record)
-    for name, edges in [
-        ("fixed", "0->1,0->2,0->3,1->2,2->4,3->4"),
-        ("prior", ""),
-    ]:
+    for name, edges in [("fixed", "0->1,0->2,0->3,1->2,2->4,3->4"), ("prior", "")]:
         csv = tmp_path / f"{name}_part0.csv"
         pd.DataFrame(rows).assign(fixed_graph=edges).to_csv(csv, index=False)
-        (tmp_path / f"{name}_part0_meta.json").write_text(
-            json.dumps(
-                {
-                    "data_config": {"sha256": "a" * 64},
-                    "with_oracle": False,
-                }
-            )
-        )
+        (tmp_path / f"{name}_part0_meta.json").write_text(json.dumps({
+            "data_config": {"sha256": "a" * 64}, "with_oracle": False,
+        }))
         main(["plot-kshot-prior", str(csv)])
     for s in ("main", "by_relation"):
-        assert (
-            "fixed graph 0->1, 0->2, 0->3, 1->2, 2->4, 3->4"
-            in titles[f"fixed_D5_{s}.png"]
-        )
+        assert "fixed graph 0->1, 0->2, 0->3, 1->2, 2->4, 3->4" in titles[
+            f"fixed_D5_{s}.png"
+        ]
         assert "fixed graph" not in titles[f"prior_D5_{s}.png"]
         assert (tmp_path / f"fixed_D5_{s}.png").stat().st_size > 0
 
@@ -926,17 +892,13 @@ def test_plot_kshot_prior_draws_the_observational_design(tmp_path, monkeypatch):
         ax = fig.axes[0]
         labelled = {
             ln.get_label(): ln.get_linestyle()
-            for ln in ax.get_lines()
-            if not ln.get_label().startswith("_")
+            for ln in ax.get_lines() if not ln.get_label().startswith("_")
         }
         lines[Path(path).name] = labelled
         save(fig, path, dpi)
 
     monkeypatch.setattr(plots, "_save", record)
-    for name, df in [
-        ("with", full),
-        ("without", full[full["design"] != "observational"]),
-    ]:
+    for name, df in [("with", full), ("without", full[full["design"] != "observational"])]:
         csv = tmp_path / f"{name}_part0.csv"
         df.to_csv(csv, index=False)
         (tmp_path / f"{name}_part0_meta.json").write_text(

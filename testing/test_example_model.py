@@ -95,9 +95,9 @@ def test_hand_written_file_loads(tmp_path):
     model = em.load_example_model(path)
     assert model.num_variables == 3
     assert model.scm.B[0, 1] == 0.9 and model.scm.B[1, 2] == -0.4
-    assert np.array_equal(
-        model.graph, np.array([[0, 1, 0], [0, 0, 1], [0, 0, 0]])
-    )
+    assert np.array_equal(model.graph, np.array([
+        [0, 1, 0], [0, 0, 1], [0, 0, 0]
+    ]))
     # the true effect of X1 on X3 along the chain is 0.9 * -0.4
     assert model.true_effect(0, 2) == pytest.approx(0.9 * -0.4)
 

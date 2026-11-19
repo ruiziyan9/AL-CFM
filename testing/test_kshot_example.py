@@ -87,24 +87,16 @@ def test_designs_are_named_by_what_they_add():
     assert tasks.example_design_name("random") == "random"
     assert tasks.example_design_name("observational") == "observational"
     assert tasks.example_design_names(5) == [
-        "do(X1)",
-        "do(X2)",
-        "do(X3)",
-        "do(X4)",
-        "do(X5)",
-        "random",
-        "observational",
+        "do(X1)", "do(X2)", "do(X3)", "do(X4)", "do(X5)",
+        "random", "observational",
     ]
 
 
 def test_every_design_appears_for_the_single_query():
     model = example_d3()
     df, df_t = run_example(
-        model,
-        normal_predictor,
-        with_oracle=True,
-        data_cfg=CFG,
-        log_graph_prior=uniform_prior(3),
+        model, normal_predictor, with_oracle=True,
+        data_cfg=CFG, log_graph_prior=uniform_prior(3),
     )
     # obs at k = 0, and do(X1..X3), random, observational at k = 2
     assert set(df["design"]) == {"obs", *tasks.example_design_names(3)}
@@ -125,10 +117,7 @@ def test_model_columns_equal_with_and_without_oracle():
     model = example_d3()
     predict = untrained_model_predictor(3)
     on, on_t = run_example(
-        model,
-        predict,
-        with_oracle=True,
-        data_cfg=CFG,
+        model, predict, with_oracle=True, data_cfg=CFG,
         log_graph_prior=uniform_prior(3),
     )
     off, off_t = run_example(model, predict, with_oracle=False)
@@ -201,12 +190,7 @@ def test_truth_predictor_has_zero_kl_and_the_true_effect():
     T, Y = 0, 2
     truth_predict = make_truth_predictor(model.scm, T, Y)
     df, _ = run_example(
-        model,
-        truth_predict,
-        T=T,
-        Y=Y,
-        repetitions=4,
-        n_y=400,
+        model, truth_predict, T=T, Y=Y, repetitions=4, n_y=400,
         with_oracle=False,
     )
     true_effect = model.true_effect(T, Y)

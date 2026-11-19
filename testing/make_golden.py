@@ -64,7 +64,9 @@ def run_main(main, args: list[str]) -> None:
         sys.argv = argv
 
 
-def record_kshot(kshot_main, ckpt: str, model_cfg: str, out_dir: Path) -> None:
+def record_kshot(
+    kshot_main, ckpt: str, model_cfg: str, out_dir: Path
+) -> None:
     """Write kshot.csv and kshot_by_t.csv of one model to `out_dir`, and
     delete the figures the command draws next to them."""
     run_main(
