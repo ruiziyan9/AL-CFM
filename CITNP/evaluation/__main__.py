@@ -649,10 +649,19 @@ def _run_kshot_prior_joint(
             )
         dfs.append(
             run_kshot_prior_joint(
-                model, data_cfg, D=D, device=device, k_list=k_list,
-                n_tasks=a.n_tasks, task_offset=a.task_offset,
-                base_seed=a.base_seed, n_obs=n_obs, grid_eps=a.grid_eps,
-                n_t=a.n_t, n_y=a.n_y, fixed_graph=fixed_graph,
+                model,
+                data_cfg,
+                D=D,
+                device=device,
+                k_list=k_list,
+                n_tasks=a.n_tasks,
+                task_offset=a.task_offset,
+                base_seed=a.base_seed,
+                n_obs=n_obs,
+                grid_eps=a.grid_eps,
+                n_t=a.n_t,
+                n_y=a.n_y,
+                fixed_graph=fixed_graph,
                 with_observational_pool=not a.no_observational_pool,
             )  # fmt: skip
         )

@@ -214,8 +214,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--intervention_encoding",
         default=None,
         choices=sorted(INTERVENTION_ENCODINGS),
-        help="how intervention information enters the model "
-        "(default: layerwise)",
+        help="how intervention information enters the model (default: layerwise)",
     )
 
     extra.add_argument(
@@ -711,7 +710,6 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
         yaml.safe_dump(
             _json_round_trip(dataclasses.asdict(data_cfg)), f, sort_keys=False
         )
-
 
     if args.dataset_config:
         record_presimulated_data(args, chunk_directories, model_save_dir)

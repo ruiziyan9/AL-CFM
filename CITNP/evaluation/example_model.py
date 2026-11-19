@@ -52,9 +52,7 @@ class ExampleModel:
     scm: LinearSCM
     graph: np.ndarray
     do_dist: dict
-    provenance: dict = field(
-        default_factory=lambda: {"source": HAND_WRITTEN}
-    )
+    provenance: dict = field(default_factory=lambda: {"source": HAND_WRITTEN})
 
     @property
     def num_variables(self) -> int:
@@ -129,15 +127,16 @@ def _scm_from_edges(num_variables, edges, noise_variances):
     for edge in edges:
         if isinstance(edge, dict):
             source, target, weight = (
-                edge["source"], edge["target"], edge["weight"]
+                edge["source"],
+                edge["target"],
+                edge["weight"],
             )
         else:
             source, target, weight = edge
         source, target = int(source), int(target)
         if not (0 <= source < D and 0 <= target < D):
             raise ValueError(
-                f"edge ({source}->{target}) uses a node index outside "
-                f"0..{D - 1}"
+                f"edge ({source}->{target}) uses a node index outside 0..{D - 1}"
             )
         if source == target:
             raise ValueError(f"edge ({source}->{target}) is a self loop")
@@ -213,7 +212,10 @@ def load_example_model(path) -> ExampleModel:
 # Drawing a model from a data config's prior
 # --------------------------------------------------------------------------- #
 def draw_example_model(
-    cfg, graph: np.ndarray, base_seed: int, task: int = 0,
+    cfg,
+    graph: np.ndarray,
+    base_seed: int,
+    task: int = 0,
     data_config_path: str | None = None,
 ) -> ExampleModel:
     """Draw one model from `cfg`'s prior on the fixed `graph`, with weights,

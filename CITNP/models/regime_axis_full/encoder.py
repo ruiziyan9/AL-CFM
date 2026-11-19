@@ -146,5 +146,7 @@ class RegimeAxisFullEncoder(CausalInfEncoder):
         return hq, hq.shape[1]
 
 
-class JointRegimeAxisFullEncoder(OutcomeFreeEmbeddingMixin, RegimeAxisFullEncoder):
+class JointRegimeAxisFullEncoder(
+    OutcomeFreeEmbeddingMixin, RegimeAxisFullEncoder
+):
     """RegimeAxisFullEncoder without the outcome role (joint prediction head)."""

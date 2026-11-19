@@ -386,6 +386,8 @@ def _plot_observational_design(ax, dd: pd.DataFrame, col: str) -> None:
         ax, mu[col], se[col], _OBSERVATIONAL_COLOR,
         ls=_OBSERVATIONAL_LINESTYLE, label=OBSERVATIONAL_DESIGN,
     )  # fmt: skip
+
+
 _ID_COLS = ["D", "task", "T", "Y", "design", "k"]
 
 
@@ -675,9 +677,7 @@ def _example_header(df: pd.DataFrame):
     return D, T, Y, reps, named, query
 
 
-def plot_kshot_example_kl(
-    df: pd.DataFrame, prefix: str, designs=None
-) -> None:
+def plot_kshot_example_kl(df: pd.DataFrame, prefix: str, designs=None) -> None:
     """<prefix>_kl.png: KL(truth || model) against k, one line per design
     (mean over repetitions, +/- s.e. band), the observational design grey and
     dashed. `designs` selects and orders the lines (see `example_design_order`).

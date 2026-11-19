@@ -261,10 +261,10 @@ def example_design_name(pool_key) -> str:
 def example_design_names(D: int) -> list[str]:
     """Every `kshot-example` design, in a fixed order: do(X1) .. do(XD), then
     the random pool and the extra-observational pool."""
-    return (
-        [example_design_name(j) for j in range(D)]
-        + ["random", OBSERVATIONAL_DESIGN]
-    )
+    return [example_design_name(j) for j in range(D)] + [
+        "random",
+        OBSERVATIONAL_DESIGN,
+    ]
 
 
 def validate_fixed_graph(graph, D: int, cfg) -> np.ndarray:
@@ -280,9 +280,7 @@ def validate_fixed_graph(graph, D: int, cfg) -> np.ndarray:
     if adj.ndim != 2 or adj.shape[0] != adj.shape[1]:
         raise ValueError(f"fixed graph must be square, got shape {adj.shape}")
     if adj.shape[0] != D:
-        raise ValueError(
-            f"fixed graph has {adj.shape[0]} nodes but D = {D}"
-        )
+        raise ValueError(f"fixed graph has {adj.shape[0]} nodes but D = {D}")
     if D not in [int(d) for d in cfg.num_variables]:
         raise ValueError(
             f"D = {D} is not in the data config's num_variables "
@@ -351,9 +349,7 @@ def parse_graph_edges(text: str, D: int) -> np.ndarray:
     return adjacency
 
 
-def prior_scm(
-    cfg, i: int, base_seed: int = 9101, D: int = 3, fixed_graph=None
-):
+def prior_scm(cfg, i: int, base_seed: int = 9101, D: int = 3, fixed_graph=None):
     """SCM, graph and do-value distribution of task `i` of the training prior,
     optionally with the graph fixed.
 

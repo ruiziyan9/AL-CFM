@@ -408,10 +408,15 @@ def test_outcome_free(cls, layers):
             reference = model(**inp, outcome_index=None)
             for Y in ([1, 3, 0, 2], [4, 4, 4, 4]):
                 out = model(**inp, outcome_index=torch.tensor(Y))
-                for name in ("component_mean", "covariance_factor",
-                             "covariance_diagonal", "mixture_logits"):
-                    assert torch.equal(getattr(out, name),
-                                       getattr(reference, name)), name
+                for name in (
+                    "component_mean",
+                    "covariance_factor",
+                    "covariance_diagonal",
+                    "mixture_logits",
+                ):
+                    assert torch.equal(
+                        getattr(out, name), getattr(reference, name)
+                    ), name
     finally:
         for h in hooks:
             h.remove()

@@ -319,9 +319,7 @@ def _score_model_query(
 
     fields = {"kl_truth_model": float(kl_tm.mean())}
     if nf_par is not None:
-        kl_tm_nf = kl_mc(
-            lp_true, mix_logpdf(y_true, *nf_par, chunk=_MIX_CHUNK)
-        )
+        kl_tm_nf = kl_mc(lp_true, mix_logpdf(y_true, *nf_par, chunk=_MIX_CHUNK))
         fields["kl_truth_model_noflag"] = float(kl_tm_nf.mean())
     fields["slope_truth"] = float(b)
     if naive is not None:
