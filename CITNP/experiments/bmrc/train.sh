@@ -7,7 +7,7 @@
 #
 #   mkdir -p /gpfs3/well/cebam/users/$USER/alcfm/logs
 #   DATA_CFG=CITNP/experiments/configs/oracle_d3_iw_a15.yaml \
-#   MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m.yaml \
+#   MODEL_CFG=CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml \
 #       sbatch CITNP/experiments/bmrc/train.sh
 #
 #   DATA_CFG, MODEL_CFG  required (DATA_CFG may be left unset when DATASET_CONFIG
@@ -75,7 +75,7 @@ if [ -z "${DATA_CFG:-}" ] && [ -n "$DATASET_CONFIG" ]; then
   DATA_CFG=$(sed -n 's/^prior_config: *\([^ #]*\).*/\1/p' "$DATASET_CONFIG")
 fi
 DATA_CFG=${DATA_CFG:?set DATA_CFG, e.g. CITNP/experiments/configs/oracle_d3_iw_a15.yaml}
-MODEL_CFG=${MODEL_CFG:?set MODEL_CFG, e.g. CITNP/experiments/configs/oracle_d3_model_m.yaml}
+MODEL_CFG=${MODEL_CFG:?set MODEL_CFG, e.g. CITNP/experiments/configs/oracle_d3_model_m_layerwise_stats_shared.yaml}
 EPOCHS=${EPOCHS:-500}
 SEED=${SEED:-0}
 EXTRA_ARGS=${EXTRA_ARGS:-}

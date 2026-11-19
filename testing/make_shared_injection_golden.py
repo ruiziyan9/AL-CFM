@@ -71,8 +71,12 @@ def golden_inputs() -> dict:
 
 
 def build() -> torch.nn.Module:
+    """The layer-wise model with the separate flag network, as recorded (the
+    dataclass default was separate when the fixture was written)."""
+    cfg = tiny_config()
+    cfg.share_intervention_encoder = False
     torch.manual_seed(0)
-    return LayerwiseMixedContextMoGModel(tiny_config()).eval()
+    return LayerwiseMixedContextMoGModel(cfg).eval()
 
 
 def run(model: torch.nn.Module, inp: dict) -> dict:

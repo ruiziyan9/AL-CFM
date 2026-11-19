@@ -60,6 +60,8 @@ def test_oracle_config_differs_only_in_encoding():
         (CONFIGS / "oracle_d3_model_m_reg_axis_stats.yaml").read_text()
     )
     lw.pop("model_class")
+    # layer-wise only: the separate flag network of this config
+    assert lw.pop("share_intervention_encoder") is False
     assert ra.pop("intervention_encoding") == "reg_axis"
     ra = {k: v for k, v in ra.items() if not k.startswith("reg_axis_")}
     assert ra == lw

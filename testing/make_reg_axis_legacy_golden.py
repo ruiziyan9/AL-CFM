@@ -45,6 +45,8 @@ def build(method: str, scale: str, base: dict | None = None) -> torch.nn.Module:
     parameters present in `base` are copied from it instead."""
     cfg = tiny_config()
     cfg.scale_conditioning = scale
+    # recorded with the layer-wise separate flag network (then the default)
+    cfg.share_intervention_encoder = False
     torch.manual_seed(0)
     model = INTERVENTION_ENCODINGS[method](cfg).eval()
     with torch.no_grad():

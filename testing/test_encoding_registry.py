@@ -32,10 +32,15 @@ def _args(**kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def test_default_is_r1():
+def test_default_is_shared_layerwise():
+    """No encoding given: the layer-wise model, built with the shared flag
+    network (share_intervention_encoder defaults to True)."""
     cls, name = resolve_model_class()
-    assert DEFAULT_INTERVENTION_ENCODING == "r1"
-    assert cls is MixedContextMoGModel and name == "r1"
+    assert DEFAULT_INTERVENTION_ENCODING == "layerwise"
+    assert cls is LayerwiseMixedContextMoGModel and name == "layerwise"
+    model = cls(tiny_config())
+    assert model.encoder.share_intervention_encoder is True
+    assert not hasattr(model.encoder, "flag_code")
 
 
 @pytest.mark.parametrize("name", sorted(INTERVENTION_ENCODINGS))
@@ -123,7 +128,8 @@ def test_existing_layerwise_config_still_resolves():
 @pytest.mark.parametrize(
     "extra, cls",
     [
-        ({}, MixedContextMoGModel),
+        ({"intervention_encoding": "r1"}, MixedContextMoGModel),
+        ({}, LayerwiseMixedContextMoGModel),  # the default encoding
         ({"intervention_encoding": "layerwise"}, LayerwiseMixedContextMoGModel),
         (
             {"model_class": "LayerwiseMixedContextMoGModel"},

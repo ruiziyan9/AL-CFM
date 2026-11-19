@@ -1,4 +1,6 @@
-# Smoke-test model config (overrides upstream defaults in mixed_train.py).
+# Smoke-test model config of the default method: layer-wise intervention
+# encoding with the shared flag network (overrides upstream defaults in
+# mixed_train.py). Both keys are the defaults and are stated explicitly.
 d_model: 64
 nhead: 4
 num_layers_encoder: 4
@@ -6,3 +8,5 @@ sample_attn_mode: MHCA
 dim_feedforward: 128
 emb_depth: 2
 num_mixture_components: 3
+intervention_encoding: layerwise
+share_intervention_encoder: true

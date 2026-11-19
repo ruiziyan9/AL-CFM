@@ -30,6 +30,8 @@ from test_mixed_context_model import (
 def models(mode="MHCA"):
     cfg = tiny_config()
     cfg.sample_attn_mode = mode
+    # these tests are about the separate flag_code MLP
+    cfg.share_intervention_encoder = False
     torch.manual_seed(0)
     r1 = MixedContextMoGModel(cfg).eval()
     randomise_flag(r1)  # a "trained" R1 embedding flag
@@ -115,11 +117,18 @@ def test_context_order_invariance_and_no_leakage():
         assert (grad[b_][:, non_treat] == 0).all()
 
 
+def separate_config():
+    """tiny_config with the separate flag_code MLP (share = False)."""
+    cfg = tiny_config()
+    cfg.share_intervention_encoder = False
+    return cfg
+
+
 def test_checkpoint_loaders():
     r1, lw = models()
     # R1 -> Layerwise: only the layer-wise parameters are missing
     res = load_r1_checkpoint(
-        LayerwiseMixedContextMoGModel(tiny_config()), r1.state_dict()
+        LayerwiseMixedContextMoGModel(separate_config()), r1.state_dict()
     )
     assert res.missing_keys and all(
         k.startswith(LAYERWISE_PARAM_PREFIXES) for k in res.missing_keys
@@ -130,11 +139,13 @@ def test_checkpoint_loaders():
         for k, v in r1.state_dict().items()
         if not k.startswith("encoder.context_intervened.")
     }
-    load_upstream_checkpoint(LayerwiseMixedContextMoGModel(tiny_config()), up_sd)
+    load_upstream_checkpoint(
+        LayerwiseMixedContextMoGModel(separate_config()), up_sd
+    )
     # a full Layerwise checkpoint is not an R1 checkpoint
     with pytest.raises(RuntimeError, match="mismatch"):
         load_r1_checkpoint(
-            LayerwiseMixedContextMoGModel(tiny_config()), lw.state_dict()
+            LayerwiseMixedContextMoGModel(separate_config()), lw.state_dict()
         )
 
 
@@ -245,11 +256,14 @@ def test_default_matches_golden(golden):
 
 
 def test_existing_layerwise_checkpoint_loads_strict(golden, tmp_path):
-    """A checkpoint written before the option existed (no key in the YAML)
-    rebuilds the default model and loads with strict=True."""
+    """A checkpoint written before the option existed loads with strict=True
+    once its YAML says share_intervention_encoder: false (absent now means
+    shared)."""
     ckpt = tmp_path / "last_model.pt"
     torch.save({"model_state_dict": golden["state_dict"]}, ckpt)
-    model = load_model(str(ckpt), tiny_model_yaml(tmp_path / "m.yaml"), "cpu", D)
+    model = load_model(
+        str(ckpt), tiny_model_yaml(tmp_path / "m.yaml", share=False), "cpu", D
+    )
     assert hasattr(model.encoder, "flag_code")
     model.load_state_dict(golden["state_dict"], strict=True)
     with torch.no_grad():
@@ -534,7 +548,7 @@ def test_shared_config_differs_from_base_only_in_option():
         (CONFIGS / "oracle_d3_model_m_layerwise_stats_shared.yaml").read_text()
     )
     assert shared.pop("share_intervention_encoder") is True
-    assert "share_intervention_encoder" not in base
+    assert base.pop("share_intervention_encoder") is False
     assert shared == base
 
 
@@ -572,11 +586,14 @@ def test_yaml_to_model_to_resolved_config(tmp_path, share):
     extra = {"intervention_encoding": "layerwise"}
     if share is not None:
         extra["share_intervention_encoder"] = share
+    yml = _smoke_yaml(tmp_path, **extra)
+    if share is None:  # the smoke YAML states the key; drop it for this case
+        m = yaml.safe_load(yml.read_text())
+        del m["share_intervention_encoder"]
+        yml.write_text(yaml.safe_dump(m))
     data_cfg = load_config(CONFIGS / "smoke_d3.yaml")
-    trainer, _ = build_trainer(
-        _train_args(tmp_path, _smoke_yaml(tmp_path, **extra)), data_cfg
-    )
-    expected = bool(share)  # missing key => False
+    trainer, _ = build_trainer(_train_args(tmp_path, yml), data_cfg)
+    expected = True if share is None else share  # missing key => True
     assert trainer.model.encoder.share_intervention_encoder is expected
     assert hasattr(trainer.model.encoder, "flag_code") is not expected
     trainer.train()
@@ -593,7 +610,9 @@ def test_share_option_needs_layerwise(tmp_path):
     from CITNP.datasets.create_mixed_regime_chunks import load_config
     from CITNP.experiments.mixed_train import build_trainer
 
-    yml = _smoke_yaml(tmp_path, share_intervention_encoder=True)  # r1 default
+    yml = _smoke_yaml(
+        tmp_path, intervention_encoding="r1", share_intervention_encoder=True
+    )
     with pytest.raises(ValueError, match="only applies to the layerwise"):
         build_trainer(
             _train_args(tmp_path, yml), load_config(CONFIGS / "smoke_d3.yaml")

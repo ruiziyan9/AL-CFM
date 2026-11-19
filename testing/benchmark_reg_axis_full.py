@@ -124,7 +124,7 @@ def model_config_for(
         **{k: settings[k] for k in allowed if k in settings},
         share_intervention_encoder=bool(
             encoding == "layerwise"
-            and settings.get("share_intervention_encoder", False)
+            and settings.get("share_intervention_encoder", True)
         ),
     )
 

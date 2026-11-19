@@ -13,14 +13,14 @@ size, optimiser, logging, --num_workers, --seed, ...). Extra arguments:
   num_layers_encoder, sample_attn_mode, dim_feedforward, emb_depth,
   num_mixture_components, ...).
 - --intervention_encoding {r1,layerwise,extra_node,reg_axis,reg_axis_full}: how
-  intervention information enters the model (default r1). --model_class <name>
-  is still accepted (legacy). reg_axis reads the optional model_config keys
-  reg_axis_num_blocks, reg_axis_num_memory_tokens, reg_axis_target_flag and
-  reg_axis_count_feature (CITNP/models/regime_axis/README.md). reg_axis_full
+  intervention information enters the model (default layerwise).
+  --model_class <name> is still accepted (legacy). reg_axis reads the optional
+  model_config keys reg_axis_num_blocks, reg_axis_num_memory_tokens,
+  reg_axis_target_flag and reg_axis_count_feature (CITNP/models/regime_axis/README.md). reg_axis_full
   reads the same keys except reg_axis_num_memory_tokens, which it rejects
   (CITNP/models/regime_axis_full/README.md). layerwise reads
-  the optional model_config key share_intervention_encoder (default false:
-  separate flag_code MLP; true: the injection reuses context_intervened).
+  the optional model_config key share_intervention_encoder (default true: the
+  injection reuses context_intervened; false: separate flag_code MLP).
 - --scale_conditioning {none,stats}: stats feeds each variable's standardisation
   (log std, mean / std) to the model (information parity with the oracle;
   default none: no new parameters).
@@ -193,7 +193,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--intervention_encoding",
         default=None,
         choices=sorted(INTERVENTION_ENCODINGS),
-        help="how intervention information enters the model (default: r1)",
+        help="how intervention information enters the model "
+        "(default: layerwise)",
     )
 
     extra.add_argument(
@@ -279,6 +280,13 @@ def apply_model_config(args: argparse.Namespace) -> None:
                 f"{k}={v!r} in {args.model_config}"
             )
         setattr(args, k, v)
+
+
+def _share_intervention_encoder(args: argparse.Namespace) -> bool:
+    """share_intervention_encoder of the model config: the YAML value, or
+    True (the shared flag network, the default) when it is not given."""
+    value = getattr(args, "share_intervention_encoder", None)
+    return True if value is None else bool(value)
 
 
 def restore_full_state(trainer, path) -> None:
@@ -527,9 +535,8 @@ def build_trainer(args: argparse.Namespace, data_cfg: MixedRegimeConfig):
             for k in REG_AXIS_CONFIG_KEYS
             if getattr(args, k, None) is not None
         },
-        share_intervention_encoder=bool(
-            getattr(args, "share_intervention_encoder", None) or False
-        ),
+        # layerwise only; absent means the shared flag network (default)
+        share_intervention_encoder=_share_intervention_encoder(args),
     )
     model_cls, encoding = resolve_model_class(
         args.intervention_encoding, args.model_class

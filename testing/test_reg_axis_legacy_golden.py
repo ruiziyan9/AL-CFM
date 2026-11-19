@@ -48,6 +48,8 @@ def test_legacy_golden(golden, method, scale):
         sd = {**unpack(golden["cases"][f"{method}/none"]["state_dict"]), **sd}
     cfg = tiny_config()
     cfg.scale_conditioning = scale
+    # the layerwise cases were recorded with the separate flag network
+    cfg.share_intervention_encoder = False
     model = INTERVENTION_ENCODINGS[method](cfg).eval()
     model.load_state_dict(sd, strict=True)
     with torch.no_grad():

@@ -1,0 +1,11 @@
+# Test fixture only, of the abandoned r1 intervention encoding: used by the
+# evaluation regression tests (testing/golden_spec.py), not an experiment
+# config. D=3 oracle-prior model, size s.
+d_model: 64
+nhead: 4
+num_layers_encoder: 4
+sample_attn_mode: MHCA
+dim_feedforward: 128
+emb_depth: 2
+num_mixture_components: 3
+intervention_encoding: r1

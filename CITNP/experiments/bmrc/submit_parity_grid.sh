@@ -12,7 +12,8 @@
 # Same SEED and EPOCHS for all four runs. Every run has its own RUN name, so
 # train.sh's auto-resume can never pick up another run's checkpoint; rerunning
 # this script after an interruption resumes each run (same configs and EPOCHS).
-#   ENC     r1 | layerwise | extra_node (default extra_node)
+#   ENC     layerwise | extra_node (default extra_node; layerwise uses the
+#           separate flag network). r1 has no experiment configs any more.
 #   SEED    default 0
 #   EPOCHS  default 500
 #   TAG     run-name prefix (default parity)
@@ -33,9 +34,8 @@ OUT=${OUT:-$W/alcfm}
 
 case $ENC in
   extra_node) MODEL=oracle_d3_model_m_extra_node ;;
-  r1)         MODEL=oracle_d3_model_m ;;
   layerwise)  MODEL=oracle_d3_model_m_layerwise ;;
-  *) echo "unknown ENC=$ENC (r1, layerwise, extra_node)" >&2; exit 1 ;;
+  *) echo "unknown ENC=$ENC (layerwise, extra_node)" >&2; exit 1 ;;
 esac
 IW=$CFG/oracle_d3_iw_motif.yaml
 NIG=$CFG/oracle_d3_nig_eta9_motif.yaml

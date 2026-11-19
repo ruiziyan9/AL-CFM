@@ -14,7 +14,7 @@ from CITNP.trainer.mixed_context_trainer import _normalisation_stats
 from CITNP.utils.config_files import load_config_mapping
 from CITNP.utils.configs import CausalInfModelConfig
 
-DEFAULT_MODEL_CLASS = "MixedContextMoGModel"
+DEFAULT_MODEL_CLASS = "LayerwiseMixedContextMoGModel"
 
 
 def load_model(
@@ -22,10 +22,34 @@ def load_model(
 ) -> torch.nn.Module:
     """Build the model described by the YAML `model_config` (with everything
     it inherits through `extends`, CITNP/utils/config_files.py) for
-    `num_nodes` variables, load the weights in `ckpt` and return it in eval
-    mode.
+    `num_nodes` variables (`build_model`), load the weights in `ckpt` and
+    return it in eval mode.
 
-    The class is resolved by resolve_model_class from the optional YAML keys intervention_encoding and/or model_class (default: r1, MixedContextMoGModel).
+    A layer-wise run saved before share_intervention_encoder existed has a
+    separate flag network but no entry in its resolved_model_config.yaml;
+    loading it raises a ValueError that says to add
+    `share_intervention_encoder: false` to that file.
+    """
+    model = build_model(model_config, device, num_nodes)
+    state = torch.load(ckpt, map_location="cpu")
+    state_dict = state.get("model_state_dict", state)
+    _check_separate_flag_network(
+        model, state_dict, load_config_mapping(model_config), model_config
+    )
+    model.load_state_dict(state_dict)
+    return model.to(device).eval()
+
+
+def build_model(
+    model_config: str, device: str, num_nodes: int = 3
+) -> torch.nn.Module:
+    """The randomly initialised model described by the YAML `model_config`
+    for `num_nodes` variables (the construction step of `load_model`).
+
+    The class is resolved by resolve_model_class from the optional YAML keys
+    intervention_encoding and/or model_class (default: layerwise,
+    LayerwiseMixedContextMoGModel). share_intervention_encoder absent means
+    True (the shared flag network).
     """
     from CITNP.models.mixed_context_model import resolve_model_class
     from CITNP.models.regime_axis import REG_AXIS_CONFIG_KEYS
@@ -49,18 +73,43 @@ def load_model(
         # reg_axis / reg_axis_full only; absent keys keep the dataclass
         # defaults
         **{k: m[k] for k in REG_AXIS_CONFIG_KEYS if k in m},
-        # layerwise only; absent (older runs) = separate flag_code MLP
+        # layerwise only; absent = the shared flag network (default)
         share_intervention_encoder=bool(
-            m.get("share_intervention_encoder", False)
+            m.get("share_intervention_encoder", True)
         ),
     )
     model_cls, _ = resolve_model_class(
         m.get("intervention_encoding"), m.get("model_class")
     )
-    model = model_cls(cfg)
-    state = torch.load(ckpt, map_location="cpu")
-    model.load_state_dict(state.get("model_state_dict", state))
-    return model.to(device).eval()
+    return model_cls(cfg)
+
+
+SEPARATE_FLAG_NETWORK_PREFIX = "encoder.flag_code."
+
+
+def _check_separate_flag_network(
+    model: torch.nn.Module, state_dict: dict, settings: dict, model_config: str
+) -> None:
+    """Raise a ValueError for a layer-wise checkpoint with a separate flag
+    network (`encoder.flag_code.*`) whose model config does not name
+    share_intervention_encoder: such a run was saved before the key existed,
+    when absent meant separate, and the key now defaults to shared."""
+    if "share_intervention_encoder" in settings:
+        return
+    has_separate = any(
+        k.startswith(SEPARATE_FLAG_NETWORK_PREFIX) for k in state_dict
+    )
+    model_has_separate = any(
+        k.startswith(SEPARATE_FLAG_NETWORK_PREFIX) for k in model.state_dict()
+    )
+    if has_separate and not model_has_separate:
+        raise ValueError(
+            "The checkpoint has a separate flag network (encoder.flag_code.*), "
+            f"but {model_config} does not set share_intervention_encoder, "
+            "which now defaults to true (shared). This run was saved before "
+            "the key existed: add `share_intervention_encoder: false` to its "
+            "resolved_model_config.yaml (or to the model config passed here)."
+        )
 
 
 def _model_inputs(ctx_x, ctx_int, T, Y, t, *, zero_flags, normalise):

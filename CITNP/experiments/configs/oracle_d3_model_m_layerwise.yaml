@@ -1,4 +1,4 @@
-# D=3 oracle-prior model, size m, flag re-injected at every block
+# D=3 oracle-prior model, size m, flag re-injected at every block, separate flag network
 d_model: 128
 nhead: 8
 num_layers_encoder: 6
@@ -7,3 +7,4 @@ dim_feedforward: 256
 emb_depth: 2
 num_mixture_components: 8
 model_class: LayerwiseMixedContextMoGModel
+share_intervention_encoder: false

@@ -636,6 +636,18 @@ def test_iterations_per_epoch_rejects_non_positive(generated):
 # --------------------------------------------------------------------------- #
 
 
+def encoding_free_smoke_model(tmp_path) -> Path:
+    """smoke_d3_model.yaml without its encoding keys (intervention_encoding,
+    share_intervention_encoder), so that --intervention_encoding on the
+    command line chooses the encoding; written to tmp_path."""
+    settings = yaml.safe_load((CONFIGS / "smoke_d3_model.yaml").read_text())
+    settings.pop("intervention_encoding", None)
+    settings.pop("share_intervention_encoder", None)
+    path = tmp_path / "smoke_model_no_encoding.yaml"
+    path.write_text(yaml.safe_dump(settings))
+    return path
+
+
 def training_args(
     tmp_path, dataset_config_path, data_root, prior_path, *extra, epochs=2
 ):
@@ -644,7 +656,7 @@ def training_args(
             "--data_config", str(prior_path),
             "--dataset_config", str(dataset_config_path),
             "--data_root", str(data_root),
-            "--model_config", str(CONFIGS / "smoke_d3_model.yaml"),
+            "--model_config", str(encoding_free_smoke_model(tmp_path)),
             "--device", "cpu", "--dtype", "float32",
             "--batch_size", str(BATCH_SIZE), "--iterations_per_epoch", "2",
             "--epochs", str(epochs), "--val_iterations", "1", "--test_iterations", "1",

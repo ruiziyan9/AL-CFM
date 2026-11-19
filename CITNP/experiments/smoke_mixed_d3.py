@@ -1,10 +1,11 @@
 """
-Smoke test for mixed-context training (R1) on D=3 linear-Gaussian tasks.
+Smoke test for mixed-context training on D=3 linear-Gaussian tasks.
 
     python -m CITNP.experiments.smoke_mixed_d3 [--device cuda] [--num_workers 2]
 
-Trains MixedContextMoGModel for 3 epochs x 50 iterations (batch 16) on
-configs/smoke_d3.yaml and checks:
+Trains the model of configs/smoke_d3_model.yaml (the default method:
+LayerwiseMixedContextMoGModel with the shared flag network) for 3 epochs x 50
+iterations (batch 16) on configs/smoke_d3.yaml and checks:
   1. no NaN / inf losses;
   2. training loss at the end of epoch 3 < at the start of epoch 1
      (means over 10 steps, to smooth step noise);

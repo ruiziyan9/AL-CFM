@@ -25,6 +25,25 @@ block of query rows. Every group is exactly **one upstream MACE-TNP question**:
 
 With G = 1 and no intervened cells, the model is exactly upstream MACE-TNP.
 
+## Default method
+
+When neither the model YAML nor the command line names an encoding, the model
+is the **layer-wise** encoding (`intervention_encoding: layerwise`,
+`LayerwiseMixedContextMoGModel`): R1's flag embedding plus re-injection of the
+flag code before every attention block. `share_intervention_encoder` absent
+means `true`: the injection reuses the embedding network
+`context_intervened` (the shared flag network); `false` builds a separate
+`flag_code` network (`oracle_d3_model_m_layerwise*.yaml` without `_shared`).
+The key applies to the layer-wise encoding only; an explicit `true` with any
+other encoding is an error.
+
+R1 (`intervention_encoding: r1`) stays fully supported, but no experiment
+config uses it any more; its two model configs live on as test fixtures
+(`testing/fixtures/r1_model_{s,m}.yaml`). A layer-wise run saved before
+`share_intervention_encoder` existed has a separate flag network but no entry
+in its `resolved_model_config.yaml`; `load_model` then raises and asks for
+`share_intervention_encoder: false` to be added to that file.
+
 ## Smoke test (D = 3, a few minutes on CPU)
 
 ```bash
@@ -33,7 +52,8 @@ python -m CITNP.experiments.smoke_mixed_d3 [--device cuda] [--num_workers 2]
 
 Trains 3 epochs × 50 iterations (batch 16) on
 [`configs/smoke_d3.yaml`](configs/smoke_d3.yaml) with the model in
-[`configs/smoke_d3_model.yaml`](configs/smoke_d3_model.yaml) (d_model 64, 4
+[`configs/smoke_d3_model.yaml`](configs/smoke_d3_model.yaml) (the default
+method: layer-wise encoding with the shared flag network; d_model 64, 4
 layers, MHCA, 3 mixture components), then checks: no NaN/inf losses; training
 loss falls; validation loss falls over the epochs. It also prints a
 uses-interventions check on 200 validation tasks: the NLL with only the

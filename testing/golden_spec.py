@@ -24,8 +24,10 @@ DATA_CFG = "testing/fixtures/oracle_d3.yaml"
 # The bank pickle stores the data-config string verbatim. The golden bank was
 # recorded when the file was still at this path; its contents are unchanged.
 RECORDED_BANK_DATA_CFG = "CITNP/experiments/configs/oracle_d3.yaml"
-TINY_CFG = "CITNP/experiments/configs/oracle_d3_model_s.yaml"
-TRAINED_CFG = "CITNP/experiments/configs/oracle_d3_model_m.yaml"
+# The model configs are fixtures of the abandoned r1 encoding (they name
+# intervention_encoding: r1), not experiment configs.
+TINY_CFG = "testing/fixtures/r1_model_s.yaml"
+TRAINED_CFG = "testing/fixtures/r1_model_m.yaml"
 TRAINED_ENV = "ALCFM_TRAINED_CKPT"
 D = 3
 

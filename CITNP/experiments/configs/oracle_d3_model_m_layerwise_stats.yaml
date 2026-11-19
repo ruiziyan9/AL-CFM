@@ -1,4 +1,4 @@
-# D=3 oracle-prior model, size m, flag re-injected at every block, with scale conditioning (stats)
+# D=3 oracle-prior model, size m, flag re-injected at every block, separate flag network, with scale conditioning (stats)
 d_model: 128
 nhead: 8
 num_layers_encoder: 6
@@ -8,3 +8,4 @@ emb_depth: 2
 num_mixture_components: 8
 model_class: LayerwiseMixedContextMoGModel
 scale_conditioning: stats
+share_intervention_encoder: false

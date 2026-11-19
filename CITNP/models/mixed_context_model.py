@@ -472,10 +472,11 @@ class MixedContextMoGModel(_MixedContextMixin, MoGCausalInferenceModel):
 
 
 def _layerwise_encoder_kwargs(config) -> dict:
-    # Missing attribute (older configs) means the separate flag_code MLP.
+    # Missing attribute means the shared flag network (the default method);
+    # the separate flag_code MLP needs share_intervention_encoder=False.
     return {
         "share_intervention_encoder": bool(
-            getattr(config, "share_intervention_encoder", False)
+            getattr(config, "share_intervention_encoder", True)
         )
     }
 
@@ -515,7 +516,7 @@ class ExtraNodeMixedContextMoGModel(_MixedContextMixin, MoGCausalInferenceModel)
 # model class: mixed_train.py and evaluation/model_api.py both resolve here.
 # ---------------------------------------------------------------------------
 
-DEFAULT_INTERVENTION_ENCODING = "r1"
+DEFAULT_INTERVENTION_ENCODING = "layerwise"
 INTERVENTION_ENCODINGS: dict[str, type[CausalInferenceModel]] = {
     "r1": MixedContextMoGModel,
     "layerwise": LayerwiseMixedContextMoGModel,
@@ -531,7 +532,9 @@ def resolve_model_class(
 ) -> tuple[type[CausalInferenceModel], str]:
     """Return (model class, encoding name).
 
-    - Neither given: the default encoding (r1, the upstream-compatible model).
+    - Neither given: the default encoding (layerwise; with the dataclass
+      default share_intervention_encoder=True it is the layer-wise model with
+      the shared flag network).
     - intervention_encoding only: its registered (mixture-of-Gaussians) class.
     - model_class only (legacy configs): that class from this module; the
       returned name is its encoding if registered, else the class name.

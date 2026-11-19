@@ -19,7 +19,7 @@ CONFIGS = (
     Path(__file__).resolve().parents[1] / "CITNP" / "experiments" / "configs"
 )
 MODEL_CONFIGS = [
-    "smoke_d3_model.yaml",  # r1
+    "smoke_d3_model.yaml",  # layer-wise, shared
     "smoke_d3_model_extra_node_stats.yaml",
     "oracle_d3_model_m_layerwise_stats.yaml",  # legacy model_class key
     "oracle_d3_model_m_layerwise_stats_shared.yaml",
