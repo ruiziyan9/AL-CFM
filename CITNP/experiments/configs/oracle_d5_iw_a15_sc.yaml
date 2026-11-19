@@ -1,0 +1,15 @@
+# CITNP/experiments/configs/oracle_d5_iw_a15_sc.yaml
+# oracle_d5_iw_a15.yaml for a small single-cell-like test with lower
+# worst-case GPU memory.
+# - qry_groups [1, 2, 3]: at most 3 question groups (distinct treatments) per
+#   task; the trainer copies the context once per group, so this cuts the
+#   worst-case memory. n_qry 60 (inherited) is divisible by 1, 2 and 3.
+# - dirichlet_alpha_range [0.5, 10.0]: mostly balanced regime sizes, as in a
+#   screen, while about a quarter of contexts still contain a small regime
+#   (10 rows or fewer), as when a few experiments are added to a large
+#   observational set. The default [0.3, 3.0] gives very uneven splits.
+# Everything else (n_ctx_range [64, 360], k_max 5, n_obs_min 32, p_k0, p_geom)
+# is inherited unchanged.
+extends: oracle_d5_iw_a15.yaml
+qry_groups: [1, 2, 3]
+dirichlet_alpha_range: [0.5, 10.0]
