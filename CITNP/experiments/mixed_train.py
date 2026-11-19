@@ -87,6 +87,11 @@ from CITNP.models.mixed_context_model import (
     load_upstream_checkpoint,
     resolve_model_class,
 )
+from CITNP.models.prediction_heads import (
+    JOINT_CONFIG_KEYS,
+    PREDICTION_HEADS,
+    check_joint_head_settings,
+)
 from CITNP.models.regime_axis import (
     REG_AXIS_CONFIG_KEYS,
     RegimeAxisMixedContextModel,
@@ -96,11 +101,6 @@ from CITNP.models.regime_axis_full import (
     REG_AXIS_FULL_CONFIG_KEYS,
     RegimeAxisFullMixedContextModel,
     RegimeAxisFullMixedContextMoGModel,
-)
-from CITNP.models.prediction_heads import (
-    JOINT_CONFIG_KEYS,
-    PREDICTION_HEADS,
-    check_joint_head_settings,
 )
 from CITNP.models.scale_conditioning import SCALE_CONDITIONING_OPTIONS
 
