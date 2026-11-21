@@ -332,6 +332,156 @@ def predict_joint_mixture(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Batched variants: B contexts of equal length in one forward pass
+# --------------------------------------------------------------------------- #
+def _batched_model_inputs(ctx_x, ctx_int, T, Y, t, *, normalise):
+    """Model keyword inputs (CPU, float32) for B contexts, one query each,
+    plus the per-context standardisation (mean, std) [B, D].
+
+    ctx_x [B, N, D] float, ctx_int [B, N, D] bool. T [B] long (the treatment
+    of each context's query), Y [B] long or None (joint models). t [B, n_t]:
+    each query's do-values. Built exactly as `_model_inputs` builds one
+    context (same `_normalisation_stats`, same scale features), with the
+    context axis B in place of the query axis Q."""
+    cx = torch.as_tensor(ctx_x).to("cpu", torch.float32)
+    ci = torch.as_tensor(ctx_int).to("cpu", torch.bool)
+    if cx.ndim != 3 or ci.shape != cx.shape:
+        raise ValueError("ctx_x and ctx_int must both be [B, N, D]")
+    B, _, D = cx.shape
+    Ts = torch.as_tensor(T, dtype=torch.long).reshape(-1).expand(B).cpu()
+    Ys = None
+    if Y is not None:
+        Ys = torch.as_tensor(Y, dtype=torch.long).reshape(-1).expand(B).cpu()
+    tt = torch.as_tensor(t).to("cpu", torch.float32)
+    if tt.ndim == 1:
+        tt = tt[None].expand(B, -1)
+    if normalise:
+        mean, std = _normalisation_stats(cx, ci)  # [B, D]
+    else:
+        mean, std = torch.zeros(B, D), torch.ones(B, D)
+    cxn = ((cx - mean[:, None]) / std[:, None])[..., None]
+    scale = torch.stack([std.log(), mean / std], dim=-1)  # [B, D, 2]
+    b = torch.arange(B)
+    tgt = torch.zeros(B, tt.shape[1], D, 1)
+    tgt[b, :, Ts, 0] = (tt - mean[b, Ts][:, None]) / std[b, Ts][:, None]
+    inp = dict(
+        context_data=cxn,
+        target_data=tgt,
+        intervention_index=Ts,
+        outcome_index=Ys,
+        context_int_mask=ci,
+        context_scale=scale,
+    )
+    return inp, mean, std
+
+
+@torch.no_grad()
+def predict_mixture_batched(
+    model: torch.nn.Module,
+    ctx_x: torch.Tensor,
+    ctx_int: torch.Tensor,
+    T: int,
+    Y: int,
+    t: np.ndarray | torch.Tensor,
+    *,
+    device: str | torch.device,
+    normalise: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """`predict_mixture` for B contexts of equal length and one query (T, Y)
+    shared by all: p(X_Y | do(X_T = t), context_b) on the RAW scale.
+
+    ctx_x [B, N, D] float, ctx_int [B, N, D] bool, t [n_t]. Returns mu, sd,
+    logw as float64 tensors [B, n_t, K] on `device`; entry b equals
+    `predict_mixture(model, ctx_x[b], ctx_int[b], T, Y, t)[:, 0]`'s query
+    (up to float32 batching differences). Joint models read the marginal of
+    Y from their joint prediction, as `predict_mixture` does."""
+    B = int(ctx_x.shape[0])
+    if getattr(model, "prediction_head", "marginal") == "joint":
+        joint = predict_joint_mixture_batched(
+            model, ctx_x, ctx_int, torch.full((B,), int(T)),
+            torch.as_tensor(t)[None].expand(B, -1),
+            device=device, normalise=normalise,
+        )  # fmt: skip
+        return joint_marginal_mixture(joint, int(Y))
+    inp, mean, std = _batched_model_inputs(
+        ctx_x, ctx_int, int(T), int(Y), t, normalise=normalise
+    )
+    out = _call(model, inp, device)
+    mu = out.pred_mean[:, :, 0].double()  # [B, n_t, K], standardised scale
+    sd = out.pred_std[:, :, 0].double()
+    w = out.weights[:, :, 0].double()
+    m_y = mean[:, int(Y)].double().to(device)[:, None, None]
+    s_y = std[:, int(Y)].double().to(device)[:, None, None]
+    logw = torch.log(w + 1e-12)
+    logw = logw - torch.logsumexp(logw, dim=-1, keepdim=True)
+    return mu * s_y + m_y, sd * s_y + 1e-12, logw
+
+
+@torch.no_grad()
+def predict_joint_mixture_batched(
+    model: torch.nn.Module,
+    ctx_x: torch.Tensor,
+    ctx_int: torch.Tensor,
+    T: torch.Tensor,
+    t: torch.Tensor,
+    *,
+    device: str | torch.device,
+    normalise: bool = True,
+) -> JointPrediction:
+    """`predict_joint_mixture` for B contexts of equal length, one query per
+    context with its own treatment and do-values.
+
+    ctx_x [B, N, D] float, ctx_int [B, N, D] bool, T [B] long, t [B, n_t].
+    Returns a `JointPrediction` whose query axis is the context axis (Q = B):
+    entry b equals `predict_joint_mixture(model, ctx_x[b], ctx_int[b], T[b],
+    t[b])` (up to float32 batching differences), raw scale, float64."""
+    inp, mean, std = _batched_model_inputs(
+        ctx_x, ctx_int, T, None, t, normalise=normalise
+    )
+    out = _call(model, inp, device)
+    if not isinstance(out, JointModelOutput):
+        raise ValueError(
+            "predict_joint_mixture_batched needs a joint model "
+            "(prediction_head: joint)"
+        )
+    m = mean.double().to(device)[:, None, None]  # [B, 1, 1, D]
+    s = std.double().to(device)[:, None, None]
+    return JointPrediction(
+        component_mean=out.component_mean.double() * s + m,
+        covariance_factor=out.covariance_factor.double() * s[..., None],
+        covariance_diagonal=out.covariance_diagonal.double() * s**2,
+        log_weights=torch.log_softmax(out.mixture_logits.double(), dim=-1),
+        intervened_mask=out.intervened_mask.to(device),
+    )
+
+
+def context_standardisation(
+    ctx_x: torch.Tensor, ctx_int: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-variable (mean, std) the model's per-task standardisation uses for
+    a context (`_normalisation_stats`: observational rows only), float64.
+
+    ctx_x [..., N, D] float, ctx_int [..., N, D] bool -> ([..., D], [..., D]).
+    """
+    x = torch.as_tensor(ctx_x).to("cpu", torch.float32)
+    m = torch.as_tensor(ctx_int).to("cpu", torch.bool)
+    lead = x.shape[:-2]
+    mean, std = _normalisation_stats(
+        x.reshape(-1, *x.shape[-2:]), m.reshape(-1, *m.shape[-2:])
+    )
+    D = x.shape[-1]
+    return mean.double().reshape(*lead, D), std.double().reshape(*lead, D)
+
+
+def joint_covariance_rank(model: torch.nn.Module) -> int:
+    """Rank R of the covariance factor of a joint model's components (the
+    size of `JointSampleNoise.factor_normal`'s last axis)."""
+    if getattr(model, "prediction_head", "marginal") != "joint":
+        raise ValueError("joint_covariance_rank needs a joint model")
+    return int(model.predictor.covariance_rank)
+
+
 def joint_marginal_mixture(
     joint_prediction: JointPrediction, Y: int | np.ndarray
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -413,11 +563,77 @@ def joint_mixture_mean_and_covariance(
     return mean, covariance
 
 
+@dataclass
+class JointSampleNoise:
+    """Standard noise that `sample_joint_rows` turns into rows, so that the
+    same noise can be reused across predictions (common random numbers: with
+    fixed noise, the rows move smoothly with the prediction's parameters).
+
+    Shapes, S the number of samples, R the covariance rank and D the number
+    of variables. Each field may carry extra leading axes that broadcast
+    against [Q, n_t] (e.g. [Q, 1, S, R] for one noise draw per query), and a
+    noise for several rows per sample has a row axis after S
+    (`draw_joint_sample_noise(num_rows=...)`, read one row with `row`).
+
+    Attributes:
+    -----------
+    - component_uniform: [S], uniform on [0, 1); picks the mixture component
+      by inverse cumulative distribution over the weights.
+    - factor_normal: [S, R], standard normal, multiplies the covariance factor.
+    - residual_normal: [S, D], standard normal, multiplies the square root of
+      the covariance diagonal.
+    """
+
+    component_uniform: torch.Tensor
+    factor_normal: torch.Tensor
+    residual_normal: torch.Tensor
+
+    @property
+    def num_samples(self) -> int:
+        """S, the length of the first axis (the sample axis of a noise
+        without extra leading axes)."""
+        return int(self.component_uniform.shape[0])
+
+    def row(self, index: int) -> "JointSampleNoise":
+        """The noise of row `index` of a multi-row noise ([S, rows, ...] ->
+        [S, ...])."""
+        return JointSampleNoise(
+            component_uniform=self.component_uniform[:, index],
+            factor_normal=self.factor_normal[:, index],
+            residual_normal=self.residual_normal[:, index],
+        )
+
+
+def draw_joint_sample_noise(
+    num_samples: int,
+    rank: int,
+    num_variables: int,
+    generator: torch.Generator,
+    num_rows: int | None = None,
+    dtype: torch.dtype = torch.float64,
+) -> JointSampleNoise:
+    """Draw a `JointSampleNoise` for `num_samples` samples ([S, ...] fields),
+    or, with `num_rows`, for `num_rows` rows per sample ([S, num_rows, ...]).
+    Draw order: uniforms, then factor normals, then residual normals.
+    `generator` is a CPU generator; the tensors are on the CPU."""
+    lead = (num_samples,) if num_rows is None else (num_samples, num_rows)
+    return JointSampleNoise(
+        component_uniform=torch.rand(lead, generator=generator, dtype=dtype),
+        factor_normal=torch.randn(
+            (*lead, rank), generator=generator, dtype=dtype
+        ),
+        residual_normal=torch.randn(
+            (*lead, num_variables), generator=generator, dtype=dtype
+        ),
+    )
+
+
 def sample_joint_rows(
     joint_prediction: JointPrediction,
-    t: np.ndarray,
+    t: np.ndarray | torch.Tensor,
     num_samples: int,
     generator: torch.Generator | None = None,
+    noise: JointSampleNoise | None = None,
 ) -> torch.Tensor:
     """Full rows [Q, n_t, num_samples, D] drawn from each query's joint
     mixture at each do-value, on the raw scale.
@@ -430,32 +646,66 @@ def sample_joint_rows(
     marginal of a Gaussian over a subset of its coordinates is the
     corresponding block, so the non-intervened variables have the right
     distribution. `generator` must live on the prediction's device.
+
+    t: do-values [n_t] shared by every query, or [Q, n_t] one set per query.
+
+    noise: None (default) draws k, z and e from `generator` as above. Given
+    (`JointSampleNoise`, S = num_samples), the component is the first k with
+    component_uniform < cumulative weight (inverse cumulative distribution,
+    so it changes only where the uniform crosses a weight boundary), z =
+    factor_normal and e = residual_normal; `generator` is then unused and the
+    rows are a deterministic, piecewise-smooth function of the prediction.
     """
     jp = joint_prediction
     Q, n_t, K, D = jp.component_mean.shape
     R = jp.covariance_factor.shape[-1]
     dtype, device = jp.component_mean.dtype, jp.component_mean.device
-    weights = jp.log_weights.exp().reshape(-1, K)
-    component = torch.multinomial(
-        weights, num_samples, replacement=True, generator=generator
-    )
-    component = component.reshape(Q, n_t, num_samples)
+    shape = (Q, n_t, num_samples)
+    if noise is None:
+        weights = jp.log_weights.exp().reshape(-1, K)
+        component = torch.multinomial(
+            weights, num_samples, replacement=True, generator=generator
+        )
+        component = component.reshape(shape)
+    else:
+        # the sample axis is the last axis of component_uniform
+        if noise.component_uniform.shape[-1] != num_samples:
+            raise ValueError(
+                f"noise has {noise.component_uniform.shape[-1]} samples, not "
+                f"{num_samples}"
+            )
+        cumulative = jp.log_weights.exp().cumsum(-1)  # [Q, n_t, K]
+        uniform = noise.component_uniform.to(device, dtype)
+        uniform = uniform.expand(shape).contiguous()
+        component = torch.searchsorted(
+            cumulative.contiguous(), uniform, right=True
+        ).clamp(max=K - 1)
     index = component[..., None].expand(Q, n_t, num_samples, D)
     mu = jp.component_mean.gather(2, index)  # [Q, n_t, S, D]
     diagonal = jp.covariance_diagonal.gather(2, index)
     factor = jp.covariance_factor.gather(
         2, index[..., None].expand(Q, n_t, num_samples, D, R)
     )  # [Q, n_t, S, D, R]
-    z = torch.randn(
-        Q, n_t, num_samples, R, generator=generator, dtype=dtype, device=device
-    )
-    e = torch.randn(
-        Q, n_t, num_samples, D, generator=generator, dtype=dtype, device=device
-    )
+    if noise is None:
+        z = torch.randn(
+            *shape, R, generator=generator, dtype=dtype, device=device
+        )
+        e = torch.randn(
+            *shape, D, generator=generator, dtype=dtype, device=device
+        )
+    else:
+        z = noise.factor_normal.to(device, dtype).expand(*shape, R)
+        e = noise.residual_normal.to(device, dtype).expand(*shape, D)
     rows = mu + (factor @ z[..., None]).squeeze(-1) + diagonal.sqrt() * e
-    do_values = torch.as_tensor(np.asarray(t), dtype=dtype, device=device)
+    do_values = torch.as_tensor(
+        t if isinstance(t, torch.Tensor) else np.asarray(t),
+        dtype=dtype,
+        device=device,
+    )
+    if do_values.ndim == 1:
+        do_values = do_values[None]  # [1, n_t]
     intervened = jp.intervened_mask[:, None, None, :]  # [Q, 1, 1, D]
-    return torch.where(intervened, do_values[None, :, None, None], rows)
+    return torch.where(intervened, do_values[:, :, None, None], rows)
 
 
 def joint_log_density(
