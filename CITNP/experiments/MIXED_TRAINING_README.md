@@ -615,6 +615,11 @@ Configs: `smoke_d5.yaml` (data, five variables) with
 smoke run, and `oracle_d5_model_m_layerwise_stats_shared_joint.yaml` for the
 D = 5 run on `oracle_d5_iw_a15.yaml` (train with `SKIP_ORACLE_BANK=1`).
 
+Active learning with a joint checkpoint (choosing the next intervention for
+one query, ABCI-style) lives in the separate top-level package
+`causal_active_learning/`; see `causal_active_learning/README.md`. CITNP never
+imports it.
+
 ## Information-parity grid (2 x 2)
 
 Question: does a model that sees only the standardised context lose anything
