@@ -1,6 +1,8 @@
-"""Does a context stay inside what the model saw in training? (plan section 7)
+"""Does a context stay inside what the model saw in training?
 
-Read from the run's data config (`MixedRegimeConfig`, see `sample_design` in
+The integration fills `TrainingSupport` from the model's training
+configuration; for CITNP (`integrations/citnp/support.py`), from the run's data
+config (`MixedRegimeConfig`, see `sample_design` in
 CITNP/datasets/mixed_regime_generator.py):
 
 - total context rows: drawn from `n_ctx_range` (inclusive);
@@ -20,7 +22,7 @@ Violations give a warning and a flag, never an error.
 
 from dataclasses import dataclass
 
-from CITNP.active_learning.fantasy import ExperimentContext
+from causal_active_learning.context import ExperimentContext
 
 
 @dataclass(frozen=True)
@@ -42,23 +44,6 @@ class TrainingSupport:
     context_size_range: tuple[int, int]
     minimum_observational_rows: int
     maximum_interventional_regimes: int
-
-    @classmethod
-    def from_data_config(
-        cls, data_config, num_variables: int
-    ) -> "TrainingSupport":
-        """From a `MixedRegimeConfig` for D = num_variables."""
-        n_obs_min = int(getattr(data_config, "n_obs_min", 0))
-        return cls(
-            context_size_range=(
-                int(data_config.n_ctx_range[0]),
-                int(data_config.n_ctx_range[1]),
-            ),
-            minimum_observational_rows=n_obs_min + 1 if n_obs_min > 0 else 0,
-            maximum_interventional_regimes=min(
-                int(data_config.k_max), int(num_variables)
-            ),
-        )
 
 
 def context_violations(

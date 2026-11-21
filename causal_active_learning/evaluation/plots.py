@@ -18,7 +18,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from CITNP.evaluation.plots import _save
+
+def _save(fig, path: str, dpi: int = 150) -> None:
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+
 
 KL_XLAB = "number of experiments"
 _BAND_Z = 1.96  # 95% normal band of the mean

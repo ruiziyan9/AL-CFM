@@ -1,7 +1,6 @@
-"""Where real experiments are run: the true SCM (plan section 6).
+"""The true system for the CITNP integration (`ExperimentEnvironment`).
 
-`ExperimentEnvironment` is the protocol the loop uses; `LinearSCMEnvironment`
-wraps the evaluation code's `LinearSCM` (rows from `LinearSCM.sample`, the
+`LinearSCMEnvironment` wraps the evaluation code's `LinearSCM` (rows from `LinearSCM.sample`, the
 truth from `LinearSCM.do_dist`). Environments come from the training prior
 (`from_prior_task`, the task sampler of `kshot-prior`) or from a fixed
 example (`from_example_model`, the model files of `kshot-example`).
@@ -13,55 +12,16 @@ given seed and sequence of experiments.
 """
 
 from dataclasses import dataclass
-from typing import Protocol
 
 import numpy as np
 import torch
 
-from CITNP.active_learning.config import CandidateExperiment
+from causal_active_learning.distributions import QueryMixture
 from CITNP.evaluation.oracle import LinearSCM
 
-
-class ExperimentEnvironment(Protocol):
-    """A source of real data and of the true query distribution.
-
-    Attributes:
-    ----------
-    num_variables : int
-        D.
-
-    do_value_distribution : dict | None
-        Do-value distribution of the training prior for this environment
-        (as in `sample_do_values`), used for the query grid and the
-        "prior_range" value domain; None if unknown.
-    """
-
-    do_value_distribution: dict | None
-
-    @property
-    def num_variables(self) -> int:
-        """D."""
-        ...
-
-    def sample_observational(
-        self, num_rows: int, generator: np.random.Generator
-    ) -> torch.Tensor:
-        """[num_rows, D] float64 observational rows."""
-        ...
-
-    def run_experiment(
-        self, candidate: CandidateExperiment, generator: np.random.Generator
-    ) -> torch.Tensor:
-        """[R, D] float64 rows of the experiment (column target_node exactly
-        the do-value)."""
-        ...
-
-    def true_query_distribution(
-        self, treatment: int, outcome: int, values: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Mean [V] and standard deviation [V] of the true
-        p(X_outcome | do(X_treatment = psi)) at the psi values [V]."""
-        ...
+# Central probability mass of a task's do-value distribution covered by the
+# "prior_range" value domain.
+PRIOR_RANGE_TAIL_PROBABILITY = 0.005
 
 
 @dataclass
@@ -106,7 +66,20 @@ class LinearSCMEnvironment:
         slope, variance = self.scm.do_dist(int(treatment), int(outcome))
         psi = torch.as_tensor(values, dtype=torch.float64)
         sd = torch.full_like(psi, float(np.sqrt(max(variance, 1e-12))))
-        return slope * psi, sd
+        return QueryMixture.gaussian(slope * psi, sd)
+
+    def prior_value_range(self) -> tuple[float, float] | None:
+        """The central 1 - 2 * PRIOR_RANGE_TAIL_PROBABILITY range of the
+        task's do-value distribution (`do_dist_quantile`), or None."""
+        if self.do_value_distribution is None:
+            return None
+        from CITNP.datasets.mixed_regime_generator import do_dist_quantile
+
+        q = PRIOR_RANGE_TAIL_PROBABILITY
+        low, high = do_dist_quantile(
+            self.do_value_distribution, np.array([q, 1.0 - q])
+        )
+        return float(low), float(high)
 
     @classmethod
     def from_prior_task(

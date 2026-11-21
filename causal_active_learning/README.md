@@ -178,15 +178,15 @@ support, but a regime that stays at one or two rows is rare in training.
 
 ```bash
 # fixed D = 5 example, X1->X2->X3->X5, X1->X4->X5, X1->X3; query X5 | do(X3)
-python -m CITNP.evaluation active-learning --ckpt RUN/checkpoint.pt \
+python -m causal_active_learning.integrations.citnp run --ckpt RUN/checkpoint.pt \
     --model_config RUN/resolved_model_config.yaml \
     --data_config CITNP/experiments/configs/oracle_d5_iw_a15_sc.yaml \
     --environment example --fixed_graph_edges 0->1,1->2,2->4,0->3,3->4,0->2 \
     --treatment 2 --outcome 4 --value_optimisers bayesian_optimisation,grid \
     --experiment_budget 10 --seeds 0,1,2,3,4 [--dense_value_diagnostic] --out al_example
 # 50 tasks of the training prior (one random (T, Y) per task unless given)
-python -m CITNP.evaluation active-learning ... --environment prior --n_tasks 50 --out al_prior
-python -m CITNP.evaluation plot-active-learning al_example   # redraw the figures
+python -m causal_active_learning.integrations.citnp run ... --environment prior --n_tasks 50 --out al_prior
+python -m causal_active_learning.integrations.citnp plot al_example   # redraw the figures
 ```
 
 Strategies (`--strategies`, default all): `expected_information_gain` (the
@@ -240,8 +240,8 @@ print(chosen.describe(), choice_is_clear(scores))
 ## Tests
 
 ```bash
-pytest testing/test_active_learning.py            # fast (~35 s on a CPU)
-pytest testing/test_active_learning.py -m slow    # + environment moments
+pytest testing/test_causal_active_learning_*.py            # fast (~35 s on a CPU)
+pytest testing/test_causal_active_learning_*.py -m slow    # + environment moments
 ```
 
 ## References
