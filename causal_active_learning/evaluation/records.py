@@ -63,24 +63,24 @@ def step_rows(ident: dict, step: ActiveLearningStep, context_rows: int):
     }  # fmt: skip
     scores, trace, surrogate, dense = [], [], [], []
     at = {**ident, "step": step.step}
-    if step.acquisition == "expected_information_gain":
+    if step.strategy == "expected_information_gain":
         for s in step.scores:
-            inner = s.inner_result
+            inner = s.value_search_result
             scores.append({
                 **at,
-                "candidate_node": -1 if s.candidate.target_node is None
-                else s.candidate.target_node,
+                "candidate_node": -1 if s.acquisition.target_node is None
+                else s.acquisition.target_node,
                 "optimised_value": np.nan
-                if s.candidate.intervention_value is None
-                else s.candidate.intervention_value,
+                if s.acquisition.intervention_value is None
+                else s.acquisition.intervention_value,
                 "optimised_standardised_value": np.nan if inner is None
                 else inner.best_standardised_value,
                 "expected_information_gain": s.expected_information_gain,
                 "standard_error": s.standard_error,
                 "coherence_gap": s.coherence_gap,
                 "surrogate_estimate": np.nan if inner is None
-                else inner.best_value_posterior_mean,
-                "is_chosen": s.candidate == c,
+                else inner.best_value_surrogate_mean,
+                "is_chosen": s.acquisition == c,
             })  # fmt: skip
             if inner is None or inner.surrogate is None:
                 continue

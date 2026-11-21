@@ -3,9 +3,9 @@ standardised coordinate u with a raw value v = centre + scale * u."""
 
 from dataclasses import dataclass
 
-from causal_active_learning.acquisitions import CandidateExperiment
+from causal_active_learning.acquisitions import Acquisition
 from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.context import ExperimentalContext
 
 LENGTHSCALE_BOUNDS_IN_DOMAIN_WIDTHS = (0.05, 2.0)
 
@@ -27,7 +27,7 @@ class ValueDomain:
         Raw-scale mean and standard deviation of the node in the context
         (the model's standardisation).
 
-    rows_per_experiment : int
+    num_rows : int
         Rows of every candidate built from this domain.
     """
 
@@ -36,7 +36,7 @@ class ValueDomain:
     upper: float
     centre: float
     scale: float
-    rows_per_experiment: int = 1
+    num_rows: int = 1
 
     def __post_init__(self):
         if not self.lower < self.upper:
@@ -57,12 +57,12 @@ class ValueDomain:
         """v -> u."""
         return (float(value) - self.centre) / self.scale
 
-    def candidate(self, standardised_value: float) -> CandidateExperiment:
+    def acquisition(self, standardised_value: float) -> Acquisition:
         """The experiment do(X_node = to_value(u))."""
-        return CandidateExperiment(
+        return Acquisition(
             self.target_node,
             self.to_value(standardised_value),
-            self.rows_per_experiment,
+            self.num_rows,
         )
 
     def lengthscale_bounds(self) -> tuple[float, float]:
@@ -72,7 +72,7 @@ class ValueDomain:
 
 
 def value_domains(
-    context: ExperimentContext,
+    context: ExperimentalContext,
     nodes: list[int],
     config: ActiveLearningConfig,
     prior_value_range: tuple[float, float] | None = None,
@@ -100,6 +100,6 @@ def value_domains(
             lower, upper = -c, c
         domains[node] = ValueDomain(
             node, float(lower), float(upper), centre, scale,
-            config.rows_per_experiment,
+            config.rows_per_acquisition,
         )  # fmt: skip
     return domains

@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from causal_active_learning.distributions import (
-    QueryMixture,
+    UnivariateGaussianMixture,
     kl_divergence_monte_carlo,
     kl_divergence_quadrature,
 )
@@ -27,8 +27,8 @@ def _gaussian_kl(m1, s1, m2, s2):
     ],
 )
 def test_quadrature_kl_matches_the_closed_form(m1, s1, m2, s2):
-    p = QueryMixture.gaussian(torch.tensor([m1]), torch.tensor([s1]))
-    q = QueryMixture.gaussian(torch.tensor([m2]), torch.tensor([s2]))
+    p = UnivariateGaussianMixture.gaussian(torch.tensor([m1]), torch.tensor([s1]))
+    q = UnivariateGaussianMixture.gaussian(torch.tensor([m2]), torch.tensor([s2]))
     value = float(kl_divergence_quadrature(p, q, 1024))
     exact = _gaussian_kl(m1, s1, m2, s2)
     assert math.isfinite(value)
@@ -37,12 +37,12 @@ def test_quadrature_kl_matches_the_closed_form(m1, s1, m2, s2):
 
 def test_quadrature_kl_matches_monte_carlo_for_mixtures():
     g = torch.Generator().manual_seed(0)
-    p = QueryMixture(
+    p = UnivariateGaussianMixture(
         torch.tensor([[-1.0, 1.5]], dtype=DOUBLE),
         torch.tensor([[0.5, 0.8]], dtype=DOUBLE),
         torch.log(torch.tensor([[0.3, 0.7]], dtype=DOUBLE)),
     )
-    q = QueryMixture(
+    q = UnivariateGaussianMixture(
         torch.tensor([[0.0, 2.0, -2.0]], dtype=DOUBLE),
         torch.tensor([[1.0, 0.6, 1.2]], dtype=DOUBLE),
         torch.log(torch.tensor([[0.5, 0.3, 0.2]], dtype=DOUBLE)),
@@ -57,7 +57,7 @@ def test_quadrature_kl_matches_monte_carlo_for_mixtures():
 
 
 def test_mixture_moments():
-    mixture = QueryMixture(
+    mixture = UnivariateGaussianMixture(
         torch.tensor([[-1.0, 1.0]], dtype=DOUBLE),
         torch.tensor([[1.0, 1.0]], dtype=DOUBLE),
         torch.log(torch.tensor([[0.5, 0.5]], dtype=DOUBLE)),

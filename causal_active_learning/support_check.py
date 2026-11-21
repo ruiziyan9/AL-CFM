@@ -22,7 +22,7 @@ Violations give a warning and a flag, never an error.
 
 from dataclasses import dataclass
 
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.context import ExperimentalContext
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class TrainingSupport:
 
 
 def context_violations(
-    context: ExperimentContext, support: TrainingSupport
+    context: ExperimentalContext, support: TrainingSupport
 ) -> list[str]:
     """Ways in which `context` lies outside `support` (empty if inside)."""
     problems = []
@@ -76,9 +76,9 @@ def context_violations(
 
 
 def worst_case_violations(
-    initial_context: ExperimentContext,
-    experiment_budget: int,
-    rows_per_experiment: int,
+    initial_context: ExperimentalContext,
+    acquisition_budget: int,
+    rows_per_acquisition: int,
     num_target_nodes: int,
     support: TrainingSupport,
 ) -> list[str]:
@@ -86,7 +86,7 @@ def worst_case_violations(
     and up to min(budget, number of possible target nodes) new regimes."""
     problems = []
     final_rows = (
-        initial_context.num_rows + experiment_budget * rows_per_experiment
+        initial_context.num_rows + acquisition_budget * rows_per_acquisition
     )
     low, high = support.context_size_range
     if final_rows > high:
@@ -100,7 +100,7 @@ def worst_case_violations(
             f"the training n_ctx_range minimum {low}"
         )
     existing = initial_context.intervened.any(0)
-    regimes = int(existing.sum()) + min(experiment_budget, num_target_nodes)
+    regimes = int(existing.sum()) + min(acquisition_budget, num_target_nodes)
     regimes = min(regimes, int(existing.numel()))
     if regimes > support.maximum_interventional_regimes:
         problems.append(

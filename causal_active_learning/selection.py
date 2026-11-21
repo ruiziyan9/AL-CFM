@@ -9,23 +9,23 @@ import numpy as np
 import torch
 
 from causal_active_learning.acquisitions import (
-    CandidateExperiment,
+    Acquisition,
     candidate_target_nodes,
 )
 from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentContext
-from causal_active_learning.distributions import QueryMixture
+from causal_active_learning.context import ExperimentalContext
+from causal_active_learning.distributions import UnivariateGaussianMixture
 from causal_active_learning.fantasies import draw_fantasy_noise
 from causal_active_learning.information_gain import (
     estimate_expected_information_gain,
     predict_query_on_context,
 )
-from causal_active_learning.protocols import PredictiveModel
+from causal_active_learning.protocols import CausalPredictiveModel
 from causal_active_learning.value_search import (
     ExpectedInformationGainFunction,
     ValueEvaluation,
-    ValueOptimisationResult,
-    make_value_optimiser,
+    ValueSearchResult,
+    make_value_search,
 )
 from causal_active_learning.value_search.domain import ValueDomain, value_domains
 
@@ -37,12 +37,12 @@ if TYPE_CHECKING:
 # Outer level
 # --------------------------------------------------------------------------- #
 @dataclass
-class CandidateScore:
+class AcquisitionScore:
     """Outer-level result for one candidate.
 
     Attributes:
     ----------
-    candidate : CandidateExperiment
+    acquisition : Acquisition
         The node's recommended experiment.
 
     expected_information_gain, standard_error : float
@@ -51,18 +51,18 @@ class CandidateScore:
     coherence_gap : float
         See `InformationGainEstimate.coherence_gap`.
 
-    inner_result : ValueOptimisationResult | None
+    value_search_result : ValueSearchResult | None
         The inner-level result (None for the observational candidate).
     """
 
-    candidate: CandidateExperiment
+    acquisition: Acquisition
     expected_information_gain: float
     standard_error: float
     coherence_gap: float
-    inner_result: ValueOptimisationResult | None
+    value_search_result: ValueSearchResult | None
 
 
-def choice_is_clear(scores: list[CandidateScore]) -> bool:
+def choice_is_clear(scores: list[AcquisitionScore]) -> bool:
     """False if the runner-up is within two combined standard errors of the
     best, sqrt(se_best^2 + se_second^2); True with a single candidate."""
     if len(scores) < 2:
@@ -76,52 +76,54 @@ def choice_is_clear(scores: list[CandidateScore]) -> bool:
 
 def reevaluate_and_select(
     evaluate_final: ExpectedInformationGainFunction,
-    inner_results: dict[int, ValueOptimisationResult],
-    extra_candidates: list[CandidateExperiment] | None = None,
-) -> tuple[CandidateExperiment, list[CandidateScore]]:
+    inner_results: dict[int, ValueSearchResult],
+    extra_candidates: list[Acquisition] | None = None,
+) -> tuple[Acquisition, list[AcquisitionScore]]:
     """Outer level: re-evaluate every node's recommended experiment (and the
     `extra_candidates`, e.g. an observational experiment) with
     `evaluate_final` (fresh noise, `final_num_fantasies`), and return the
     candidate with the largest re-evaluated EIG and all scores (in node
     order, extra candidates last)."""
     nodes = list(inner_results)
-    candidates = [inner_results[n].candidate for n in nodes]
+    candidates = [inner_results[n].acquisition for n in nodes]
     candidates += list(extra_candidates or [])
     estimates = evaluate_final(candidates)
     scores = [
-        CandidateScore(
-            candidate=e.candidate,
+        AcquisitionScore(
+            acquisition=e.acquisition,
             expected_information_gain=e.expected_information_gain,
             standard_error=e.standard_error,
             coherence_gap=e.coherence_gap,
-            inner_result=inner_results[nodes[i]] if i < len(nodes) else None,
+            value_search_result=inner_results[nodes[i]]
+            if i < len(nodes)
+            else None,
         )
         for i, e in enumerate(estimates)
     ]
     best = max(scores, key=lambda s: s.expected_information_gain)
-    return best.candidate, scores
+    return best.acquisition, scores
 
 
 # --------------------------------------------------------------------------- #
 # A design step
 # --------------------------------------------------------------------------- #
-def optimise_intervention_values(
-    model: PredictiveModel,
-    context: ExperimentContext,
+def search_intervention_values(
+    model: CausalPredictiveModel,
+    context: ExperimentalContext,
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
     config: ActiveLearningConfig,
     generators: "ActiveLearningGenerators",
     domains: dict[int, ValueDomain],
-    query_before: QueryMixture | None = None,
-) -> dict[int, ValueOptimisationResult]:
+    query_before: UnivariateGaussianMixture | None = None,
+) -> dict[int, ValueSearchResult]:
     """Inner level: the most informative value of every node of `domains`
-    (config.value_optimiser), with one inner-level noise draw per node
+    (config.value_search), with one inner-level noise draw per node
     reused by every evaluation of that node (common random numbers)."""
     noise = draw_fantasy_noise(
         model, list(domains), config.num_fantasies, context.num_variables,
-        config.rows_per_experiment, generators.inner_fantasy,
+        config.rows_per_acquisition, generators.inner_fantasy,
     )  # fmt: skip
 
     def evaluate(candidates):
@@ -131,13 +133,13 @@ def optimise_intervention_values(
             kl_generator=generators.inner_fantasy,
         )  # fmt: skip
 
-    optimiser = make_value_optimiser(config)
-    return optimiser.optimise(evaluate, domains, generators.bayesian_optimisation)
+    optimiser = make_value_search(config)
+    return optimiser.search(evaluate, domains, generators.bayesian_optimisation)
 
 
-def select_next_experiment(
-    model: PredictiveModel,
-    context: ExperimentContext,
+def select_next_acquisition(
+    model: CausalPredictiveModel,
+    context: ExperimentalContext,
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
@@ -145,13 +147,13 @@ def select_next_experiment(
     generators: "ActiveLearningGenerators",
     *,
     prior_value_range: tuple[float, float] | None = None,
-    query_before: QueryMixture | None = None,
-) -> tuple[CandidateExperiment, list[CandidateScore]]:
+    query_before: UnivariateGaussianMixture | None = None,
+) -> tuple[Acquisition, list[AcquisitionScore]]:
     """One design step (the sequential wet-lab mode): the next acquisition
     for the query X_outcome | do(X_treatment = psi) on `context`.
 
     Inner level: per candidate node, the value maximising EIG
-    (`optimise_intervention_values`). Outer level: every node's recommended
+    (`search_intervention_values`). Outer level: every node's recommended
     acquisition (plus an observational one if enabled) re-estimated with
     config.final_num_fantasies fresh fantasies from the outer-level
     generator, with the coherence gap; the largest re-estimated EIG wins
@@ -159,7 +161,7 @@ def select_next_experiment(
 
     Returns:
     ----------
-    (the chosen acquisition, one `CandidateScore` per candidate).
+    (the chosen acquisition, one `AcquisitionScore` per candidate).
     """
     psi = torch.as_tensor(treatment_values, dtype=torch.float64)
     nodes = candidate_target_nodes(
@@ -172,19 +174,19 @@ def select_next_experiment(
             model, context, treatment, outcome, psi
         )
     domains = value_domains(context, nodes, config, prior_value_range)
-    inner = optimise_intervention_values(
+    inner = search_intervention_values(
         model, context, treatment, outcome, psi, config, generators, domains,
         query_before,
     )  # fmt: skip
     extra = []
     if config.include_observational_candidate:
-        extra.append(CandidateExperiment(None, None, config.rows_per_experiment))
+        extra.append(Acquisition(None, None, config.rows_per_acquisition))
     outer_nodes: list[int | None] = [*nodes]
     if extra:
         outer_nodes.append(None)
     outer_noise = draw_fantasy_noise(
         model, outer_nodes, config.final_num_fantasies, context.num_variables,
-        config.rows_per_experiment, generators.outer_fantasy,
+        config.rows_per_acquisition, generators.outer_fantasy,
     )  # fmt: skip
 
     def evaluate_final(candidates):
@@ -198,8 +200,8 @@ def select_next_experiment(
 
 
 def dense_value_diagnostic(
-    model: PredictiveModel,
-    context: ExperimentContext,
+    model: CausalPredictiveModel,
+    context: ExperimentalContext,
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
@@ -207,14 +209,14 @@ def dense_value_diagnostic(
     domains: dict[int, ValueDomain],
     num_values: int,
     generator: torch.Generator,
-    query_before: QueryMixture | None = None,
+    query_before: UnivariateGaussianMixture | None = None,
 ) -> dict[int, list[ValueEvaluation]]:
     """EIG on `num_values` evenly spaced values of every node's domain, with
     config.final_num_fantasies fantasies (one noise per node from
     `generator`), to check that BO finds the optimum of exhaustive search."""
     noise = draw_fantasy_noise(
         model, list(domains), config.final_num_fantasies,
-        context.num_variables, config.rows_per_experiment, generator,
+        context.num_variables, config.rows_per_acquisition, generator,
     )  # fmt: skip
     plan = [
         (node, float(u))
@@ -223,7 +225,7 @@ def dense_value_diagnostic(
     ]
     estimates = estimate_expected_information_gain(
         model, context, treatment, outcome, treatment_values,
-        [domains[n].candidate(u) for n, u in plan], noise, config,
+        [domains[n].acquisition(u) for n, u in plan], noise, config,
         query_before=query_before, kl_generator=generator,
     )  # fmt: skip
     out: dict[int, list[ValueEvaluation]] = {n: [] for n in domains}

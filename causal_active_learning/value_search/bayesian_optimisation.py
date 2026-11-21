@@ -8,7 +8,7 @@ import torch
 
 from causal_active_learning.value_search import (
     ValueEvaluation,
-    ValueOptimisationResult,
+    ValueSearchResult,
     _draw_base_seed,
     _node_generator,
 )
@@ -49,7 +49,7 @@ class _NodeState:
         return u, y, se**2
 
 
-class BayesianOptimisationValueOptimiser:
+class BayesianOptimisationValueSearch:
     """GP-UCB per node, in lockstep across nodes (plan section 5.3-5.4).
 
     Per node: `initial_points` deterministic values (`initial_design`), then
@@ -109,7 +109,7 @@ class BayesianOptimisationValueOptimiser:
             lengthscale=h.lengthscale, output_scale=h.output_scale,
         )  # fmt: skip
 
-    def optimise(self, evaluate, domains, generator):
+    def search(self, evaluate, domains, generator):
         base_seed = _draw_base_seed(generator)
         states = {
             node: _NodeState(domain, _node_generator(base_seed, node))
@@ -135,7 +135,7 @@ class BayesianOptimisationValueOptimiser:
                     proposals[node] = self._propose(state)
             nodes = list(proposals)
             estimates = evaluate([
-                states[n].domain.candidate(proposals[n].standardised_value)
+                states[n].domain.acquisition(proposals[n].standardised_value)
                 for n in nodes
             ])  # fmt: skip
             for node, estimate in zip(nodes, estimates):
@@ -150,13 +150,13 @@ class BayesianOptimisationValueOptimiser:
             u, _, _ = state.data()
             mean, _ = surrogate.posterior(u)
             best = int(torch.argmax(mean))
-            results[node] = ValueOptimisationResult(
+            results[node] = ValueSearchResult(
                 target_node=node,
                 best_value=state.evaluations[best].value,
                 best_standardised_value=state.evaluations[
                     best
                 ].standardised_value,
-                best_value_posterior_mean=float(mean[best]),
+                best_value_surrogate_mean=float(mean[best]),
                 evaluations=state.evaluations,
                 domain=state.domain,
                 surrogate=surrogate,

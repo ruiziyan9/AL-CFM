@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 import torch
 
-from causal_active_learning.acquisitions import CandidateExperiment
+from causal_active_learning.acquisitions import Acquisition
 from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.loop import (
     ActiveLearningGenerators,
     run_active_learning,
@@ -36,14 +36,16 @@ def test_context_append():
     assert after.intervened[15:, 3].all() and after.intervened.sum() == 2
     assert not context.append(rows, None).intervened.any()
     with pytest.raises(ValueError):
-        ExperimentContext(torch.zeros(2, 3), torch.zeros(2, 2, dtype=torch.bool))
+        ExperimentalContext(
+            torch.zeros(2, 3), torch.zeros(2, 2, dtype=torch.bool)
+        )
     with pytest.raises(ValueError):
-        ExperimentContext(
+        ExperimentalContext(
             torch.tensor([[float("nan"), 0.0]]),
             torch.zeros(1, 2, dtype=torch.bool),
         )
     with pytest.raises(ValueError):
-        ExperimentContext(torch.zeros(1, 2), torch.ones(1, 2, dtype=torch.bool))
+        ExperimentalContext(torch.zeros(1, 2), torch.ones(1, 2, dtype=torch.bool))
 
 
 def test_reproducible_and_real_rows_independent_of_acquisition_settings():
@@ -58,9 +60,9 @@ def test_reproducible_and_real_rows_independent_of_acquisition_settings():
     first, second = run(), run()
     for a, b in zip(first, second):
         assert a.chosen == b.chosen and torch.equal(a.real_rows, b.real_rows)
-    random_a = run(acquisition="random")
+    random_a = run(strategy="random")
     random_b = run(
-        acquisition="random", bayesian_optimisation_iterations=5, num_fantasies=12
+        strategy="random", bayesian_optimisation_iterations=5, num_fantasies=12
     )
     for a, b in zip(random_a, random_b):
         assert torch.equal(a.real_rows, b.real_rows)
@@ -72,7 +74,7 @@ def test_training_support_warning_and_flag():
     with pytest.warns(UserWarning, match="training support"):
         steps = run_active_learning(
             stub, StubEnvironment(), empty_context(rows=20), 0, 2, PSI,
-            cheap_config(acquisition="random"),
+            cheap_config(strategy="random"),
             ActiveLearningGenerators.from_seed(0), training_support=support,
         )  # fmt: skip
     assert not steps[0].outside_training_support
@@ -81,7 +83,7 @@ def test_training_support_warning_and_flag():
         warnings.simplefilter("error")
         run_active_learning(
             stub, StubEnvironment(), empty_context(rows=20), 0, 2, PSI,
-            cheap_config(acquisition="random"),
+            cheap_config(strategy="random"),
             ActiveLearningGenerators.from_seed(0),
             training_support=TrainingSupport((10, 100), 11, 2),
         )  # fmt: skip
@@ -90,20 +92,20 @@ def test_training_support_warning_and_flag():
 @pytest.mark.parametrize(
     "settings",
     [
-        {"acquisition": "greedy"},
-        {"value_optimiser": "random_search"},
+        {"strategy": "greedy"},
+        {"value_search": "random_search"},
         {"kl_estimator": "exact"},
         {"value_domain": "anywhere"},
-        {"experiment_budget": 0},
+        {"acquisition_budget": 0},
         {"num_fantasies": 1},
-        {"rows_per_experiment": 0},
+        {"rows_per_acquisition": 0},
         {"inference_batch_size": 0},
         {"bayesian_optimisation_initial_points": 1},
         {"value_domain_half_width": 0.0},
     ],
 )
 def test_config_validation(settings):
-    base = {"experiment_budget": 3}
+    base = {"acquisition_budget": 3}
     base.update(settings)
     with pytest.raises(ValueError):
         ActiveLearningConfig(**base)
@@ -111,8 +113,8 @@ def test_config_validation(settings):
 
 def test_candidate_validation():
     with pytest.raises(ValueError):
-        CandidateExperiment(1, None)
+        Acquisition(1, None)
     with pytest.raises(ValueError):
-        CandidateExperiment(None, 1.0)
-    assert CandidateExperiment(None, None).is_observational
+        Acquisition(None, 1.0)
+    assert Acquisition(None, None).is_observational
     assert np.isfinite(1.0)

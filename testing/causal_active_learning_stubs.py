@@ -16,8 +16,8 @@ import math
 import numpy as np
 import torch
 
-from causal_active_learning.context import ExperimentContext
-from causal_active_learning.distributions import QueryMixture
+from causal_active_learning.context import ExperimentalContext
+from causal_active_learning.distributions import UnivariateGaussianMixture
 from causal_active_learning.information_gain import InformationGainEstimate
 from causal_active_learning.value_search.domain import ValueDomain
 
@@ -32,10 +32,10 @@ class ConjugateStub:
     def __init__(self, independent_rows=False, observational=True):
         self.independent_rows = independent_rows
         self.supports_observational_prediction = observational
-        self.query_calls: list[list[ExperimentContext]] = []
-        self.fantasy_calls: list[list[ExperimentContext]] = []
+        self.query_calls: list[list[ExperimentalContext]] = []
+        self.fantasy_calls: list[list[ExperimentalContext]] = []
 
-    def posterior(self, context: ExperimentContext):
+    def posterior(self, context: ExperimentalContext):
         on_i = context.intervened[:, self.INFORMATIVE].to(DOUBLE)
         v, y = context.values[:, self.INFORMATIVE], context.values[:, 2]
         precision = (
@@ -55,7 +55,7 @@ class ConjugateStub:
         s2 = torch.tensor([p[1] for p in posts], dtype=DOUBLE)
         mean = m[:, None] * psi
         sd = torch.sqrt(s2[:, None] * psi**2 + self.NOISE)
-        return QueryMixture.gaussian(mean, sd)
+        return UnivariateGaussianMixture.gaussian(mean, sd)
 
     def draw_fantasy_noise(
         self, num_variables, num_fantasies, num_rows, generator
@@ -72,7 +72,7 @@ class ConjugateStub:
         self.fantasy_calls.append(list(contexts))
         out = []
         for context, a, z in zip(contexts, acquisitions, noise):
-            S, R = z.shape[0], a.rows_per_experiment
+            S, R = z.shape[0], a.num_rows
             m0, s20 = self.posterior(context)
             m = torch.full((S,), m0, dtype=DOUBLE)
             s2 = torch.full((S,), s20, dtype=DOUBLE)
@@ -108,7 +108,7 @@ class ContextBlindStub(ConjugateStub):
     def predict_query(self, contexts, treatment, outcome, treatment_values):
         psi = torch.as_tensor(treatment_values, dtype=DOUBLE)
         B = len(contexts)
-        return QueryMixture.gaussian(
+        return UnivariateGaussianMixture.gaussian(
             torch.zeros(B, len(psi), dtype=DOUBLE),
             torch.ones(B, len(psi), dtype=DOUBLE),
         )
@@ -118,7 +118,7 @@ def empty_context(rows=20, D=4, seed=0):
     """An observational context."""
     g = torch.Generator().manual_seed(seed)
     values = torch.randn(rows, D, generator=g, dtype=DOUBLE)
-    return ExperimentContext(values, torch.zeros(rows, D, dtype=torch.bool))
+    return ExperimentalContext(values, torch.zeros(rows, D, dtype=torch.bool))
 
 
 class StubEnvironment:
@@ -144,15 +144,15 @@ class StubEnvironment:
     def sample_observational(self, num_rows, generator):
         return self._sample(num_rows, None, None, generator)
 
-    def run_experiment(self, candidate, generator):
+    def run(self, acquisition, generator):
         return self._sample(
-            candidate.rows_per_experiment, candidate.target_node,
-            candidate.intervention_value, generator,
+            acquisition.num_rows, acquisition.target_node,
+            acquisition.intervention_value, generator,
         )  # fmt: skip
 
     def true_query_distribution(self, treatment, outcome, values):
         psi = torch.as_tensor(values, dtype=DOUBLE)
-        return QueryMixture.gaussian(
+        return UnivariateGaussianMixture.gaussian(
             0.8 * psi, torch.full_like(psi, math.sqrt(0.3))
         )
 

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-ACQUISITIONS = (
+STRATEGIES = (
     "expected_information_gain",
     "random",
     "observational",
@@ -10,24 +10,24 @@ ACQUISITIONS = (
     "exhaustive_true_gain",
 )
 KL_ESTIMATORS = ("quadrature", "monte_carlo")
-VALUE_OPTIMISERS = ("bayesian_optimisation", "grid")
+VALUE_SEARCHES = ("bayesian_optimisation", "grid")
 VALUE_DOMAINS = ("observational_range", "prior_range")
 
 
 @dataclass
 class ActiveLearningConfig:
-    """Settings of `select_next_experiment` and `run_active_learning`.
+    """Settings of `select_next_acquisition` and `run_active_learning`.
 
     Attributes:
     ----------
-    experiment_budget : int
+    acquisition_budget : int
         Number of experiments (loop steps).
 
-    rows_per_experiment : int
+    rows_per_acquisition : int
         Rows produced by one experiment.
 
     acquisition : str
-        One of ACQUISITIONS (see `run_active_learning`).
+        One of STRATEGIES (see `run_active_learning`).
 
     exclude_query_nodes : bool
         True: neither the treatment nor the outcome is a candidate node.
@@ -53,7 +53,7 @@ class ActiveLearningConfig:
     inference_batch_size : int
         Contexts per forward pass.
 
-    value_optimiser : str
+    value_search : str
         Inner level: "bayesian_optimisation" or "grid".
 
     value_domain : str
@@ -80,9 +80,9 @@ class ActiveLearningConfig:
         Random starts of the GP hyperparameter fit.
     """
 
-    experiment_budget: int
-    rows_per_experiment: int = 1
-    acquisition: str = "expected_information_gain"
+    acquisition_budget: int
+    rows_per_acquisition: int = 1
+    strategy: str = "expected_information_gain"
     exclude_query_nodes: bool = True
     include_observational_candidate: bool = False
     # EIG estimation
@@ -93,7 +93,7 @@ class ActiveLearningConfig:
     kl_monte_carlo_samples: int = 1024
     inference_batch_size: int = 128
     # inner level
-    value_optimiser: str = "bayesian_optimisation"
+    value_search: str = "bayesian_optimisation"
     value_domain: str = "observational_range"
     value_domain_half_width: float = 3.0
     grid_standardised_values: tuple[float, ...] = (-2.0, -1.0, 0.0, 1.0, 2.0)
@@ -106,9 +106,9 @@ class ActiveLearningConfig:
     def __post_init__(self):
         """Raise ValueError for an unknown string or an invalid number."""
         choices = {
-            "acquisition": ACQUISITIONS,
+            "strategy": STRATEGIES,
             "kl_estimator": KL_ESTIMATORS,
-            "value_optimiser": VALUE_OPTIMISERS,
+            "value_search": VALUE_SEARCHES,
             "value_domain": VALUE_DOMAINS,
         }
         for name, allowed in choices.items():
@@ -118,7 +118,7 @@ class ActiveLearningConfig:
                     f"{getattr(self, name)!r}"
                 )
         positive = (
-            "experiment_budget", "rows_per_experiment", "num_fantasies",
+            "acquisition_budget", "rows_per_acquisition", "num_fantasies",
             "final_num_fantasies", "quadrature_points",
             "kl_monte_carlo_samples", "inference_batch_size",
             "acquisition_grid_points", "gaussian_process_restarts",

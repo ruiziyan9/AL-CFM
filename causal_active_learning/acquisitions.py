@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class CandidateExperiment:
+class Acquisition:
     """One experiment the loop can run.
 
     Attributes:
@@ -15,13 +15,13 @@ class CandidateExperiment:
     intervention_value : float | None
         Do-value on the raw data scale; None if and only if observational.
 
-    rows_per_experiment : int
+    num_rows : int
         Rows the experiment produces (all with the same target and value).
     """
 
     target_node: int | None
     intervention_value: float | None
-    rows_per_experiment: int = 1
+    num_rows: int = 1
 
     def __post_init__(self):
         if (self.target_node is None) != (self.intervention_value is None):
@@ -29,8 +29,20 @@ class CandidateExperiment:
                 "target_node and intervention_value must both be None "
                 "(observational) or both be given"
             )
-        if self.rows_per_experiment < 1:
-            raise ValueError("rows_per_experiment must be >= 1")
+        if self.num_rows < 1:
+            raise ValueError("num_rows must be >= 1")
+
+    @classmethod
+    def intervention(
+        cls, node: int, value: float, num_rows: int = 1
+    ) -> "Acquisition":
+        """R = num_rows rows under do(X_node = value)."""
+        return cls(int(node), float(value), int(num_rows))
+
+    @classmethod
+    def observational(cls, num_rows: int = 1) -> "Acquisition":
+        """R = num_rows observational rows."""
+        return cls(None, None, int(num_rows))
 
     @property
     def is_observational(self) -> bool:

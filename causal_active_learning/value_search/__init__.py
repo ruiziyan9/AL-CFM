@@ -10,7 +10,7 @@ from typing import Protocol
 import numpy as np
 import torch
 
-from causal_active_learning.acquisitions import CandidateExperiment
+from causal_active_learning.acquisitions import Acquisition
 from causal_active_learning.information_gain import InformationGainEstimate
 from causal_active_learning.value_search.domain import ValueDomain
 from causal_active_learning.value_search.gaussian_process import (
@@ -18,7 +18,7 @@ from causal_active_learning.value_search.gaussian_process import (
 )
 
 ExpectedInformationGainFunction = Callable[
-    [list[CandidateExperiment]], list[InformationGainEstimate]
+    [list[Acquisition]], list[InformationGainEstimate]
 ]
 
 
@@ -57,7 +57,7 @@ class ValueEvaluation:
 
 
 @dataclass
-class ValueOptimisationResult:
+class ValueSearchResult:
     """Inner-level result for one node.
 
     Attributes:
@@ -68,7 +68,7 @@ class ValueOptimisationResult:
     best_value, best_standardised_value : float
         The recommended v and u.
 
-    best_value_posterior_mean : float
+    best_value_surrogate_mean : float
         Surrogate estimate of EIG at the recommended value (BO: GP posterior
         mean; grid: the estimate itself).
 
@@ -85,26 +85,26 @@ class ValueOptimisationResult:
     target_node: int
     best_value: float
     best_standardised_value: float
-    best_value_posterior_mean: float
+    best_value_surrogate_mean: float
     evaluations: list[ValueEvaluation]
     domain: ValueDomain
     surrogate: FittedGaussianProcess | None = None
 
     @property
-    def candidate(self) -> CandidateExperiment:
+    def acquisition(self) -> Acquisition:
         """The recommended experiment."""
-        return self.domain.candidate(self.best_standardised_value)
+        return self.domain.acquisition(self.best_standardised_value)
 
 
-class InterventionValueOptimiser(Protocol):
+class ValueSearch(Protocol):
     """Inner level: the most informative value for every node."""
 
-    def optimise(
+    def search(
         self,
         evaluate: ExpectedInformationGainFunction,
         domains: dict[int, ValueDomain],
         generator: torch.Generator,
-    ) -> dict[int, ValueOptimisationResult]:
+    ) -> dict[int, ValueSearchResult]:
         """Optimise all nodes of `domains`; `evaluate` maps candidates to
         `InformationGainEstimate`s (one batched call per round)."""
         ...
@@ -121,16 +121,16 @@ def _draw_base_seed(generator: torch.Generator) -> int:
     return int(torch.randint(0, 2**62, (1,), generator=generator))
 
 
-def make_value_optimiser(config) -> InterventionValueOptimiser:
-    """The inner-level search named by `config.value_optimiser`."""
+def make_value_search(config) -> ValueSearch:
+    """The inner-level search named by `config.value_search`."""
     from causal_active_learning.value_search.bayesian_optimisation import (
-        BayesianOptimisationValueOptimiser,
+        BayesianOptimisationValueSearch,
     )
-    from causal_active_learning.value_search.grid import GridValueOptimiser
+    from causal_active_learning.value_search.grid import GridValueSearch
 
-    if config.value_optimiser == "grid":
-        return GridValueOptimiser(config.grid_standardised_values)
-    return BayesianOptimisationValueOptimiser(
+    if config.value_search == "grid":
+        return GridValueSearch(config.grid_standardised_values)
+    return BayesianOptimisationValueSearch(
         initial_points=config.bayesian_optimisation_initial_points,
         iterations=config.bayesian_optimisation_iterations,
         exploration_weight=config.ucb_exploration_weight,

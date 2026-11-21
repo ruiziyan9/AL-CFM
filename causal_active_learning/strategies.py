@@ -10,26 +10,26 @@ from typing import TYPE_CHECKING
 import torch
 
 from causal_active_learning.acquisitions import (
-    CandidateExperiment,
+    Acquisition,
     candidate_target_nodes,
 )
 from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.distributions import (
-    QueryMixture,
+    UnivariateGaussianMixture,
     kl_divergence_quadrature,
 )
 from causal_active_learning.information_gain import predict_query_on_context
 from causal_active_learning.protocols import (
     ExperimentEnvironment,
-    PredictiveModel,
+    CausalPredictiveModel,
 )
 from causal_active_learning.selection import (
-    CandidateScore,
+    AcquisitionScore,
     choice_is_clear,
     dense_value_diagnostic,
-    optimise_intervention_values,
-    select_next_experiment,
+    search_intervention_values,
+    select_next_acquisition,
 )
 from causal_active_learning.value_search import ValueEvaluation
 from causal_active_learning.value_search.domain import ValueDomain, value_domains
@@ -44,10 +44,10 @@ class StrategyChoice:
 
     Attributes:
     ----------
-    chosen : CandidateExperiment
+    chosen : Acquisition
         The acquisition to run.
 
-    scores : list[CandidateScore]
+    scores : list[AcquisitionScore]
         Scores of the candidates (EIG strategies; empty for baselines).
 
     choice_is_clear : bool
@@ -60,14 +60,18 @@ class StrategyChoice:
         Dense value diagnostic, when requested.
     """
 
-    chosen: CandidateExperiment
-    scores: list[CandidateScore] = field(default_factory=list)
+    chosen: Acquisition
+    scores: list[AcquisitionScore] = field(default_factory=list)
     choice_is_clear: bool = True
     predicted_information_gain: float = float("nan")
     dense_value_diagnostic: dict[int, list[ValueEvaluation]] | None = None
 
 
-def query_kl(truth: QueryMixture, model: QueryMixture, points: int) -> float:
+def query_kl(
+    truth: UnivariateGaussianMixture,
+    model: UnivariateGaussianMixture,
+    points: int,
+) -> float:
     """psi-averaged KL(truth || model) by quadrature."""
     return float(kl_divergence_quadrature(truth, model, points).mean())
 
@@ -78,23 +82,23 @@ def _uniform(domain: ValueDomain, generator: torch.Generator) -> float:
 
 
 def choose_acquisition(
-    model: PredictiveModel,
+    model: CausalPredictiveModel,
     environment: ExperimentEnvironment,
-    context: ExperimentContext,
+    context: ExperimentalContext,
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
     config: ActiveLearningConfig,
     generators: "ActiveLearningGenerators",
     *,
-    query_before: QueryMixture,
-    truth: QueryMixture,
+    query_before: UnivariateGaussianMixture,
+    truth: UnivariateGaussianMixture,
     prior_value_range: tuple[float, float] | None = None,
     dense_value_diagnostic_points: int | None = None,
 ) -> StrategyChoice:
-    """The next acquisition of strategy `config.acquisition`:
+    """The next acquisition of strategy `config.strategy`:
 
-    - "expected_information_gain": `select_next_experiment`;
+    - "expected_information_gain": `select_next_acquisition`;
     - "random": a uniformly random candidate node, value uniform over its
       domain (ABCI's RAND);
     - "observational": observational rows only (ABCI's OBS);
@@ -107,15 +111,15 @@ def choose_acquisition(
     nodes = candidate_target_nodes(
         context.num_variables, treatment, outcome, config.exclude_query_nodes
     )
-    acquisition = config.acquisition
+    acquisition = config.strategy
     if acquisition == "expected_information_gain":
-        chosen, scores = select_next_experiment(
+        chosen, scores = select_next_acquisition(
             model, context, treatment, outcome, treatment_values, config,
             generators, prior_value_range=prior_value_range,
             query_before=query_before,
         )  # fmt: skip
         predicted = next(
-            s.expected_information_gain for s in scores if s.candidate == chosen
+            s.expected_information_gain for s in scores if s.acquisition == chosen
         )
         diagnostic = None
         if dense_value_diagnostic_points:
@@ -135,31 +139,31 @@ def choose_acquisition(
         node = nodes[index]
         domain = value_domains(context, [node], config, prior_value_range)[node]
         return StrategyChoice(
-            domain.candidate(_uniform(domain, generators.baseline))
+            domain.acquisition(_uniform(domain, generators.baseline))
         )
     if acquisition == "observational":
         return StrategyChoice(
-            CandidateExperiment(None, None, config.rows_per_experiment)
+            Acquisition(None, None, config.rows_per_acquisition)
         )
     if acquisition == "treatment":
         domain = value_domains(context, [treatment], config, prior_value_range)[
             treatment
         ]
         return StrategyChoice(
-            domain.candidate(_uniform(domain, generators.baseline))
+            domain.acquisition(_uniform(domain, generators.baseline))
         )
     # exhaustive_true_gain
     domains = value_domains(context, nodes, config, prior_value_range)
-    inner = optimise_intervention_values(
+    inner = search_intervention_values(
         model, context, treatment, outcome, treatment_values, config,
         generators, domains, query_before,
     )  # fmt: skip
     best_kl = math.inf
-    best: CandidateExperiment | None = None
+    best: Acquisition | None = None
     scores = []
     for node, result in inner.items():
-        trial = environment.run_experiment(
-            result.candidate, copy.deepcopy(generators.environment)
+        trial = environment.run(
+            result.acquisition, copy.deepcopy(generators.environment)
         )
         after = predict_query_on_context(
             model, context.append(trial, node), treatment, outcome,
@@ -167,16 +171,16 @@ def choose_acquisition(
         )  # fmt: skip
         kl = query_kl(truth, after, config.quadrature_points)
         scores.append(
-            CandidateScore(
-                candidate=result.candidate,
-                expected_information_gain=result.best_value_posterior_mean,
+            AcquisitionScore(
+                acquisition=result.acquisition,
+                expected_information_gain=result.best_value_surrogate_mean,
                 standard_error=float("nan"),
                 coherence_gap=float("nan"),
-                inner_result=result,
+                value_search_result=result,
             )
         )
         if kl < best_kl:
-            best_kl, best = kl, result.candidate
+            best_kl, best = kl, result.acquisition
     assert best is not None
     return StrategyChoice(best, scores)
 

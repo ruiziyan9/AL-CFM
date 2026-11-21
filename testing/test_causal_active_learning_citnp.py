@@ -9,14 +9,14 @@ import numpy as np
 import pytest
 import torch
 
-from causal_active_learning.acquisitions import CandidateExperiment
-from causal_active_learning.config import ACQUISITIONS
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.acquisitions import Acquisition
+from causal_active_learning.config import STRATEGIES
+from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.integrations.citnp.environment import (
     LinearSCMEnvironment,
 )
 from causal_active_learning.integrations.citnp.model import (
-    ModelApiPredictiveModel,
+    CITNPPredictiveModel,
 )
 from causal_active_learning.integrations.citnp.support import (
     training_support_from_data_config,
@@ -25,7 +25,7 @@ from causal_active_learning.loop import (
     ActiveLearningGenerators,
     run_active_learning,
 )
-from causal_active_learning.selection import select_next_experiment
+from causal_active_learning.selection import select_next_acquisition
 from causal_active_learning.support_check import TrainingSupport
 from CITNP.evaluation.model_api import (
     JointPrediction,
@@ -117,10 +117,10 @@ def test_fantasy_context_inputs_equal_building_from_scratch():
 # --------------------------------------------------------------------------- #
 def test_fantasies_match_joint_samples_and_fix_the_target():
     model = tiny_joint_model()
-    adapter = ModelApiPredictiveModel(model, "cpu")
+    adapter = CITNPPredictiveModel(model, "cpu")
     context = empty_context(rows=30, D=5)
     g = torch.Generator().manual_seed(1)
-    candidates = [CandidateExperiment(1, 0.7), CandidateExperiment(3, -1.2)]
+    candidates = [Acquisition(1, 0.7), Acquisition(3, -1.2)]
     noise = [adapter.draw_fantasy_noise(5, 6, 1, g) for _ in candidates]
     rows = adapter.sample_fantasies([context] * 2, candidates, noise)
     assert rows.shape == (2, 6, 1, 5)
@@ -141,12 +141,12 @@ def test_fantasies_match_joint_samples_and_fix_the_target():
 
 @pytest.mark.parametrize("sampling", ["autoregressive", "independent"])
 def test_multi_row_fantasies(sampling):
-    adapter = ModelApiPredictiveModel(
+    adapter = CITNPPredictiveModel(
         tiny_joint_model(), "cpu", fantasy_row_sampling=sampling
     )
     g = torch.Generator().manual_seed(0)
     R = 3
-    candidates = [CandidateExperiment(1, 1.0, R), CandidateExperiment(3, 0.5, R)]
+    candidates = [Acquisition(1, 1.0, R), Acquisition(3, 0.5, R)]
     noise = [adapter.draw_fantasy_noise(5, 4, R, g) for _ in candidates]
     rows = adapter.sample_fantasies([empty_context(D=5)] * 2, candidates, noise)
     assert rows.shape == (2, 4, R, 5)
@@ -157,17 +157,17 @@ def test_multi_row_fantasies(sampling):
 
 
 def test_observational_fantasies_are_not_available():
-    adapter = ModelApiPredictiveModel(tiny_joint_model(), "cpu")
+    adapter = CITNPPredictiveModel(tiny_joint_model(), "cpu")
     assert adapter.supports_observational_prediction is False
     noise = [adapter.draw_fantasy_noise(5, 4, 1, torch.Generator())]
     with pytest.raises(NotImplementedError):
         adapter.sample_fantasies(
-            [empty_context(D=5)], [CandidateExperiment(None, None)], noise
+            [empty_context(D=5)], [Acquisition(None, None)], noise
         )
     with pytest.raises(ValueError):
         from CITNP.models.mixed_context_model import INTERVENTION_ENCODINGS
 
-        ModelApiPredictiveModel(
+        CITNPPredictiveModel(
             INTERVENTION_ENCODINGS["layerwise"](tiny_config(5)), "cpu"
         )
 
@@ -303,9 +303,7 @@ def test_batched_model_api_equals_looping():
 # --------------------------------------------------------------------------- #
 def test_environment_rows_have_the_exact_do_value():
     env = example_environment()
-    rows = env.run_experiment(
-        CandidateExperiment(1, 0.37, 5), np.random.default_rng(0)
-    )
+    rows = env.run(Acquisition(1, 0.37, 5), np.random.default_rng(0))
     assert rows.shape == (5, 5) and torch.all(rows[:, 1] == 0.37)
     truth = env.true_query_distribution(0, 2, PSI)
     slope, variance = env.scm.do_dist(0, 2)
@@ -318,9 +316,7 @@ def test_environment_rows_have_the_exact_do_value():
 @pytest.mark.slow
 def test_environment_moments_match_the_interventional_joint():
     env = example_environment()
-    rows = env.run_experiment(
-        CandidateExperiment(3, 1.5, 200_000), np.random.default_rng(1)
-    ).numpy()
+    rows = env.run(Acquisition(3, 1.5, 200_000), np.random.default_rng(1)).numpy()
     slopes, covariance = env.scm.do_joint_dist(3)
     assert np.allclose(rows.mean(0), slopes * 1.5, atol=0.01)
     assert np.allclose(np.cov(rows.T), covariance, atol=0.01)
@@ -330,16 +326,16 @@ def test_environment_moments_match_the_interventional_joint():
 # End to end, support, command
 # --------------------------------------------------------------------------- #
 def test_end_to_end_tiny_joint_model():
-    adapter = ModelApiPredictiveModel(tiny_joint_model(), "cpu")
+    adapter = CITNPPredictiveModel(tiny_joint_model(), "cpu")
     env = example_environment()
-    context = ExperimentContext(
+    context = ExperimentalContext(
         env.sample_observational(30, np.random.default_rng(0)),
         torch.zeros(30, 5, dtype=torch.bool),
     )
     for optimiser in ("bayesian_optimisation", "grid"):
-        for acquisition in ACQUISITIONS:
+        for acquisition in STRATEGIES:
             config = cheap_config(
-                acquisition=acquisition, value_optimiser=optimiser,
+                strategy=acquisition, value_search=optimiser,
                 num_fantasies=4, final_num_fantasies=4, quadrature_points=128,
                 bayesian_optimisation_iterations=1, gaussian_process_restarts=1,
             )  # fmt: skip
@@ -353,7 +349,7 @@ def test_end_to_end_tiny_joint_model():
                 for s in step.scores:
                     assert math.isfinite(s.expected_information_gain)
     with pytest.raises(NotImplementedError):
-        select_next_experiment(
+        select_next_acquisition(
             adapter, context, 2, 4, PSI,
             cheap_config(include_observational_candidate=True, num_fantasies=4,
                          final_num_fantasies=4),
@@ -387,8 +383,8 @@ def test_run_command(tmp_path):
         "--fixed_graph_edges", "0->1,1->2,2->4,0->3,3->4,0->2",
         "--treatment", "2", "--outcome", "4",
         "--strategies", "expected_information_gain,random",
-        "--value_optimisers", "bayesian_optimisation,grid",
-        "--experiment_budget", "1", "--seeds", "0", "--num_fantasies", "4",
+        "--value_search", "bayesian_optimisation,grid",
+        "--acquisition_budget", "1", "--seeds", "0", "--num_fantasies", "4",
         "--final_num_fantasies", "4", "--quadrature_points", "64",
         "--bayesian_optimisation_iterations", "1",
         "--gaussian_process_restarts", "1", "--dense_value_diagnostic",

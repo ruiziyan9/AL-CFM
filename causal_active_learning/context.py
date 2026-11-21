@@ -11,7 +11,7 @@ MINIMUM_STANDARD_DEVIATION = 1e-6
 
 
 @dataclass(frozen=True)
-class ExperimentContext:
+class ExperimentalContext:
     """One context on the raw data scale.
 
     Attributes:
@@ -52,14 +52,14 @@ class ExperimentContext:
 
     def append(
         self, new_rows: torch.Tensor, target_node: int | None
-    ) -> "ExperimentContext":
+    ) -> "ExperimentalContext":
         """A new context with `new_rows` [R, D] appended, all flagged as
         intervened on `target_node` only (on nothing for None: observational
         rows); this one is unchanged."""
         values, intervened = append_rows_to_context(
             self.values, self.intervened, new_rows, target_node
         )
-        return ExperimentContext(values, intervened)
+        return ExperimentalContext(values, intervened)
 
     def observational_mean_and_standard_deviation(
         self,
@@ -131,7 +131,7 @@ def append_rows_to_context(
 
 
 def stack_contexts(
-    contexts: Sequence[ExperimentContext],
+    contexts: Sequence[ExperimentalContext],
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Contexts of equal size as ([B, N, D] values, [B, N, D] flags)."""
     if not contexts:

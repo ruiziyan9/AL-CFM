@@ -3,7 +3,7 @@
 A fantasy of an acquisition is a set of R rows drawn from the model's
 predictive distribution for that acquisition (the BO convention, as in
 BoTorch's `fantasize`); the fantasy context is the current context with one
-fantasy appended. The model draws the rows (`PredictiveModel.sample_fantasies`)
+fantasy appended. The model draws the rows (`CausalPredictiveModel.sample_fantasies`)
 from standard noise that the core supplies, so the core decides whether noise
 is fresh for every evaluation or shared.
 """
@@ -13,13 +13,13 @@ from typing import Any
 
 import torch
 
-from causal_active_learning.acquisitions import CandidateExperiment
-from causal_active_learning.context import ExperimentContext
-from causal_active_learning.protocols import PredictiveModel
+from causal_active_learning.acquisitions import Acquisition
+from causal_active_learning.context import ExperimentalContext
+from causal_active_learning.protocols import CausalPredictiveModel
 
 
 def draw_fantasy_noise(
-    model: PredictiveModel,
+    model: CausalPredictiveModel,
     nodes: Sequence[int | None],
     num_fantasies: int,
     num_variables: int,
@@ -37,10 +37,10 @@ def draw_fantasy_noise(
 
 
 def fantasy_contexts(
-    context: ExperimentContext,
-    candidates: Sequence[CandidateExperiment],
+    context: ExperimentalContext,
+    candidates: Sequence[Acquisition],
     fantasies: torch.Tensor,
-) -> list[ExperimentContext]:
+) -> list[ExperimentalContext]:
     """The C x S fantasy contexts (candidate-major) of fantasies [C, S, R, D]:
     the context with all R rows of fantasy s of candidate c appended, flagged
     as intervened on the candidate's node."""

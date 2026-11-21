@@ -14,15 +14,15 @@ KL Kullback–Leibler divergence; PFN prior-data fitted network.
 
 | module | contents |
 |---|---|
-| `config.py` | `ActiveLearningConfig` (all settings, validated), `CandidateExperiment`, `candidate_target_nodes` |
-| `predictive_model.py` | `PredictiveModel` protocol, `ModelApiPredictiveModel` (via `CITNP.evaluation.model_api` only), `QueryMixture` |
-| `fantasy.py` | `ExperimentContext`, `append_rows_to_context`, `sample_fantasy_rows` |
+| `config.py` | `ActiveLearningConfig` (all settings, validated), `Acquisition`, `candidate_target_nodes` |
+| `predictive_model.py` | `CausalPredictiveModel` protocol, `CITNPPredictiveModel` (via `CITNP.evaluation.model_api` only), `UnivariateGaussianMixture` |
+| `fantasy.py` | `ExperimentalContext`, `append_rows_to_context`, `sample_fantasy_rows` |
 | `information_gain.py` | `estimate_expected_information_gain`, quadrature and Monte Carlo KL of Gaussian mixtures |
 | `gaussian_process.py` | exact GP (Matérn 5/2, known heteroscedastic noise, L-BFGS hyperparameter fit) |
-| `design_optimisation.py` | `ValueDomain`, `BayesianOptimisationValueOptimiser`, `GridValueOptimiser`, `reevaluate_and_select`, `choice_is_clear` |
+| `design_optimisation.py` | `ValueDomain`, `BayesianOptimisationValueSearch`, `GridValueSearch`, `reevaluate_and_select`, `choice_is_clear` |
 | `environment.py` | `ExperimentEnvironment` protocol, `LinearSCMEnvironment` (wraps `evaluation.oracle.LinearSCM`) |
 | `training_support.py` | `TrainingSupport`: does a context stay inside the training prior's context shapes? |
-| `loop.py` | `select_next_experiment` (one design step), `run_active_learning` (the loop), `ActiveLearningGenerators` |
+| `loop.py` | `select_next_acquisition` (one design step), `run_active_learning` (the loop), `ActiveLearningGenerators` |
 | `experiment.py`, `plots.py` | tasks x strategies x seeds -> tables and figures (the `active-learning` command) |
 
 ## The loop
@@ -49,7 +49,7 @@ removes its response to T, so the experiment says nothing about the query.
 
     i* in argmax_i EIG(i, v_i*),   where for every i:  v_i* in argmax_v EIG(i, v).
 
-**Inner level** (`BayesianOptimisationValueOptimiser`), per node, as ABCI
+**Inner level** (`BayesianOptimisationValueSearch`), per node, as ABCI
 Appendix D.7: values are searched in the node's standardised coordinate u,
 v = m_i + s_i u (m_i, s_i the node's mean and standard deviation in the model's
 own standardisation of the context), on [−c, c] (`value_domain:
@@ -63,7 +63,7 @@ maximised on a dense grid of 512 values. The GP has a constant mean, a Matérn
 hyperparameters maximise the log marginal likelihood (L-BFGS, 5 random starts,
 lengthscale in [0.05, 2] domain widths). The recommendation is the evaluated
 value with the largest posterior mean, not the largest noisy estimate.
-`GridValueOptimiser` (values −2..2 in u) is the baseline inner level.
+`GridValueSearch` (values −2..2 in u) is the baseline inner level.
 
 All nodes run in lockstep: each round, every node proposes one value and all
 proposals are evaluated in one batched forward pass. Each node's GP restarts
@@ -171,7 +171,7 @@ in every context with at least 33 rows; 0–5 interventional regimes (P = 0.25,
 0.27, 0.19, 0.13, 0.09, 0.06 for 0..5); every regime has at least one row, and
 1.5% of interventional regimes have exactly one row (2.9% at most two, 15% at
 most ten). Do-values are raw-scale N(0, s²), s ~ U(0.5, 3), or with probability
-0.1 Uniform(−w, w), w ~ U(3, 6). So `rows_per_experiment = 1` is inside the
+0.1 Uniform(−w, w), w ~ U(3, 6). So `rows_per_acquisition = 1` is inside the
 support, but a regime that stays at one or two rows is rare in training.
 
 ## The command
@@ -182,8 +182,8 @@ python -m causal_active_learning.integrations.citnp run --ckpt RUN/checkpoint.pt
     --model_config RUN/resolved_model_config.yaml \
     --data_config CITNP/experiments/configs/oracle_d5_iw_a15_sc.yaml \
     --environment example --fixed_graph_edges 0->1,1->2,2->4,0->3,3->4,0->2 \
-    --treatment 2 --outcome 4 --value_optimisers bayesian_optimisation,grid \
-    --experiment_budget 10 --seeds 0,1,2,3,4 [--dense_value_diagnostic] --out al_example
+    --treatment 2 --outcome 4 --value_searches bayesian_optimisation,grid \
+    --acquisition_budget 10 --seeds 0,1,2,3,4 [--dense_value_diagnostic] --out al_example
 # 50 tasks of the training prior (one random (T, Y) per task unless given)
 python -m causal_active_learning.integrations.citnp run ... --environment prior --n_tasks 50 --out al_prior
 python -m causal_active_learning.integrations.citnp plot al_example   # redraw the figures
@@ -196,7 +196,7 @@ baseline since do(T) data speaks to the query directly) and
 `exhaustive_true_gain` (evaluation only: runs each node's BO-chosen experiment
 on the true SCM and keeps the one with the lowest KL to the truth, an upper
 reference for the outer level). The strategies with an inner level run once per
-`--value_optimisers` entry. Every strategy starts from the same initial
+`--value_searches` entry. Every strategy starts from the same initial
 context and environment random state for a given (task, seed).
 
 Outputs (prefix `--out`): `_steps.csv` (one row per task x strategy x seed x
@@ -219,16 +219,16 @@ exhaustive search.
 ```python
 import torch
 from CITNP.active_learning import (
-    ActiveLearningConfig, ActiveLearningGenerators, ExperimentContext,
-    ModelApiPredictiveModel, choice_is_clear, select_next_experiment,
+    ActiveLearningConfig, ActiveLearningGenerators, ExperimentalContext,
+    CITNPPredictiveModel, choice_is_clear, select_next_acquisition,
 )
 from CITNP.evaluation.model_api import load_model
 
 model = load_model(ckpt, model_config, "cuda", num_nodes=5)
-predictive = ModelApiPredictiveModel(model, 5, "cuda")
-context = ExperimentContext(values, intervened)  # [N, 5] raw, [N, 5] bool
-config = ActiveLearningConfig(experiment_budget=1)
-chosen, scores = select_next_experiment(
+predictive = CITNPPredictiveModel(model, 5, "cuda")
+context = ExperimentalContext(values, intervened)  # [N, 5] raw, [N, 5] bool
+config = ActiveLearningConfig(acquisition_budget=1)
+chosen, scores = select_next_acquisition(
     predictive, context, treatment=2, outcome=4,
     query_treatment_values=torch.linspace(-3, 3, 13, dtype=torch.float64),
     config=config, generators=ActiveLearningGenerators.from_seed(0),

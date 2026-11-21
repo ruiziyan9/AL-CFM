@@ -20,7 +20,7 @@ _QUADRATURE_CHUNK_ENTRIES = 1 << 23
 
 
 @dataclass
-class QueryMixture:
+class UnivariateGaussianMixture:
     """Univariate Gaussian mixtures on the raw scale, float64:
         p(y) = sum_k exp(log_weights_k) N(y; mean_k, standard_deviation_k^2).
 
@@ -35,37 +35,39 @@ class QueryMixture:
     standard_deviation: torch.Tensor
     log_weights: torch.Tensor
 
-    def __getitem__(self, index) -> "QueryMixture":
+    def __getitem__(self, index) -> "UnivariateGaussianMixture":
         """Index the leading axes of all three tensors."""
-        return QueryMixture(
+        return UnivariateGaussianMixture(
             self.mean[index], self.standard_deviation[index],
             self.log_weights[index],
         )  # fmt: skip
 
-    def reshape(self, *leading: int) -> "QueryMixture":
+    def reshape(self, *leading: int) -> "UnivariateGaussianMixture":
         """Reshape the axes before (Q, K) to `leading`."""
         tail = self.mean.shape[-2:]
-        return QueryMixture(
+        return UnivariateGaussianMixture(
             self.mean.reshape(*leading, *tail),
             self.standard_deviation.reshape(*leading, *tail),
             self.log_weights.reshape(*leading, *tail),
         )
 
     @staticmethod
-    def concatenate(parts: list["QueryMixture"]) -> "QueryMixture":
+    def concatenate(
+        parts: list["UnivariateGaussianMixture"],
+    ) -> "UnivariateGaussianMixture":
         """Concatenate along the first axis."""
-        return QueryMixture(
+        return UnivariateGaussianMixture(
             torch.cat([p.mean for p in parts]),
             torch.cat([p.standard_deviation for p in parts]),
             torch.cat([p.log_weights for p in parts]),
         )
 
     @staticmethod
-    def gaussian(mean, standard_deviation) -> "QueryMixture":
+    def gaussian(mean, standard_deviation) -> "UnivariateGaussianMixture":
         """One-component mixtures from means and standard deviations [...]."""
         mean = torch.as_tensor(mean, dtype=torch.float64)
         sd = torch.as_tensor(standard_deviation, dtype=torch.float64)
-        return QueryMixture(
+        return UnivariateGaussianMixture(
             mean[..., None], sd[..., None], torch.zeros_like(mean)[..., None]
         )
 
@@ -78,7 +80,7 @@ class QueryMixture:
 
 
 def mixture_log_density(
-    mixture: QueryMixture, points: torch.Tensor
+    mixture: UnivariateGaussianMixture, points: torch.Tensor
 ) -> torch.Tensor:
     """log p(points) under univariate mixtures.
 
@@ -96,9 +98,11 @@ def mixture_log_density(
     return torch.logsumexp(log_normal + mixture.log_weights[..., None, :], dim=-1)
 
 
-def _flatten(mixture: QueryMixture, lead: torch.Size) -> QueryMixture:
+def _flatten(
+    mixture: UnivariateGaussianMixture, lead: torch.Size
+) -> UnivariateGaussianMixture:
     K = mixture.mean.shape[-1]
-    return QueryMixture(
+    return UnivariateGaussianMixture(
         mixture.mean.expand(*lead, K).reshape(-1, K),
         mixture.standard_deviation.expand(*lead, K).reshape(-1, K),
         mixture.log_weights.expand(*lead, K).reshape(-1, K),
@@ -106,7 +110,9 @@ def _flatten(mixture: QueryMixture, lead: torch.Size) -> QueryMixture:
 
 
 def kl_divergence_quadrature(
-    p: QueryMixture, q: QueryMixture, num_points: int = 1024
+    p: UnivariateGaussianMixture,
+    q: UnivariateGaussianMixture,
+    num_points: int = 1024,
 ) -> torch.Tensor:
     """KL(p || q) of univariate Gaussian mixtures by trapezoidal quadrature.
 
@@ -143,7 +149,9 @@ def kl_divergence_quadrature(
 
 
 def sample_mixture(
-    mixture: QueryMixture, num_samples: int, generator: torch.Generator
+    mixture: UnivariateGaussianMixture,
+    num_samples: int,
+    generator: torch.Generator,
 ) -> torch.Tensor:
     """Samples [..., M] from univariate mixtures with tensors [..., K]."""
     K = mixture.mean.shape[-1]
@@ -159,8 +167,8 @@ def sample_mixture(
 
 
 def kl_divergence_monte_carlo(
-    p: QueryMixture,
-    q: QueryMixture,
+    p: UnivariateGaussianMixture,
+    q: UnivariateGaussianMixture,
     num_samples: int,
     generator: torch.Generator,
 ) -> torch.Tensor:
@@ -174,7 +182,9 @@ def kl_divergence_monte_carlo(
     return log_ratio.mean(-1).reshape(lead)
 
 
-def average_mixture(mixtures: QueryMixture, axis: int) -> QueryMixture:
+def average_mixture(
+    mixtures: UnivariateGaussianMixture, axis: int
+) -> UnivariateGaussianMixture:
     """The equal-weight average of the mixtures along leading axis `axis`
     (a mixture of all their components): [..., A, ..., Q, K] ->
     [..., ..., Q, A * K]."""
@@ -184,7 +194,7 @@ def average_mixture(mixtures: QueryMixture, axis: int) -> QueryMixture:
         return x.reshape(*x.shape[:-2], -1)
 
     A = mixtures.mean.shape[axis]
-    return QueryMixture(
+    return UnivariateGaussianMixture(
         merge(mixtures.mean),
         merge(mixtures.standard_deviation),
         merge(mixtures.log_weights) - math.log(A),

@@ -2,11 +2,11 @@
 
 from causal_active_learning.value_search import (
     ValueEvaluation,
-    ValueOptimisationResult,
+    ValueSearchResult,
 )
 
 
-class GridValueOptimiser:
+class GridValueSearch:
     """Evaluate a fixed set of standardised values per node (clipped to the
     domain, duplicates removed) and return the best estimate. A baseline for
     BO and a tool for tests; all values of all nodes go into one call."""
@@ -14,7 +14,7 @@ class GridValueOptimiser:
     def __init__(self, standardised_values: tuple[float, ...]):
         self.standardised_values = tuple(float(u) for u in standardised_values)
 
-    def optimise(self, evaluate, domains, generator):
+    def search(self, evaluate, domains, generator):
         plan: list[tuple[int, float]] = []
         for node, domain in domains.items():
             us = sorted({
@@ -22,7 +22,7 @@ class GridValueOptimiser:
                 for u in self.standardised_values
             })  # fmt: skip
             plan += [(node, u) for u in us]
-        estimates = evaluate([domains[n].candidate(u) for n, u in plan])
+        estimates = evaluate([domains[n].acquisition(u) for n, u in plan])
         results = {}
         for node, domain in domains.items():
             evaluations = [
@@ -37,11 +37,11 @@ class GridValueOptimiser:
                 if n == node
             ]
             best = max(evaluations, key=lambda e: e.expected_information_gain)
-            results[node] = ValueOptimisationResult(
+            results[node] = ValueSearchResult(
                 target_node=node,
                 best_value=best.value,
                 best_standardised_value=best.standardised_value,
-                best_value_posterior_mean=best.expected_information_gain,
+                best_value_surrogate_mean=best.expected_information_gain,
                 evaluations=evaluations,
                 domain=domain,
             )

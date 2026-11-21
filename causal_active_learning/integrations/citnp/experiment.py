@@ -15,7 +15,7 @@ import pandas as pd
 import torch
 
 from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.evaluation.records import (
     ActiveLearningTables,
     step_rows,
@@ -27,7 +27,7 @@ from causal_active_learning.loop import (
     ActiveLearningGenerators,
     run_active_learning,
 )
-from causal_active_learning.protocols import PredictiveModel
+from causal_active_learning.protocols import CausalPredictiveModel
 from causal_active_learning.support_check import TrainingSupport
 
 # Seed stream of the initial observational context (distinct from the
@@ -36,7 +36,7 @@ INITIAL_CONTEXT_STREAM = 11
 # Seed stream of the (T, Y) pair drawn for a prior task.
 QUERY_PAIR_STREAM = 12
 # Strategies whose inner level depends on the value optimiser.
-OPTIMISED_ACQUISITIONS = ("expected_information_gain", "exhaustive_true_gain")
+OPTIMISED_STRATEGIES = ("expected_information_gain", "exhaustive_true_gain")
 
 
 @dataclass
@@ -77,28 +77,28 @@ class ActiveLearningStrategy:
 def make_strategies(
     base_config: ActiveLearningConfig,
     acquisitions: Sequence[str],
-    value_optimisers: Sequence[str],
+    value_searches: Sequence[str],
 ) -> list[ActiveLearningStrategy]:
     """One strategy per acquisition, and per value optimiser for the
-    acquisitions with an inner level (OPTIMISED_ACQUISITIONS)."""
+    acquisitions with an inner level (OPTIMISED_STRATEGIES)."""
     out = []
     for acquisition in acquisitions:
-        if acquisition in OPTIMISED_ACQUISITIONS:
-            for optimiser in value_optimisers:
+        if acquisition in OPTIMISED_STRATEGIES:
+            for optimiser in value_searches:
                 out.append(
                     ActiveLearningStrategy(
                         f"{acquisition}/{optimiser}",
                         replace(
                             base_config,
-                            acquisition=acquisition,
-                            value_optimiser=optimiser,
+                            strategy=acquisition,
+                            value_search=optimiser,
                         ),
                     )  # fmt: skip
                 )
         else:
             out.append(
                 ActiveLearningStrategy(
-                    acquisition, replace(base_config, acquisition=acquisition)
+                    acquisition, replace(base_config, strategy=acquisition)
                 )
             )
     return out
@@ -149,7 +149,7 @@ def prior_tasks(
 
 
 def run_active_learning_experiment(
-    predictive_model: PredictiveModel,
+    predictive_model: CausalPredictiveModel,
     tasks: Sequence[ActiveLearningTask],
     strategies: Sequence[ActiveLearningStrategy],
     seeds: Sequence[int],
@@ -191,7 +191,7 @@ def run_active_learning_experiment(
                 [base_seed, task.task, seed, INITIAL_CONTEXT_STREAM]
             )
             values = env.sample_observational(num_observational_rows, rng)
-            initial = ExperimentContext(
+            initial = ExperimentalContext(
                 values, torch.zeros(values.shape, dtype=torch.bool)
             )
             for strategy in strategies:
@@ -217,9 +217,9 @@ def run_active_learning_experiment(
                 ident = {
                     "task": task.task, "T": task.treatment, "Y": task.outcome,
                     "relation": task.relation, "strategy": strategy.label,
-                    "acquisition": cfg.acquisition,
-                    "value_optimiser": cfg.value_optimiser
-                    if cfg.acquisition in OPTIMISED_ACQUISITIONS else "",
+                    "strategy_kind": cfg.strategy,
+                    "value_search": cfg.value_search
+                    if cfg.strategy in OPTIMISED_STRATEGIES else "",
                     "seed": seed,
                 }  # fmt: skip
                 rows = initial.num_rows

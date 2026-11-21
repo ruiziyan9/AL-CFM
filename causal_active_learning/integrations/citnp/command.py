@@ -3,7 +3,7 @@
     python -m causal_active_learning.integrations.citnp run --ckpt ... \
            --model_config ... --data_config ... --environment example \
            --fixed_graph_edges 0->1,1->2,2->4,0->3,3->4,0->2 --treatment 2 \
-           --outcome 4 [--strategies ...] [--experiment_budget 10] \
+           --outcome 4 [--strategies ...] [--acquisition_budget 10] \
            [--seeds 0,1,2,3,4] --out al
     python -m causal_active_learning.integrations.citnp plot al
 """
@@ -32,7 +32,7 @@ def _sha256(path: str) -> str:
 
 
 _ACTIVE_LEARNING_INT_SETTINGS = (
-    "rows_per_experiment", "num_fantasies", "final_num_fantasies",
+    "rows_per_acquisition", "num_fantasies", "final_num_fantasies",
     "quadrature_points", "kl_monte_carlo_samples", "inference_batch_size",
     "bayesian_optimisation_initial_points", "bayesian_optimisation_iterations",
     "acquisition_grid_points", "gaussian_process_restarts",
@@ -75,7 +75,7 @@ def run_parser(p: argparse.ArgumentParser) -> None:
                    help="comma-separated subset of expected_information_gain, "
                         "random, observational, treatment, "
                         "exhaustive_true_gain (default: all)")  # fmt: skip
-    p.add_argument("--value_optimisers", default="bayesian_optimisation",
+    p.add_argument("--value_search", default="bayesian_optimisation",
                    help="comma-separated: bayesian_optimisation, grid (for the "
                         "strategies with an inner level)")  # fmt: skip
     p.add_argument("--seeds", default="0",
@@ -85,7 +85,7 @@ def run_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("--grid_eps", type=float, default=0.02,
                    help="query grid: quantiles [eps, 1 - eps] of the task's "
                         "do-value distribution")  # fmt: skip
-    p.add_argument("--experiment_budget", type=int, default=10)
+    p.add_argument("--acquisition_budget", type=int, default=10)
     for name in _ACTIVE_LEARNING_INT_SETTINGS:
         p.add_argument(f"--{name}", type=int, default=None,
                        help="default: as in ActiveLearningConfig")  # fmt: skip
@@ -136,7 +136,7 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     torch.set_num_threads(n_threads)
 
     from causal_active_learning.config import (
-        ACQUISITIONS,
+        STRATEGIES,
         ActiveLearningConfig,
     )
     from causal_active_learning.integrations.citnp.environment import (
@@ -149,7 +149,7 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         run_active_learning_experiment,
     )
     from causal_active_learning.integrations.citnp.model import (
-        ModelApiPredictiveModel,
+        CITNPPredictiveModel,
     )
     from causal_active_learning.integrations.citnp.support import (
         training_support_from_data_config,
@@ -171,13 +171,13 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     data_cfg = load_config(a.data_config) if a.data_config else None
     prefix = a.out.removesuffix(".csv")
     strategies_given = (
-        list(ACQUISITIONS) if a.strategies is None
+        list(STRATEGIES) if a.strategies is None
         else [s.strip() for s in a.strategies.split(",") if s.strip()]
     )  # fmt: skip
-    unknown = [s for s in strategies_given if s not in ACQUISITIONS]
+    unknown = [s for s in strategies_given if s not in STRATEGIES]
     if unknown:
-        parser.error(f"--strategies: unknown {unknown}; valid: {ACQUISITIONS}")
-    optimisers = [s.strip() for s in a.value_optimisers.split(",") if s.strip()]
+        parser.error(f"--strategies: unknown {unknown}; valid: {STRATEGIES}")
+    optimisers = [s.strip() for s in a.value_search.split(",") if s.strip()]
     settings = {
         name: getattr(a, name)
         for name in (
@@ -192,7 +192,7 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         )
     try:
         base = ActiveLearningConfig(
-            experiment_budget=a.experiment_budget,
+            acquisition_budget=a.acquisition_budget,
             exclude_query_nodes=not a.include_treatment_candidate,
             include_observational_candidate=a.include_observational_candidate,
             **settings,
@@ -280,7 +280,7 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     device = a.device or _default_device()
     model = load_model(a.ckpt, a.model_config, device, num_nodes=D)
     try:
-        predictive_model = ModelApiPredictiveModel(
+        predictive_model = CITNPPredictiveModel(
             model,
             device,
             fantasy_row_sampling=a.fantasy_row_sampling,

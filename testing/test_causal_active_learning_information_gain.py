@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from causal_active_learning.acquisitions import CandidateExperiment
+from causal_active_learning.acquisitions import Acquisition
 from causal_active_learning.config import ActiveLearningConfig
 from causal_active_learning.fantasies import draw_fantasy_noise
 from causal_active_learning.information_gain import (
@@ -23,7 +23,7 @@ from causal_active_learning_stubs import (
 
 
 def _config(**kw):
-    settings = dict(experiment_budget=1, quadrature_points=512)
+    settings = dict(acquisition_budget=1, quadrature_points=512)
     settings.update(kw)
     return ActiveLearningConfig(**settings)
 
@@ -36,7 +36,7 @@ def _noise(stub, nodes, S, rows=1, seed=0):
 
 def test_context_blind_query_gives_zero_information():
     stub = ContextBlindStub()
-    candidates = [CandidateExperiment(1, 1.5), CandidateExperiment(3, -0.5)]
+    candidates = [Acquisition(1, 1.5), Acquisition(3, -0.5)]
     estimates = estimate_expected_information_gain(
         stub, empty_context(), 0, 2, PSI, candidates, _noise(stub, [1, 3], 8),
         _config(), compute_coherence_gap=True,
@@ -52,7 +52,7 @@ def test_conjugate_information_gain_matches_closed_form(v):
     stub = ConjugateStub()
     S = 2000
     estimate = estimate_expected_information_gain(
-        stub, empty_context(), 0, 2, PSI, [CandidateExperiment(1, v)],
+        stub, empty_context(), 0, 2, PSI, [Acquisition(1, v)],
         _noise(stub, [1], S, seed=3), _config(), compute_coherence_gap=True,
     )[0]  # fmt: skip
     exact = stub.exact_information_gain(v, PSI)
@@ -61,7 +61,7 @@ def test_conjugate_information_gain_matches_closed_form(v):
     )
     assert estimate.coherence_gap < 2e-3
     uninformative = estimate_expected_information_gain(
-        stub, empty_context(), 0, 2, PSI, [CandidateExperiment(3, v)],
+        stub, empty_context(), 0, 2, PSI, [Acquisition(3, v)],
         _noise(stub, [3], 8), _config(),
     )[0]  # fmt: skip
     assert uninformative.expected_information_gain == 0.0

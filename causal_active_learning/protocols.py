@@ -1,7 +1,7 @@
 """What the active learning loop needs from a model and from the system
 experiments are run on (Protocol classes only, no logic).
 
-To use another causal foundation model, implement `PredictiveModel`; to use
+To use another causal foundation model, implement `CausalPredictiveModel`; to use
 another data source, implement `ExperimentEnvironment`.
 """
 
@@ -10,12 +10,12 @@ from typing import Any, Protocol
 
 import torch
 
-from causal_active_learning.acquisitions import CandidateExperiment
-from causal_active_learning.context import ExperimentContext
-from causal_active_learning.distributions import QueryMixture
+from causal_active_learning.acquisitions import Acquisition
+from causal_active_learning.context import ExperimentalContext
+from causal_active_learning.distributions import UnivariateGaussianMixture
 
 
-class PredictiveModel(Protocol):
+class CausalPredictiveModel(Protocol):
     """A predictive causal model.
 
     Fantasies (the model's imagined rows of an acquisition) must be drawn by
@@ -42,11 +42,11 @@ class PredictiveModel(Protocol):
 
     def predict_query(
         self,
-        contexts: Sequence[ExperimentContext],
+        contexts: Sequence[ExperimentalContext],
         treatment: int,
         outcome: int,
         treatment_values: torch.Tensor,
-    ) -> QueryMixture:
+    ) -> UnivariateGaussianMixture:
         """p(X_outcome | do(X_treatment = psi), context_b) for every context b
         (all of equal size) and psi in treatment_values [Q]: a mixture
         [B, Q, K], raw scale, float64."""
@@ -65,8 +65,8 @@ class PredictiveModel(Protocol):
 
     def sample_fantasies(
         self,
-        contexts: Sequence[ExperimentContext],
-        acquisitions: Sequence[CandidateExperiment],
+        contexts: Sequence[ExperimentalContext],
+        acquisitions: Sequence[Acquisition],
         noise: Sequence[Any],
     ) -> torch.Tensor:
         """Fantasies [B, S, R, D] of acquisition b on context b computed from
@@ -93,9 +93,7 @@ class ExperimentEnvironment(Protocol):
         """[num_rows, D] float64 observational rows."""
         ...
 
-    def run_experiment(
-        self, candidate: CandidateExperiment, generator: Any
-    ) -> torch.Tensor:
+    def run(self, acquisition: Acquisition, generator: Any) -> torch.Tensor:
         """[R, D] float64 rows of the acquisition (R independent draws from the
         hard-intervened system at the do-value, target column exact; or R
         observational draws)."""
@@ -103,7 +101,7 @@ class ExperimentEnvironment(Protocol):
 
     def true_query_distribution(
         self, treatment: int, outcome: int, values: torch.Tensor
-    ) -> QueryMixture:
+    ) -> UnivariateGaussianMixture:
         """The true p(X_outcome | do(X_treatment = psi)) at psi in values [Q]:
         a mixture [Q, K]."""
         ...

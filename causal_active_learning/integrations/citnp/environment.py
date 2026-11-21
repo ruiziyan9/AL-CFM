@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from causal_active_learning.distributions import QueryMixture
+from causal_active_learning.distributions import UnivariateGaussianMixture
 from CITNP.evaluation.oracle import LinearSCM
 
 # Central probability mass of a task's do-value distribution covered by the
@@ -53,20 +53,20 @@ class LinearSCMEnvironment:
         x, _ = self.scm.sample(int(num_rows), None, None, generator)
         return torch.as_tensor(x, dtype=torch.float64)
 
-    def run_experiment(self, candidate, generator):
-        R = candidate.rows_per_experiment
-        if candidate.target_node is None:
+    def run(self, acquisition, generator):
+        R = acquisition.num_rows
+        if acquisition.target_node is None:
             return self.sample_observational(R, generator)
-        assert candidate.intervention_value is not None
-        values = np.full(R, float(candidate.intervention_value))
-        x, _ = self.scm.sample(R, int(candidate.target_node), values, generator)
+        assert acquisition.intervention_value is not None
+        values = np.full(R, float(acquisition.intervention_value))
+        x, _ = self.scm.sample(R, int(acquisition.target_node), values, generator)
         return torch.as_tensor(x, dtype=torch.float64)
 
     def true_query_distribution(self, treatment, outcome, values):
         slope, variance = self.scm.do_dist(int(treatment), int(outcome))
         psi = torch.as_tensor(values, dtype=torch.float64)
         sd = torch.full_like(psi, float(np.sqrt(max(variance, 1e-12))))
-        return QueryMixture.gaussian(slope * psi, sd)
+        return UnivariateGaussianMixture.gaussian(slope * psi, sd)
 
     def prior_value_range(self) -> tuple[float, float] | None:
         """The central 1 - 2 * PRIOR_RANGE_TAIL_PROBABILITY range of the

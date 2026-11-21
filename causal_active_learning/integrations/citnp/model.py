@@ -1,4 +1,4 @@
-"""`PredictiveModel` for CITNP joint models, through
+"""`CausalPredictiveModel` for CITNP joint models, through
 `CITNP/evaluation/model_api.py` only.
 
 - `predict_query`: the marginal of the outcome in the model's joint prediction
@@ -16,7 +16,7 @@ from collections.abc import Sequence
 import torch
 
 from causal_active_learning.context import stack_contexts
-from causal_active_learning.distributions import QueryMixture
+from causal_active_learning.distributions import UnivariateGaussianMixture
 from CITNP.evaluation.model_api import (
     JointPrediction,
     JointSampleNoise,
@@ -66,8 +66,8 @@ def _per_query_noise(noise: Sequence[JointSampleNoise], row: int, lead):
     )
 
 
-class ModelApiPredictiveModel:
-    """`PredictiveModel` backed by `CITNP.evaluation.model_api` (a joint
+class CITNPPredictiveModel:
+    """`CausalPredictiveModel` backed by `CITNP.evaluation.model_api` (a joint
     model, prediction_head: joint).
 
     Args:
@@ -124,8 +124,10 @@ class ModelApiPredictiveModel:
                 self.model, values, flags, int(treatment), int(outcome), psi,
                 device=self.device,
             )  # fmt: skip
-            parts.append(QueryMixture(mean.cpu(), sd.cpu(), log_weights.cpu()))
-        return QueryMixture.concatenate(parts)
+            parts.append(
+                UnivariateGaussianMixture(mean.cpu(), sd.cpu(), log_weights.cpu())
+            )
+        return UnivariateGaussianMixture.concatenate(parts)
 
     # -------------------------------------------------------------- fantasies
     def draw_fantasy_noise(
@@ -164,8 +166,8 @@ class ModelApiPredictiveModel:
                 "always predicts p(X_-T | do(X_T = t)), with one intervened "
                 "variable per query)"
             )
-        R = acquisitions[0].rows_per_experiment
-        if any(a.rows_per_experiment != R for a in acquisitions):
+        R = acquisitions[0].num_rows
+        if any(a.num_rows != R for a in acquisitions):
             raise ValueError("all acquisitions must have the same number of rows")
         C = len(acquisitions)
         S = int(noise[0].component_uniform.shape[0])

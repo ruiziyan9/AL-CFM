@@ -11,7 +11,7 @@ import torch
 from causal_active_learning.information_gain import InformationGainEstimate
 from causal_active_learning.selection import reevaluate_and_select
 from causal_active_learning.value_search.bayesian_optimisation import (
-    BayesianOptimisationValueOptimiser,
+    BayesianOptimisationValueSearch,
 )
 from causal_active_learning.value_search.gaussian_process import (
     GaussianProcessHyperparameters,
@@ -20,7 +20,7 @@ from causal_active_learning.value_search.gaussian_process import (
     matern52_kernel,
     robust_cholesky,
 )
-from causal_active_learning.value_search.grid import GridValueOptimiser
+from causal_active_learning.value_search.grid import GridValueSearch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from causal_active_learning_stubs import domain, stub_evaluate
@@ -94,7 +94,7 @@ def test_bayesian_optimisation_finds_the_maximum():
     peak = {0: lambda u: math.exp(-((u - 1.3) ** 2) / 0.5)}
     hits = 0
     for seed in range(10):
-        result = BayesianOptimisationValueOptimiser().optimise(
+        result = BayesianOptimisationValueSearch().search(
             stub_evaluate(peak, 0.02, seed), {0: domain(0)},
             torch.Generator().manual_seed(seed),
         )[0]  # fmt: skip
@@ -118,8 +118,8 @@ def test_recommendation_follows_the_posterior_mean():
                 )
         return out
 
-    optimiser = BayesianOptimisationValueOptimiser(initial_points=5, iterations=0)
-    result = optimiser.optimise(
+    optimiser = BayesianOptimisationValueSearch(initial_points=5, iterations=0)
+    result = optimiser.search(
         evaluate, {0: domain(0)}, torch.Generator().manual_seed(0)
     )[0]
     raw_best = max(result.evaluations, key=lambda e: e.expected_information_gain)
@@ -134,11 +134,11 @@ def test_lockstep_equals_separate_runs():
         4: lambda u: 0.2 + 0.05 * u,
     }
     domains = {n: domain(n) for n in functions}
-    optimiser = BayesianOptimisationValueOptimiser(iterations=4, restarts=3)
+    optimiser = BayesianOptimisationValueSearch(iterations=4, restarts=3)
     calls: list = []
     generator = torch.Generator().manual_seed(11)
     state = generator.get_state()
-    together = optimiser.optimise(
+    together = optimiser.search(
         stub_evaluate(functions, 0.02, 0, calls), domains, generator
     )
     assert len(calls) == 3 + 4
@@ -146,7 +146,7 @@ def test_lockstep_equals_separate_runs():
     for node in functions:
         alone_generator = torch.Generator()
         alone_generator.set_state(state)
-        alone = optimiser.optimise(
+        alone = optimiser.search(
             stub_evaluate(functions, 0.02, 0), {node: domains[node]},
             alone_generator,
         )[node]  # fmt: skip
@@ -169,17 +169,17 @@ def test_bi_level_optimisation_matters():
         1: lambda u: 0.5,
     }
     domains = {n: domain(n) for n in functions}
-    grid = GridValueOptimiser((-2, -1, 0, 1, 2))
+    grid = GridValueSearch((-2, -1, 0, 1, 2))
     picks_a = 0
     for seed in range(5):
         evaluate = stub_evaluate(functions, 0.01, seed)
-        bo = BayesianOptimisationValueOptimiser(restarts=3).optimise(
+        bo = BayesianOptimisationValueSearch(restarts=3).search(
             evaluate, domains, torch.Generator().manual_seed(seed)
         )
         chosen, _ = reevaluate_and_select(evaluate, bo)
         if chosen.target_node == 0 and abs(chosen.intervention_value - 1.6) < 0.2:
             picks_a += 1
-        on_grid = grid.optimise(evaluate, domains, torch.Generator())
+        on_grid = grid.search(evaluate, domains, torch.Generator())
         chosen_grid, _ = reevaluate_and_select(evaluate, on_grid)
         assert chosen_grid.target_node == 1
     assert picks_a >= 4

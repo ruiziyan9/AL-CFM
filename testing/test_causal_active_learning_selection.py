@@ -8,7 +8,7 @@ import torch
 
 from causal_active_learning import selection as selection_module
 from causal_active_learning.acquisitions import (
-    CandidateExperiment,
+    Acquisition,
     candidate_target_nodes,
 )
 from causal_active_learning.config import ActiveLearningConfig
@@ -16,12 +16,12 @@ from causal_active_learning.fantasies import draw_fantasy_noise
 from causal_active_learning.information_gain import InformationGainEstimate
 from causal_active_learning.loop import ActiveLearningGenerators
 from causal_active_learning.selection import (
-    CandidateScore,
+    AcquisitionScore,
     choice_is_clear,
     reevaluate_and_select,
-    select_next_experiment,
+    select_next_acquisition,
 )
-from causal_active_learning.value_search import ValueOptimisationResult
+from causal_active_learning.value_search import ValueSearchResult
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from causal_active_learning_stubs import (
@@ -34,7 +34,7 @@ from causal_active_learning_stubs import (
 
 def cheap_config(**kw):
     settings = dict(
-        experiment_budget=2, num_fantasies=8, final_num_fantasies=16,
+        acquisition_budget=2, num_fantasies=8, final_num_fantasies=16,
         quadrature_points=256, bayesian_optimisation_iterations=2,
         gaussian_process_restarts=2, acquisition_grid_points=128,
     )  # fmt: skip
@@ -43,9 +43,9 @@ def cheap_config(**kw):
 
 
 def _inner(node, value, surrogate):
-    return ValueOptimisationResult(
+    return ValueSearchResult(
         target_node=node, best_value=value, best_standardised_value=value,
-        best_value_posterior_mean=surrogate, evaluations=[], domain=domain(node),
+        best_value_surrogate_mean=surrogate, evaluations=[], domain=domain(node),
     )  # fmt: skip
 
 
@@ -63,14 +63,14 @@ def test_outer_level_selects_by_the_reevaluated_value():
 
     chosen, scores = reevaluate_and_select(evaluate_final, inner)
     assert chosen.target_node == 1
-    assert [s.inner_result for s in scores] == [inner[0], inner[1]]
+    assert [s.value_search_result for s in scores] == [inner[0], inner[1]]
     assert choice_is_clear(scores)
 
 
 def test_choice_is_clear_flag():
     def score(value, se):
-        return CandidateScore(
-            CandidateExperiment(0, 0.0), value, se, float("nan"), None
+        return AcquisitionScore(
+            Acquisition(0, 0.0), value, se, float("nan"), None
         )
 
     assert not choice_is_clear([score(0.50, 0.02), score(0.47, 0.02)])
@@ -92,7 +92,7 @@ def test_outer_level_uses_fresh_noise_and_final_fantasies(monkeypatch):
         selection_module, "estimate_expected_information_gain", recorder
     )
     seed = [5, 6]
-    chosen, scores = select_next_experiment(
+    chosen, scores = select_next_acquisition(
         stub, empty_context(), 0, 2, PSI, config,
         ActiveLearningGenerators.from_seed(seed),
     )  # fmt: skip
@@ -105,18 +105,18 @@ def test_outer_level_uses_fresh_noise_and_final_fantasies(monkeypatch):
         assert torch.equal(final_noise[node], expected[node])
     assert all(n.shape[0] == config.num_fantasies for n in calls[0][6].values())
     best = max(scores, key=lambda s: s.expected_information_gain)
-    assert chosen == best.candidate
+    assert chosen == best.acquisition
     assert all(math.isfinite(s.coherence_gap) for s in scores)
 
 
 def test_only_the_informative_node_is_chosen():
     stub = ConjugateStub()
-    chosen, scores = select_next_experiment(
+    chosen, scores = select_next_acquisition(
         stub, empty_context(), 0, 2, PSI, cheap_config(),
         ActiveLearningGenerators.from_seed(0),
     )  # fmt: skip
     assert chosen.target_node == 1
-    uninformative = next(s for s in scores if s.candidate.target_node == 3)
+    uninformative = next(s for s in scores if s.acquisition.target_node == 3)
     assert uninformative.expected_information_gain == 0.0
 
 

@@ -22,21 +22,21 @@ import numpy as np
 import torch
 
 from causal_active_learning.acquisitions import (
-    CandidateExperiment,
+    Acquisition,
     candidate_target_nodes,
 )
 from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.distributions import (
-    QueryMixture,
+    UnivariateGaussianMixture,
     kl_divergence_quadrature,
 )
 from causal_active_learning.information_gain import predict_query_on_context
 from causal_active_learning.protocols import (
     ExperimentEnvironment,
-    PredictiveModel,
+    CausalPredictiveModel,
 )
-from causal_active_learning.selection import CandidateScore
+from causal_active_learning.selection import AcquisitionScore
 from causal_active_learning.strategies import (
     choose_acquisition,
     num_possible_target_nodes,
@@ -126,11 +126,11 @@ class ActiveLearningStep:
     acquisition : str
         The strategy.
 
-    scores : list[CandidateScore]
+    scores : list[AcquisitionScore]
         Outer-level scores (EIG strategy; the inner-level surrogate values
         for "exhaustive_true_gain"; empty for the other baselines).
 
-    chosen : CandidateExperiment
+    chosen : Acquisition
         The experiment run.
 
     choice_is_clear : bool
@@ -142,7 +142,7 @@ class ActiveLearningStep:
     real_rows : torch.Tensor
         [R, D] rows drawn from the environment.
 
-    query_before, query_after : QueryMixture
+    query_before, query_after : UnivariateGaussianMixture
         The query [V, K] before and after the rows were added.
 
     realised_information_gain : float
@@ -163,14 +163,14 @@ class ActiveLearningStep:
     """
 
     step: int
-    acquisition: str
-    scores: list[CandidateScore]
-    chosen: CandidateExperiment
+    strategy: str
+    scores: list[AcquisitionScore]
+    chosen: Acquisition
     choice_is_clear: bool
     predicted_information_gain: float
     real_rows: torch.Tensor
-    query_before: QueryMixture
-    query_after: QueryMixture
+    query_before: UnivariateGaussianMixture
+    query_after: UnivariateGaussianMixture
     realised_information_gain: float
     kl_to_truth_before: float
     kl_to_truth_after: float
@@ -180,9 +180,9 @@ class ActiveLearningStep:
 
 
 def run_active_learning(
-    model: PredictiveModel,
+    model: CausalPredictiveModel,
     environment: ExperimentEnvironment,
-    initial_context: ExperimentContext,
+    initial_context: ExperimentalContext,
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
@@ -195,8 +195,8 @@ def run_active_learning(
     dense_value_diagnostic_points: int = 41,
     progress: Callable[[str], None] | None = None,
 ) -> list[ActiveLearningStep]:
-    """Run config.experiment_budget steps of the loop with strategy
-    config.acquisition (see `choose_acquisition`).
+    """Run config.acquisition_budget steps of the loop with strategy
+    config.strategy (see `choose_acquisition`).
 
     Every strategy uses the same environment generator, so strategies run
     with the same seed start from the same random state.
@@ -206,7 +206,7 @@ def run_active_learning(
     model, environment
         The model and the true system.
 
-    initial_context : ExperimentContext
+    initial_context : ExperimentalContext
         D_0.
 
     treatment, outcome : int
@@ -242,9 +242,9 @@ def run_active_learning(
     )  # fmt: skip
     if training_support is not None:
         problems = worst_case_violations(
-            initial_context, config.experiment_budget,
-            config.rows_per_experiment,
-            num_possible_target_nodes(config.acquisition, nodes),
+            initial_context, config.acquisition_budget,
+            config.rows_per_acquisition,
+            num_possible_target_nodes(config.strategy, nodes),
             training_support,
         )  # fmt: skip
         for problem in problems:
@@ -256,7 +256,7 @@ def run_active_learning(
     points = config.quadrature_points
     context = initial_context
     steps = []
-    for step in range(1, config.experiment_budget + 1):
+    for step in range(1, config.acquisition_budget + 1):
         before = predict_query_on_context(model, context, treatment, outcome, psi)
         choice = choose_acquisition(
             model, environment, context, treatment, outcome, psi, config,
@@ -268,7 +268,7 @@ def run_active_learning(
             ),
         )  # fmt: skip
         chosen = choice.chosen
-        rows = environment.run_experiment(chosen, generators.environment)
+        rows = environment.run(chosen, generators.environment)
         context_after = context.append(rows, chosen.target_node)
         after = predict_query_on_context(
             model, context_after, treatment, outcome, psi
@@ -284,7 +284,7 @@ def run_active_learning(
             )
         record = ActiveLearningStep(
             step=step,
-            acquisition=config.acquisition,
+            strategy=config.strategy,
             scores=choice.scores,
             chosen=chosen,
             choice_is_clear=choice.choice_is_clear,
@@ -305,7 +305,7 @@ def run_active_learning(
         if progress is not None:
             predicted = record.predicted_information_gain
             progress(
-                f"[{config.acquisition}] step {step}: {chosen.describe()}"
+                f"[{config.strategy}] step {step}: {chosen.describe()}"
                 + (
                     f", EIG {predicted:.4f}"
                     + ("" if record.choice_is_clear else " (not clear-cut)")

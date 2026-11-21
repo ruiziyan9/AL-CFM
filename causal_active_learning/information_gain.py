@@ -22,22 +22,22 @@ from typing import Any
 
 import torch
 
-from causal_active_learning.acquisitions import CandidateExperiment
+from causal_active_learning.acquisitions import Acquisition
 from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentContext
+from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.distributions import (
-    QueryMixture,
+    UnivariateGaussianMixture,
     average_mixture,
     kl_divergence_monte_carlo,
     kl_divergence_quadrature,
 )
 from causal_active_learning.fantasies import fantasy_contexts
-from causal_active_learning.protocols import PredictiveModel
+from causal_active_learning.protocols import CausalPredictiveModel
 
 
 def kl_divergence(
-    p: QueryMixture,
-    q: QueryMixture,
+    p: UnivariateGaussianMixture,
+    q: UnivariateGaussianMixture,
     config: ActiveLearningConfig,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
@@ -58,7 +58,7 @@ class InformationGainEstimate:
 
     Attributes:
     ----------
-    candidate : CandidateExperiment
+    acquisition : Acquisition
         The acquisition.
 
     expected_information_gain : float
@@ -76,7 +76,7 @@ class InformationGainEstimate:
         comparable to the EIG values means the ranking is not trustworthy.
     """
 
-    candidate: CandidateExperiment
+    acquisition: Acquisition
     expected_information_gain: float
     standard_error: float
     per_fantasy_information_gain: torch.Tensor
@@ -84,13 +84,13 @@ class InformationGainEstimate:
 
 
 def predict_query_in_chunks(
-    model: PredictiveModel,
-    contexts: Sequence[ExperimentContext],
+    model: CausalPredictiveModel,
+    contexts: Sequence[ExperimentalContext],
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
     batch_size: int,
-) -> QueryMixture:
+) -> UnivariateGaussianMixture:
     """`predict_query` on a list of equal-size contexts in chunks of
     `batch_size`, under torch.no_grad(): a mixture [B, Q, K]."""
     parts = []
@@ -104,16 +104,16 @@ def predict_query_in_chunks(
                     treatment_values,
                 )  # fmt: skip
             )
-    return QueryMixture.concatenate(parts)
+    return UnivariateGaussianMixture.concatenate(parts)
 
 
 def predict_query_on_context(
-    model: PredictiveModel,
-    context: ExperimentContext,
+    model: CausalPredictiveModel,
+    context: ExperimentalContext,
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
-) -> QueryMixture:
+) -> UnivariateGaussianMixture:
     """The query on one context: a mixture [Q, K]."""
     with torch.no_grad():
         return model.predict_query(
@@ -122,16 +122,16 @@ def predict_query_on_context(
 
 
 def estimate_expected_information_gain(
-    model: PredictiveModel,
-    context: ExperimentContext,
+    model: CausalPredictiveModel,
+    context: ExperimentalContext,
     treatment: int,
     outcome: int,
     treatment_values: torch.Tensor,
-    candidates: Sequence[CandidateExperiment],
+    candidates: Sequence[Acquisition],
     fantasy_noise: Mapping[int | None, Any] | Sequence[Any],
     config: ActiveLearningConfig,
     *,
-    query_before: QueryMixture | None = None,
+    query_before: UnivariateGaussianMixture | None = None,
     compute_coherence_gap: bool = False,
     kl_generator: torch.Generator | None = None,
 ) -> list[InformationGainEstimate]:
@@ -145,10 +145,10 @@ def estimate_expected_information_gain(
 
     Args:
     ----------
-    model : PredictiveModel
+    model : CausalPredictiveModel
         Gives both the fantasies and the query.
 
-    context : ExperimentContext
+    context : ExperimentalContext
         The real context.
 
     treatment, outcome : int
@@ -157,8 +157,8 @@ def estimate_expected_information_gain(
     treatment_values : torch.Tensor
         The psi values [Q], raw scale.
 
-    candidates : Sequence[CandidateExperiment]
-        C candidates with equal rows_per_experiment.
+    candidates : Sequence[Acquisition]
+        C candidates with equal num_rows.
 
     fantasy_noise : Mapping[int | None, Any] | Sequence[Any]
         Either one noise per target node (None: observational), shared by
@@ -168,7 +168,7 @@ def estimate_expected_information_gain(
         kl_estimator, quadrature_points, kl_monte_carlo_samples,
         inference_batch_size.
 
-    query_before : QueryMixture | None
+    query_before : UnivariateGaussianMixture | None
         The query on D [Q, K] if already computed.
 
     compute_coherence_gap : bool
@@ -222,7 +222,7 @@ def estimate_expected_information_gain(
         gaps = gaps.mean(-1)
     return [
         InformationGainEstimate(
-            candidate=c,
+            acquisition=c,
             expected_information_gain=float(gain[i]),
             standard_error=float(standard_error[i]),
             per_fantasy_information_gain=per_fantasy[i],
