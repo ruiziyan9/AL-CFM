@@ -587,11 +587,15 @@ def test_figure_4_configs(path):
     config = spec.config("random")
     assert config.acquisition_budget == 50 and config.rows_per_acquisition == 3
     assert config.fixed_intervention_value == 0.0
-    in_distribution = "in_distribution" in path.stem
-    assert spec.initial_observational_rows == (64 if in_distribution else 5)
-    limit = 6.0 if in_distribution else 7.0
-    assert config.random_value_range == (-limit, limit)
-    assert config.value_domain_fixed_range == (-limit, limit)
+    assert spec.initial_observational_rows == 64
+    assert config.random_value_range == (-6.0, 6.0)
+    assert config.value_domain_fixed_range == (-6.0, 6.0)
+    assert spec.strategies == [
+        "expected_information_gain",
+        "observational",
+        "random_fixed_value",
+        "random",
+    ]
     expected = None if path.stem.endswith("all_intervenable") else (0, 1, 3, 4)
     assert config.intervenable_nodes == expected
     tasks = build_tasks(spec, _data_config(), 0, [0])
@@ -653,9 +657,7 @@ def test_pairing_across_settings_strategies_and_restarts():
     assert not np.array_equal(
         tasks_a[0].environment.scm.B, tasks_a[1].environment.scm.B
     )
-    adapter = CITNPPredictiveModel(
-        tiny_joint_model(), "cpu", minimum_observational_rows=5
-    )
+    adapter = CITNPPredictiveModel(tiny_joint_model(), "cpu")
     strategies = make_strategies(
         lambda name: a.config(
             name,
@@ -717,11 +719,6 @@ def test_figure_4_smoke_runs_merge_and_panels(tmp_path):
     prefixes = []
     for path in FIGURE_4_FILES:
         out = str(tmp_path / path.stem)
-        extra = (
-            []
-            if "in_distribution" in path.stem
-            else ["--minimum_observational_rows", "5"]
-        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             main(
@@ -738,7 +735,6 @@ def test_figure_4_smoke_runs_merge_and_panels(tmp_path):
                     "--out",
                     out,
                     *SMOKE,
-                    *extra,
                 ]
             )
         for name in (
@@ -761,19 +757,20 @@ def test_figure_4_smoke_runs_merge_and_panels(tmp_path):
         "observational",
         "random_fixed_value",
         "random",
-        "exhaustive_true_gain",
     }
-    literal = [p for p in prefixes if "in_distribution" not in p]
-    assert pd.read_csv(literal[0] + "_steps.csv").outside_training_support.all()
-    main(["merge", "--inputs", *literal, "--out", str(tmp_path / "merged")])
+    for prefix in prefixes:  # inside the training support throughout
+        assert not pd.read_csv(
+            prefix + "_steps.csv"
+        ).outside_training_support.any()
+    main(["merge", "--inputs", *prefixes, "--out", str(tmp_path / "merged")])
     assert (tmp_path / "merged_summary.csv").is_file()
     figure = tmp_path / "panels.png"
     main(
         [
             "plot-panels",
             "--summaries",
-            literal[0] + "_summary.csv",
-            literal[1] + "_summary.csv",
+            prefixes[0] + "_summary.csv",
+            prefixes[1] + "_summary.csv",
             "--experiments",
             str(FIGURE_4 / "abci_figure_4_all_intervenable.yaml"),
             str(FIGURE_4 / "abci_figure_4_treatment_not_intervenable.yaml"),
@@ -787,27 +784,10 @@ def test_figure_4_smoke_runs_merge_and_panels(tmp_path):
     assert figure.is_file()
 
 
-def test_literal_start_needs_the_lower_row_minimum(tmp_path):
+def test_experiment_file_and_ad_hoc_arguments_exclude_each_other(tmp_path):
     from causal_active_learning.integrations.citnp.command import main
 
     ckpt, model_yaml = _write_tiny_checkpoint(tmp_path)
-    with pytest.raises(SystemExit):
-        main(
-            [
-                "run",
-                "--ckpt",
-                ckpt,
-                "--model_config",
-                model_yaml,
-                "--data_config",
-                str(D5_CONFIG),
-                "--experiment",
-                str(FIGURE_4 / "abci_figure_4_all_intervenable.yaml"),
-                "--out",
-                str(tmp_path / "x"),
-                *SMOKE,
-            ]
-        )
     with pytest.raises(SystemExit):  # an experiment file and ad hoc arguments
         main(
             [

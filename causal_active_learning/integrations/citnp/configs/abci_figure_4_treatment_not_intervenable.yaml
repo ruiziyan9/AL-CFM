@@ -1,15 +1,15 @@
-# ABCI Figure 4 (b), literal variant: the treatment X3 is not intervenable.
-# `extends` replaces top-level keys whole, so the nested sections are
-# written out in full; only `name` and `intervenable_nodes` differ from
-# abci_figure_4_all_intervenable.yaml.
+# ABCI Figure 4 (b): the treatment X3 is not intervenable. `extends` replaces
+# top-level keys whole, so the active_learning section is repeated in full;
+# only `name` and `intervenable_nodes` differ from
+# abci_figure_4_all_intervenable.yaml (see that file for the sources).
 extends: abci_figure_4_all_intervenable.yaml
 name: abci_figure_4_treatment_not_intervenable
 active_learning:
   acquisition_budget: 50          # ABCI: 50 experiments
   rows_per_acquisition: 3         # ABCI: N_t = 3
-  intervenable_nodes: [0, 1, 3, 4]   # panel (b): X3 (node 2) removed
-  include_observational_candidate: true
-  fixed_intervention_value: 0.0   # ABCI RAND-FIXED
-  random_value_range: [-7.0, 7.0] # ABCI RAND
+  intervenable_nodes: [0, 1, 3, 4]   # ABCI panel (b): X3 (node 2) removed
+  include_observational_candidate: true   # ABCI: targets include the empty set
+  fixed_intervention_value: 0.0   # ABCI RAND-FIXED: value 0
+  random_value_range: [-6.0, 6.0] # prior: widest do-value range (ABCI: U(-7, 7))
   value_domain: fixed_range
-  value_domain_fixed_range: [-7.0, 7.0]
+  value_domain_fixed_range: [-6.0, 6.0]   # prior: widest do-value range

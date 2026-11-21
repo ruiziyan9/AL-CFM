@@ -77,7 +77,8 @@ class CITNPPredictiveModel:
         A loaded joint model (`model_api.load_model`).
 
     device : str | torch.device
-        Where the model runs; outputs are returned on the CPU.
+        Where the model runs (query mixtures stay there, fantasies are
+        returned on the CPU).
 
     fantasy_row_sampling : str
         "autoregressive" (default; the exact predictive chain rule) or
@@ -86,12 +87,6 @@ class CITNPPredictiveModel:
 
     inference_batch_size : int
         Contexts per forward pass.
-
-    minimum_observational_rows : int
-        Fewest observational rows a context may have (default 10, the check
-        of CITNP's training-time standardisation, `_normalisation_stats`).
-        Lower it only knowingly: the per-variable standardisation is then
-        estimated from fewer rows than training ever used.
 
     supports_observational_prediction : bool
         True only for a model trained with observational queries (plan Part
@@ -105,7 +100,6 @@ class CITNPPredictiveModel:
         *,
         fantasy_row_sampling: str = "autoregressive",
         inference_batch_size: int = 128,
-        minimum_observational_rows: int = 10,
         supports_observational_prediction: bool = False,
     ):
         if getattr(model, "prediction_head", "marginal") != "joint":
@@ -122,7 +116,6 @@ class CITNPPredictiveModel:
         self.covariance_rank = joint_covariance_rank(model)
         self.fantasy_row_sampling = fantasy_row_sampling
         self.inference_batch_size = int(inference_batch_size)
-        self.minimum_observational_rows = int(minimum_observational_rows)
         self.supports_observational_prediction = bool(
             supports_observational_prediction
         )
@@ -143,7 +136,6 @@ class CITNPPredictiveModel:
                 int(outcome),
                 psi,
                 device=self.device,
-                min_rows=self.minimum_observational_rows,
             )
             # left on the model's device, so the KL quadrature runs there too
             parts.append(UnivariateGaussianMixture(mean, sd, log_weights))
@@ -176,7 +168,6 @@ class CITNPPredictiveModel:
                         nodes[start:stop],
                         values[start:stop, None],
                         device=self.device,
-                        min_rows=self.minimum_observational_rows,
                     )
                 )
             )

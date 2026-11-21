@@ -257,32 +257,33 @@ recommendation and the dense maximiser), `PREFIX_meta.json` and figures (query
 KL with 95% CI, EIG calibration, chosen-acquisition frequency, GP posterior per
 node with the dense diagnostic and the observational EIG).
 
-## ABCI Figure 4 replication
+## ABCI Figure 4, inside the training distribution
 
-The configs in `integrations/citnp/configs/` replicate ABCI Figure 4: the
-fixed five-node DAG X1→X2, X1→X3, X1→X4, X2→X3, X2→X4, X3→X5, X4→X5 (as read
-from the figure, to be confirmed), query p(X5 | do(X3 = ψ)) with ψ ~ U[2, 5],
-10 SCMs × 3 restarts, R = 3, 50 acquisitions, OBS, RAND-FIXED (0), RAND, our
-EIG strategy for U_CR, plus `exhaustive_true_gain`; panel (a) all nodes
-intervenable, panel (b) X3 not intervenable. Not replicable: U_CD and U_CML.
-Necessarily different: ABCI's SCMs have GP mechanisms; ours come from the CITNP
-model's training prior (linear Gaussian, inverse Wishart), so absolute KL
-values are not comparable with the paper; and the EIG strategy cannot score the
-observational candidate with current CITNP checkpoints.
+The two configs in `integrations/citnp/configs/` replicate ABCI Figure 4 with
+the CITNP model, inside its training distribution (`oracle_d5_iw_a15_sc.yaml`):
+the fixed five-node DAG X1→X2, X1→X3, X1→X4, X2→X3, X2→X4, X3→X5, X4→X5 (ABCI
+Figure 4; confirmed by Ruizi), query p(X5 | do(X3 = ψ)) with ψ ~ U[2, 5],
+10 SCMs × 3 restarts, R = 3, 50 acquisitions, the baselines OBS, RAND-FIXED
+(value 0) and RAND, and our EIG strategy in place of U_CR (same objective,
+estimated through the PFN); panel (a) all nodes intervenable
+(`abci_figure_4_all_intervenable.yaml`), panel (b) X3 not intervenable
+(`abci_figure_4_treatment_not_intervenable.yaml`). Not replicable: U_CD and
+U_CML. `exhaustive_true_gain` is not in ABCI's figure and roughly doubles the
+cost; it is left out of the configs and can be added with `--strategies`.
 
-| | literal | in distribution |
-|---|---|---|
-| initial observational rows | 5 | 64 (the prior's minimum context) |
-| rows per acquisition, budget | 3, 50 (final 155 rows) | 3, 50 (final 214 rows) |
-| query ψ | U[2, 5] | U[2, 5] |
-| RAND values, value domain | U(−7, 7), `fixed_range` [−7, 7] | U(−6, 6), `fixed_range` [−6, 6] |
-| RAND-FIXED value | 0 | 0 |
-| expected support flags | context below 64 rows until step 20; values beyond 6 | none |
+| | ABCI | ours | reason |
+|---|---|---|---|
+| mechanisms | GP | the checkpoint's mechanism prior (linear Gaussian, inverse Wishart) | the model is trained on that prior; absolute KL values are not comparable with the paper |
+| initial observational rows | 5 | 64 | the prior's minimum context size (64 rows, of which at least 33 observational; the initial context is purely observational) |
+| final context | 155 rows | 214 rows | within the prior's 360-row maximum |
+| RAND values and value domain | U(−7, 7) | U(−6, 6), `fixed_range` [−6, 6] | the prior's widest do-value range |
+| query ψ | U[2, 5] | U[2, 5] | already inside the prior's do-value range |
 
-The literal variant starts with 5 observational rows, fewer than the 10 that
-CITNP's training-time standardisation accepts; run it with
-`--minimum_observational_rows 5` (the per-variable standardisation is then
-estimated from 5 rows).
+Expected support flags: none. Small first regimes (3 rows) are recorded, not
+flagged; the repeated do-value within an acquisition is the known difference
+described under Training support. With current CITNP checkpoints the EIG
+strategy cannot score the observational candidate, while OBS and the random
+baselines can choose it; `plot-panels` notes this in the caption.
 
 Seeds: task t's mechanism parameters and ψ values depend on (seed, t);
 restart r's initial rows and environment stream on (seed, t, r); acquisition
@@ -297,14 +298,14 @@ pip install -e .   # once, so causal_active_learning is importable
 python -m causal_active_learning.integrations.citnp run \
     --ckpt RUN/checkpoint.pt --model_config RUN/resolved_model_config.yaml \
     --data_config CITNP/experiments/configs/oracle_d5_iw_a15_sc.yaml \
-    --experiment causal_active_learning/integrations/citnp/configs/abci_figure_4_in_distribution_all_intervenable.yaml \
-    --out fig4_id_a [--seed 0] [--task_indices 0,1] [--restart_indices 0,1,2]
+    --experiment causal_active_learning/integrations/citnp/configs/abci_figure_4_all_intervenable.yaml \
+    --out fig4_a [--seed 0] [--task_indices 0,1] [--restart_indices 0,1,2]
 python -m causal_active_learning.integrations.citnp merge \
-    --inputs fig4_id_a_part0 fig4_id_a_part1 --out fig4_id_a
+    --inputs fig4_a_part0 fig4_a_part1 --out fig4_a
 python -m causal_active_learning.integrations.citnp plot-panels \
-    --summaries fig4_id_a_summary.csv fig4_id_b_summary.csv \
+    --summaries fig4_a_summary.csv fig4_b_summary.csv \
     --experiments <yaml a> <yaml b> \
-    --titles "All nodes intervenable" "X3 not intervenable" --out fig4_id.png
+    --titles "All nodes intervenable" "X3 not intervenable" --out fig4.png
 # ad hoc runs without an experiment file (k-shot style psi grid per task)
 python -m causal_active_learning.integrations.citnp run ... --environment example \
     --fixed_graph_edges "0->1,1->2,2->4,0->3,3->4,0->2" --treatment 2 --outcome 4 \

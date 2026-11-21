@@ -129,13 +129,6 @@ def run_parser(p: argparse.ArgumentParser) -> None:
         choices=["autoregressive", "independent"],
         help="independent: for comparison only",
     )
-    p.add_argument(
-        "--minimum_observational_rows",
-        type=int,
-        default=10,
-        help="fewest observational rows the model accepts in a "
-        "context (10, as in training; lower only knowingly)",
-    )
     p.add_argument("--out", required=True, help="output prefix")
     p.add_argument(
         "--device", default=None, help="default: cuda if available, else cpu"
@@ -372,14 +365,6 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         strategies = make_strategies(configs, names, value_searches)
     except ValueError as error:
         parser.error(str(error))
-    if initial_rows < a.minimum_observational_rows:
-        parser.error(
-            f"the initial context has {initial_rows} observational rows, fewer "
-            f"than the {a.minimum_observational_rows} the model's "
-            "standardisation accepts; pass --minimum_observational_rows "
-            f"{initial_rows} to run anyway (the standardisation is then "
-            "estimated from fewer rows than in training)"
-        )
     device = a.device or _default_device()
     D = tasks[0].environment.num_variables
     model = load_model(a.ckpt, a.model_config, device, num_nodes=D)
@@ -389,7 +374,6 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             device,
             fantasy_row_sampling=a.fantasy_row_sampling,
             inference_batch_size=strategies[0].config.inference_batch_size,
-            minimum_observational_rows=a.minimum_observational_rows,
         )
     except ValueError as error:
         parser.error(str(error))
