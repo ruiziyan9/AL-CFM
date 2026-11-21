@@ -3,7 +3,8 @@
 
 - `predict_query`: the marginal of the outcome in the model's joint prediction
   (`predict_mixture_batched`'s joint dispatch), so fantasies and the query
-  come from one set of beliefs.
+  come from one set of beliefs; returned on the model's device, so the KL
+  quadrature of the core runs there as well.
 - `sample_fantasies`: `predict_joint_mixture_batched` and `sample_joint_rows`
   with explicit noise and per-query do-values, row by row (autoregressive).
 - Scale statistics are recomputed from every (fantasy) context inside
@@ -144,9 +145,8 @@ class CITNPPredictiveModel:
                 device=self.device,
                 min_rows=self.minimum_observational_rows,
             )
-            parts.append(
-                UnivariateGaussianMixture(mean.cpu(), sd.cpu(), log_weights.cpu())
-            )
+            # left on the model's device, so the KL quadrature runs there too
+            parts.append(UnivariateGaussianMixture(mean, sd, log_weights))
         return UnivariateGaussianMixture.concatenate(parts)
 
     # -------------------------------------------------------------- fantasies

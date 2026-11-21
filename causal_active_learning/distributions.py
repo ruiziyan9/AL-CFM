@@ -72,6 +72,14 @@ class UnivariateGaussianMixture:
             mean[..., None], sd[..., None], torch.zeros_like(mean)[..., None]
         )
 
+    def to(self, device) -> "UnivariateGaussianMixture":
+        """The same mixtures on `device`."""
+        return UnivariateGaussianMixture(
+            self.mean.to(device),
+            self.standard_deviation.to(device),
+            self.log_weights.to(device),
+        )
+
     def mean_and_variance(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Mixture mean and variance [...]."""
         w = self.log_weights.exp()
@@ -125,16 +133,21 @@ def kl_divergence_quadrature(
     with both log densities from `logsumexp` in float64 (finite where q is
     tiny).
 
-    p, q: tensors [..., K_p] and [..., K_q] whose leading axes broadcast.
-    Returns [...] float64 (non-negative up to quadrature error)."""
+    p, q: tensors [..., K_p] and [..., K_q] whose leading axes broadcast, on
+    one device (q is moved to p's). Returns [...] float64 on p's device
+    (non-negative up to quadrature error)."""
+    q = q.to(p.mean.device)
     lead = torch.broadcast_shapes(p.mean.shape[:-1], q.mean.shape[:-1])
     pf, qf = _flatten(p, lead), _flatten(q, lead)
     M = pf.mean.shape[0]
     K = max(pf.mean.shape[-1], qf.mean.shape[-1])
     chunk = max(1, _QUADRATURE_CHUNK_ENTRIES // (num_points * K))
     width = QUADRATURE_HALF_WIDTH_IN_STANDARD_DEVIATIONS
-    unit = torch.linspace(0.0, 1.0, num_points, dtype=torch.float64)
-    trapezoid = torch.ones(num_points, dtype=torch.float64)
+    device = pf.mean.device
+    unit = torch.linspace(
+        0.0, 1.0, num_points, dtype=torch.float64, device=device
+    )
+    trapezoid = torch.ones(num_points, dtype=torch.float64, device=device)
     trapezoid[0] = trapezoid[-1] = 0.5
     out = []
     for start in range(0, M, chunk):
@@ -157,14 +170,15 @@ def sample_mixture(
     """Samples [..., M] from univariate mixtures with tensors [..., K]."""
     K = mixture.mean.shape[-1]
     lead = mixture.mean.shape[:-1]
-    weights = mixture.log_weights.exp().reshape(-1, K)
+    weights = mixture.log_weights.exp().reshape(-1, K).cpu()
     component = torch.multinomial(
         weights, num_samples, replacement=True, generator=generator
     ).reshape(*lead, num_samples)
+    component = component.to(mixture.mean.device)
     mean = mixture.mean.gather(-1, component)
     sd = mixture.standard_deviation.gather(-1, component)
     noise = torch.randn(mean.shape, generator=generator, dtype=torch.float64)
-    return mean + sd * noise
+    return mean + sd * noise.to(mean.device)
 
 
 def kl_divergence_monte_carlo(
@@ -176,6 +190,7 @@ def kl_divergence_monte_carlo(
     """KL(p || q) by Monte Carlo: the mean of log p(y) - log q(y) over
     `num_samples` draws y ~ p. Shapes as in `kl_divergence_quadrature`; can
     be negative by chance."""
+    q = q.to(p.mean.device)
     lead = torch.broadcast_shapes(p.mean.shape[:-1], q.mean.shape[:-1])
     pf, qf = _flatten(p, lead), _flatten(q, lead)
     y = sample_mixture(pf, num_samples, generator)  # [M, num_samples]

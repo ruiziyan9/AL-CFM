@@ -212,14 +212,14 @@ def estimate_expected_information_gain(
         model, contexts, treatment, outcome, psi, config.inference_batch_size
     ).reshape(C, S)  # [C, S, Q, K]
     kl = kl_divergence(query_after, query_before, config, kl_generator)
-    per_fantasy = kl.mean(-1)  # [C, S], averaged over psi
+    per_fantasy = kl.mean(-1).cpu()  # [C, S], averaged over psi
     gain = per_fantasy.mean(-1)
     standard_error = per_fantasy.std(-1, unbiased=True) / math.sqrt(S)
     gaps = torch.full((C,), float("nan"), dtype=torch.float64)
     if compute_coherence_gap:
         average = average_mixture(query_after, axis=1)  # [C, Q, S * K]
         gaps = kl_divergence(query_before, average, config, kl_generator)
-        gaps = gaps.mean(-1)
+        gaps = gaps.mean(-1).cpu()
     return [
         InformationGainEstimate(
             acquisition=c,
