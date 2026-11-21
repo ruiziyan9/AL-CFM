@@ -85,9 +85,17 @@ class CITNPPredictiveModel:
 
     inference_batch_size : int
         Contexts per forward pass.
-    """
 
-    supports_observational_prediction = False
+    minimum_observational_rows : int
+        Fewest observational rows a context may have (default 10, the check
+        of CITNP's training-time standardisation, `_normalisation_stats`).
+        Lower it only knowingly: the per-variable standardisation is then
+        estimated from fewer rows than training ever used.
+
+    supports_observational_prediction : bool
+        True only for a model trained with observational queries (plan Part
+        B); every current CITNP checkpoint has False.
+    """
 
     def __init__(
         self,
@@ -96,6 +104,8 @@ class CITNPPredictiveModel:
         *,
         fantasy_row_sampling: str = "autoregressive",
         inference_batch_size: int = 128,
+        minimum_observational_rows: int = 10,
+        supports_observational_prediction: bool = False,
     ):
         if getattr(model, "prediction_head", "marginal") != "joint":
             raise ValueError(
@@ -111,6 +121,10 @@ class CITNPPredictiveModel:
         self.covariance_rank = joint_covariance_rank(model)
         self.fantasy_row_sampling = fantasy_row_sampling
         self.inference_batch_size = int(inference_batch_size)
+        self.minimum_observational_rows = int(minimum_observational_rows)
+        self.supports_observational_prediction = bool(
+            supports_observational_prediction
+        )
 
     # ------------------------------------------------------------------ query
     def predict_query(self, contexts, treatment, outcome, treatment_values):
@@ -121,9 +135,15 @@ class CITNPPredictiveModel:
                 contexts[start : start + self.inference_batch_size]
             )
             mean, sd, log_weights = predict_mixture_batched(
-                self.model, values, flags, int(treatment), int(outcome), psi,
+                self.model,
+                values,
+                flags,
+                int(treatment),
+                int(outcome),
+                psi,
                 device=self.device,
-            )  # fmt: skip
+                min_rows=self.minimum_observational_rows,
+            )
             parts.append(
                 UnivariateGaussianMixture(mean.cpu(), sd.cpu(), log_weights.cpu())
             )
@@ -134,9 +154,12 @@ class CITNPPredictiveModel:
         self, num_variables, num_fantasies, num_rows, generator
     ):
         return draw_joint_sample_noise(
-            num_fantasies, self.covariance_rank, num_variables, generator,
+            num_fantasies,
+            self.covariance_rank,
+            num_variables,
+            generator,
             num_rows=num_rows,
-        )  # fmt: skip
+        )
 
     def _joint(self, contexts, nodes, values) -> JointPrediction:
         """One joint prediction per context (Q = B, n_t = 1)."""
@@ -153,7 +176,8 @@ class CITNPPredictiveModel:
                         nodes[start:stop],
                         values[start:stop, None],
                         device=self.device,
-                    )  # fmt: skip
+                        min_rows=self.minimum_observational_rows,
+                    )
                 )
             )
         return _concatenate(parts)
@@ -171,9 +195,9 @@ class CITNPPredictiveModel:
             raise ValueError("all acquisitions must have the same number of rows")
         C = len(acquisitions)
         S = int(noise[0].component_uniform.shape[0])
-        nodes = torch.tensor([int(a.target_node) for a in acquisitions])  # type: ignore[arg-type]
+        nodes = torch.tensor([int(a.target_node or 0) for a in acquisitions])
         values = torch.tensor(
-            [float(a.intervention_value) for a in acquisitions],  # type: ignore[arg-type]
+            [float(a.intervention_value or 0.0) for a in acquisitions],
             dtype=torch.float64,
         )
         joint = self._joint(list(contexts), nodes, values)
@@ -210,8 +234,10 @@ class CITNPPredictiveModel:
                 fantasy, nodes.repeat_interleave(S), values.repeat_interleave(S)
             )  # one prediction per fantasy context: Q = C * S
             drawn = sample_joint_rows(
-                joint_r, values.repeat_interleave(S)[:, None], 1,
+                joint_r,
+                values.repeat_interleave(S)[:, None],
+                1,
                 noise=_per_query_noise(noise, r, (C * S, 1, 1)),
-            )  # fmt: skip
+            )
             rows.append(drawn.reshape(C, S, -1))
         return torch.stack(rows, dim=2)  # [C, S, R, D]

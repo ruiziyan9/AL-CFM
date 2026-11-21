@@ -3,9 +3,10 @@
 A fantasy of an acquisition is a set of R rows drawn from the model's
 predictive distribution for that acquisition (the BO convention, as in
 BoTorch's `fantasize`); the fantasy context is the current context with one
-fantasy appended. The model draws the rows (`CausalPredictiveModel.sample_fantasies`)
-from standard noise that the core supplies, so the core decides whether noise
-is fresh for every evaluation or shared.
+fantasy appended. The model draws the rows
+(`CausalPredictiveModel.sample_fantasies`) from standard noise that the core
+supplies, so the core decides whether noise is fresh for every evaluation or
+shared.
 """
 
 from collections.abc import Sequence

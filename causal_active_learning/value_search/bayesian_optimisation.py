@@ -21,7 +21,7 @@ from causal_active_learning.value_search.gaussian_process import (
 
 def initial_design(domain: ValueDomain, num_points: int) -> list[float]:
     """Deterministic, symmetric initial values: lower + width * j / (n + 1),
-    j = 1..n (for n = 3 on [-c, c]: -c/2, 0, c/2)."""
+    j = 1..n (for n = 3 on [-1, 1]: -1/2, 0, 1/2)."""
     return [
         domain.lower + domain.width * (j + 1) / (num_points + 1)
         for j in range(num_points)
@@ -53,12 +53,13 @@ class BayesianOptimisationValueSearch:
     """GP-UCB per node, in lockstep across nodes (plan section 5.3-5.4).
 
     Per node: `initial_points` deterministic values (`initial_design`), then
-    `iterations` rounds of: fit the GP (`fit_gaussian_process`, noise = the
-    squared standard errors, `restarts` random starts), propose the maximiser
-    of mu(u) + exploration_weight * sigma(u) over `acquisition_grid_points`
-    values spanning the domain, evaluate. The recommendation is the
-    evaluated value with the largest posterior mean of the final GP (not the
-    largest noisy estimate, which is biased upward).
+    `iterations` rounds of: fit the GP (`fit_gaussian_process` with
+    `noise_policy`, `restarts` random starts), propose the maximiser of
+    mu(u) + exploration_weight * sigma(u) over `acquisition_grid_points`
+    values spanning [-1, 1], sigma the posterior standard deviation of the
+    latent EIG (without observation noise), evaluate. The recommendation is
+    the evaluated value with the largest posterior mean of the final GP (not
+    the largest noisy estimate, which is biased upward).
 
     Every round evaluates one value per node in one `evaluate` call. Each
     node's random numbers (GP restarts) come from a generator that depends
@@ -74,6 +75,8 @@ class BayesianOptimisationValueSearch:
         exploration_weight: float = 1.0,
         acquisition_grid_points: int = 512,
         restarts: int = 5,
+        noise_policy: str = "standard_error",
+        noise_mode: str = "independent",
     ):
         if initial_points < 2:
             raise ValueError("initial_points must be >= 2")
@@ -82,13 +85,20 @@ class BayesianOptimisationValueSearch:
         self.exploration_weight = exploration_weight
         self.acquisition_grid_points = acquisition_grid_points
         self.restarts = restarts
+        self.noise_policy = noise_policy
+        self.noise_mode = noise_mode
 
     def _fit(self, state: _NodeState) -> FittedGaussianProcess:
         u, y, noise = state.data()
         return fit_gaussian_process(
-            u, y, noise, state.domain.lengthscale_bounds(), state.generator,
+            u,
+            y,
+            noise,
+            state.domain.lengthscale_bounds(),
+            state.generator,
             restarts=self.restarts,
-        )  # fmt: skip
+            noise_policy=self.noise_policy,
+        )
 
     def _propose(self, state: _NodeState) -> ValueEvaluation:
         """The UCB maximiser on the acquisition grid (estimate left NaN)."""
@@ -103,11 +113,17 @@ class BayesianOptimisationValueSearch:
         u = float(grid[best, 0])
         h = surrogate.hyperparameters
         return ValueEvaluation(
-            round=-1, standardised_value=u, value=d.to_value(u),
+            round=-1,
+            standardised_value=u,
+            value=d.to_value(u),
             expected_information_gain=float("nan"),
-            standard_error=float("nan"), acquisition_value=float(ucb[best]),
-            lengthscale=h.lengthscale, output_scale=h.output_scale,
-        )  # fmt: skip
+            standard_error=float("nan"),
+            acquisition_value=float(ucb[best]),
+            lengthscale=h.lengthscale,
+            output_scale=h.output_scale,
+            nugget=h.nugget,
+            noise_mode=self.noise_mode,
+        )
 
     def search(self, evaluate, domains, generator):
         base_seed = _draw_base_seed(generator)
@@ -126,18 +142,22 @@ class BayesianOptimisationValueSearch:
                 if round_index < self.initial_points:
                     u = initial[node][round_index]
                     proposals[node] = ValueEvaluation(
-                        round=-1, standardised_value=u,
+                        round=-1,
+                        standardised_value=u,
                         value=state.domain.to_value(u),
                         expected_information_gain=float("nan"),
                         standard_error=float("nan"),
-                    )  # fmt: skip
+                        noise_mode=self.noise_mode,
+                    )
                 else:
                     proposals[node] = self._propose(state)
             nodes = list(proposals)
-            estimates = evaluate([
-                states[n].domain.acquisition(proposals[n].standardised_value)
-                for n in nodes
-            ])  # fmt: skip
+            estimates = evaluate(
+                [
+                    states[n].domain.acquisition(proposals[n].standardised_value)
+                    for n in nodes
+                ]
+            )
             for node, estimate in zip(nodes, estimates):
                 p = proposals[node]
                 p.round = round_index
@@ -148,7 +168,7 @@ class BayesianOptimisationValueSearch:
         for node, state in states.items():
             surrogate = self._fit(state)
             u, _, _ = state.data()
-            mean, _ = surrogate.posterior(u)
+            mean, sd = surrogate.posterior(u)
             best = int(torch.argmax(mean))
             results[node] = ValueSearchResult(
                 target_node=node,
@@ -160,5 +180,6 @@ class BayesianOptimisationValueSearch:
                 evaluations=state.evaluations,
                 domain=state.domain,
                 surrogate=surrogate,
+                best_value_surrogate_standard_deviation=float(sd[best]),
             )
         return results

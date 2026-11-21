@@ -1,5 +1,14 @@
-"""The interval of values searched for one node (`ValueDomain`), in a
-standardised coordinate u with a raw value v = centre + scale * u."""
+"""The value domain of one node: a standardised coordinate u in [-1, 1]
+mapped to a raw value v = centre + half_width * u.
+
+- "observational_range": centre m_i, half width s_i * c, with (m_i, s_i) the
+  node's mean and standard deviation over the observational rows of the
+  context (the statistics the model's standardisation uses) and
+  c = `value_domain_half_width`;
+- "training_range": the do-value range the model saw in training (supplied by
+  the integration through `TrainingSupport.do_value_range`);
+- "fixed_range": `value_domain_fixed_range`, the same for every node.
+"""
 
 from dataclasses import dataclass
 
@@ -7,99 +16,105 @@ from causal_active_learning.acquisitions import Acquisition
 from causal_active_learning.config import ActiveLearningConfig
 from causal_active_learning.context import ExperimentalContext
 
-LENGTHSCALE_BOUNDS_IN_DOMAIN_WIDTHS = (0.05, 2.0)
+LOWER, UPPER = -1.0, 1.0
+# The GP lengthscale is bounded to [0.1, 4] in u (domain width 2).
+LENGTHSCALE_BOUNDS = (0.1, 4.0)
 
 
 @dataclass(frozen=True)
 class ValueDomain:
-    """The interval of values searched for one node, in the standardised
-    coordinate u, with v = centre + scale * u on the raw scale.
+    """u in [-1, 1] <-> v = centre + half_width * u for one node.
 
     Attributes:
     ----------
     target_node : int
         The node.
 
-    lower, upper : float
-        Bounds of u.
-
-    centre, scale : float
-        Raw-scale mean and standard deviation of the node in the context
-        (the model's standardisation).
+    centre, half_width : float
+        Raw centre and half width of the interval.
 
     num_rows : int
-        Rows of every candidate built from this domain.
+        R of every acquisition built from this domain.
     """
 
     target_node: int
-    lower: float
-    upper: float
     centre: float
-    scale: float
+    half_width: float
     num_rows: int = 1
 
     def __post_init__(self):
-        if not self.lower < self.upper:
-            raise ValueError("a value domain needs lower < upper")
-        if not self.scale > 0:
-            raise ValueError("a value domain needs scale > 0")
+        if not self.half_width > 0:
+            raise ValueError("a value domain needs half_width > 0")
+
+    @property
+    def lower(self) -> float:
+        """Lower bound of u (-1)."""
+        return LOWER
+
+    @property
+    def upper(self) -> float:
+        """Upper bound of u (1)."""
+        return UPPER
 
     @property
     def width(self) -> float:
-        """upper - lower."""
-        return self.upper - self.lower
+        """Width of the u interval (2)."""
+        return UPPER - LOWER
+
+    @property
+    def raw_range(self) -> tuple[float, float]:
+        """(low, high) on the raw scale."""
+        return self.centre - self.half_width, self.centre + self.half_width
 
     def to_value(self, standardised_value: float) -> float:
         """u -> v (raw scale)."""
-        return self.centre + self.scale * float(standardised_value)
+        return self.centre + self.half_width * float(standardised_value)
 
     def to_standardised(self, value: float) -> float:
         """v -> u."""
-        return (float(value) - self.centre) / self.scale
+        return (float(value) - self.centre) / self.half_width
 
     def acquisition(self, standardised_value: float) -> Acquisition:
-        """The experiment do(X_node = to_value(u))."""
-        return Acquisition(
-            self.target_node,
-            self.to_value(standardised_value),
-            self.num_rows,
+        """R rows under do(X_node = to_value(u))."""
+        return Acquisition.intervention(
+            self.target_node, self.to_value(standardised_value), self.num_rows
         )
 
     def lengthscale_bounds(self) -> tuple[float, float]:
-        """GP lengthscale bounds, LENGTHSCALE_BOUNDS_IN_DOMAIN_WIDTHS x width."""
-        low, high = LENGTHSCALE_BOUNDS_IN_DOMAIN_WIDTHS
-        return low * self.width, high * self.width
+        """GP lengthscale bounds in u."""
+        return LENGTHSCALE_BOUNDS
 
 
 def value_domains(
     context: ExperimentalContext,
-    nodes: list[int],
+    nodes,
     config: ActiveLearningConfig,
-    prior_value_range: tuple[float, float] | None = None,
+    training_value_range: tuple[float, float] | None = None,
 ) -> dict[int, ValueDomain]:
-    """The searched value interval of every node.
-
-    v = m_i + s_i u with (m_i, s_i) the node's mean and standard deviation
-    over the observational rows of `context` (the model's standardisation).
-    "observational_range": u in [-c, c], c = value_domain_half_width.
-    "prior_range": v in `prior_value_range` (raw scale, supplied by the
-    integration from the training prior), mapped to u."""
-    mean, std = context.observational_mean_and_standard_deviation()
-    domains = {}
+    """The value domain of every node of `nodes` (see the module docstring)."""
+    domains: dict[int, ValueDomain] = {}
+    nodes = list(nodes)
+    if not nodes:
+        return domains
+    if config.value_domain == "observational_range":
+        mean, std = context.observational_mean_and_standard_deviation()
     for node in nodes:
-        centre, scale = float(mean[node]), float(std[node])
-        if config.value_domain == "prior_range":
-            if prior_value_range is None:
-                raise ValueError(
-                    "value_domain 'prior_range' needs prior_value_range"
-                )
-            low, high = prior_value_range
-            lower, upper = (low - centre) / scale, (high - centre) / scale
+        if config.value_domain == "observational_range":
+            centre = float(mean[node])
+            half = float(std[node]) * config.value_domain_half_width
         else:
-            c = config.value_domain_half_width
-            lower, upper = -c, c
+            if config.value_domain == "fixed_range":
+                assert config.value_domain_fixed_range is not None
+                low, high = config.value_domain_fixed_range
+            else:
+                if training_value_range is None:
+                    raise ValueError(
+                        "value_domain 'training_range' needs the training "
+                        "do-value range (TrainingSupport.do_value_range)"
+                    )
+                low, high = training_value_range
+            centre, half = (low + high) / 2, (high - low) / 2
         domains[node] = ValueDomain(
-            node, float(lower), float(upper), centre, scale,
-            config.rows_per_acquisition,
-        )  # fmt: skip
+            node, centre, half, config.rows_per_acquisition
+        )
     return domains

@@ -102,7 +102,7 @@ def predict_query_in_chunks(
                     treatment,
                     outcome,
                     treatment_values,
-                )  # fmt: skip
+                )
             )
     return UnivariateGaussianMixture.concatenate(parts)
 

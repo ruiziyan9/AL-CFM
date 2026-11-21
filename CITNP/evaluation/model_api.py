@@ -335,7 +335,7 @@ def predict_joint_mixture(
 # --------------------------------------------------------------------------- #
 # Batched variants: B contexts of equal length in one forward pass
 # --------------------------------------------------------------------------- #
-def _batched_model_inputs(ctx_x, ctx_int, T, Y, t, *, normalise):
+def _batched_model_inputs(ctx_x, ctx_int, T, Y, t, *, normalise, min_rows=10):
     """Model keyword inputs (CPU, float32) for B contexts, one query each,
     plus the per-context standardisation (mean, std) [B, D].
 
@@ -343,7 +343,8 @@ def _batched_model_inputs(ctx_x, ctx_int, T, Y, t, *, normalise):
     of each context's query), Y [B] long or None (joint models). t [B, n_t]:
     each query's do-values. Built exactly as `_model_inputs` builds one
     context (same `_normalisation_stats`, same scale features), with the
-    context axis B in place of the query axis Q."""
+    context axis B in place of the query axis Q. `min_rows` is the fewest
+    observational rows `_normalisation_stats` accepts (10, as in training)."""
     cx = torch.as_tensor(ctx_x).to("cpu", torch.float32)
     ci = torch.as_tensor(ctx_int).to("cpu", torch.bool)
     if cx.ndim != 3 or ci.shape != cx.shape:
@@ -357,7 +358,7 @@ def _batched_model_inputs(ctx_x, ctx_int, T, Y, t, *, normalise):
     if tt.ndim == 1:
         tt = tt[None].expand(B, -1)
     if normalise:
-        mean, std = _normalisation_stats(cx, ci)  # [B, D]
+        mean, std = _normalisation_stats(cx, ci, min_rows=min_rows)  # [B, D]
     else:
         mean, std = torch.zeros(B, D), torch.ones(B, D)
     cxn = ((cx - mean[:, None]) / std[:, None])[..., None]
@@ -387,6 +388,7 @@ def predict_mixture_batched(
     *,
     device: str | torch.device,
     normalise: bool = True,
+    min_rows: int = 10,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """`predict_mixture` for B contexts of equal length and one query (T, Y)
     shared by all: p(X_Y | do(X_T = t), context_b) on the RAW scale.
@@ -401,11 +403,17 @@ def predict_mixture_batched(
         joint = predict_joint_mixture_batched(
             model, ctx_x, ctx_int, torch.full((B,), int(T)),
             torch.as_tensor(t)[None].expand(B, -1),
-            device=device, normalise=normalise,
+            device=device, normalise=normalise, min_rows=min_rows,
         )  # fmt: skip
         return joint_marginal_mixture(joint, int(Y))
     inp, mean, std = _batched_model_inputs(
-        ctx_x, ctx_int, int(T), int(Y), t, normalise=normalise
+        ctx_x,
+        ctx_int,
+        int(T),
+        int(Y),
+        t,
+        normalise=normalise,
+        min_rows=min_rows,
     )
     out = _call(model, inp, device)
     mu = out.pred_mean[:, :, 0].double()  # [B, n_t, K], standardised scale
@@ -428,6 +436,7 @@ def predict_joint_mixture_batched(
     *,
     device: str | torch.device,
     normalise: bool = True,
+    min_rows: int = 10,
 ) -> JointPrediction:
     """`predict_joint_mixture` for B contexts of equal length, one query per
     context with its own treatment and do-values.
@@ -437,7 +446,7 @@ def predict_joint_mixture_batched(
     entry b equals `predict_joint_mixture(model, ctx_x[b], ctx_int[b], T[b],
     t[b])` (up to float32 batching differences), raw scale, float64."""
     inp, mean, std = _batched_model_inputs(
-        ctx_x, ctx_int, T, None, t, normalise=normalise
+        ctx_x, ctx_int, T, None, t, normalise=normalise, min_rows=min_rows
     )
     out = _call(model, inp, device)
     if not isinstance(out, JointModelOutput):

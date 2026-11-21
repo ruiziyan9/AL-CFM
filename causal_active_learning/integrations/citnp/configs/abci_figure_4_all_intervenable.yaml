@@ -1,0 +1,34 @@
+# ABCI Figure 4 (a), literal variant: all nodes intervenable.
+# Toth et al., "Active Bayesian Causal Inference", NeurIPS 2022, Section 5,
+# Figure 4 and Appendix F. Numbers marked "ABCI" are the paper's; the
+# mechanisms come from the CITNP model's training prior (the --data_config),
+# not ABCI's GP mechanisms, so absolute KL values are not comparable.
+# Run the literal variant with --minimum_observational_rows 5: CITNP's
+# standardisation otherwise needs at least 10 observational rows.
+name: abci_figure_4_all_intervenable
+task_source:
+  kind: fixed_graph
+  num_variables: 5
+  # X1->X2, X1->X3, X1->X4, X2->X3, X2->X4, X3->X5, X4->X5, as read from ABCI
+  # Figure 4 (seven edges). TO CONFIRM by Ruizi before the runs; not yet
+  # confirmed.
+  edges: [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 4], [3, 4]]
+  num_tasks: 10                   # ABCI: 10 ground-truth SCMs
+  restarts_per_task: 3            # ABCI: 3 restarts each, 30 runs
+query:
+  treatment: 2                    # X3 (ABCI: p(X5 | do(X3 = psi)))
+  outcome: 4                      # X5
+  treatment_range: [2.0, 5.0]     # ABCI: psi ~ U[2, 5]
+  num_query_samples: 16           # psi values drawn once per task, shared
+initial_observational_rows: 5     # ABCI: 5 initial observational samples
+strategies: [expected_information_gain, observational, random_fixed_value,
+             random, exhaustive_true_gain]
+active_learning:
+  acquisition_budget: 50          # ABCI: 50 experiments
+  rows_per_acquisition: 3         # ABCI: N_t = 3 samples per experiment
+  intervenable_nodes: null        # panel (a): all nodes
+  include_observational_candidate: true   # ABCI: targets include the empty set
+  fixed_intervention_value: 0.0   # ABCI RAND-FIXED: value 0
+  random_value_range: [-7.0, 7.0] # ABCI RAND: value ~ U(-7, 7)
+  value_domain: fixed_range
+  value_domain_fixed_range: [-7.0, 7.0]   # the same range as ABCI's RAND

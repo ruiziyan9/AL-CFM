@@ -1,16 +1,17 @@
 """The active learning loop.
 
-One step, with D_t the real context:
-1. predict the query p(Y | do(X_T = psi), D_t) on the psi values;
-2. choose the acquisition (`strategies.choose_acquisition`; for the EIG
-   strategy the bi-level selection of `selection.py`);
-3. run it on the environment and append the real rows;
-4. predict the query on D_{t+1}; record the realised information gain
-   KL(after || before) and the query KL to the truth, both averaged over psi.
+Step 0 records the query prediction and its KL to the truth on the initial
+context; each later step:
+1. predicts the query p(Y | do(X_T = psi), D_t) on the psi values;
+2. chooses the acquisition (`strategies.choose_acquisition`);
+3. runs it on the (constrained) environment and appends all R real rows;
+4. predicts the query on D_{t+1}; records the realised information gain
+   KL(after || before), the query KL to the truth, the support check and the
+   size of the newest regime.
 
 Randomness: `ActiveLearningGenerators` holds separate streams, so changing the
-acquisition settings does not change the real data drawn for a given seed and
-sequence of acquisitions.
+acquisition settings does not change the real rows drawn for a given strategy
+and seed.
 """
 
 import math
@@ -23,7 +24,9 @@ import torch
 
 from causal_active_learning.acquisitions import (
     Acquisition,
-    candidate_target_nodes,
+    ConstrainedEnvironment,
+    InterventionalQuery,
+    resolve_intervenable_nodes,
 )
 from causal_active_learning.config import ActiveLearningConfig
 from causal_active_learning.context import ExperimentalContext
@@ -33,17 +36,17 @@ from causal_active_learning.distributions import (
 )
 from causal_active_learning.information_gain import predict_query_on_context
 from causal_active_learning.protocols import (
-    ExperimentEnvironment,
     CausalPredictiveModel,
+    ExperimentEnvironment,
 )
-from causal_active_learning.selection import AcquisitionScore
-from causal_active_learning.strategies import (
-    choose_acquisition,
-    num_possible_target_nodes,
-    query_kl,
+from causal_active_learning.selection import (
+    OBSERVATIONAL_UNAVAILABLE_WARNING,
+    AcquisitionScore,
 )
+from causal_active_learning.strategies import choose_acquisition, query_kl
 from causal_active_learning.support_check import (
     TrainingSupport,
+    check_num_variables,
     context_violations,
     worst_case_violations,
 )
@@ -116,47 +119,59 @@ class ActiveLearningGenerators:
 
 @dataclass
 class ActiveLearningStep:
-    """The record of one loop step.
+    """The record of one step.
 
     Attributes:
     ----------
     step : int
-        1-based; after this step the context holds `step` experiments.
+        0 = the initial context; after step t the context holds t acquisitions.
 
-    acquisition : str
+    strategy : str
         The strategy.
 
+    num_variables : int
+        D.
+
+    intervenable_nodes : tuple[int, ...]
+        The intervenable nodes of the run.
+
     scores : list[AcquisitionScore]
-        Outer-level scores (EIG strategy; the inner-level surrogate values
-        for "exhaustive_true_gain"; empty for the other baselines).
+        Candidate scores (EIG strategies; empty for baselines and step 0).
 
-    chosen : Acquisition
-        The experiment run.
+    chosen : Acquisition | None
+        The acquisition run (None at step 0).
 
-    choice_is_clear : bool
-        See `choice_is_clear` (True for the baselines).
+    choice_is_clear : bool | None
+        See `choice_is_clear` (None for baselines and step 0).
 
-    predicted_information_gain : float
-        Re-evaluated EIG of the chosen experiment (NaN for the baselines).
+    observational_candidate_available : bool
+        Whether the strategy could choose the observational candidate (for the
+        EIG strategy: only if the model can predict observational rows).
 
-    real_rows : torch.Tensor
-        [R, D] rows drawn from the environment.
+    real_rows : torch.Tensor | None
+        [R, D] rows from the environment (None at step 0).
 
-    query_before, query_after : UnivariateGaussianMixture
-        The query [V, K] before and after the rows were added.
+    query_after : UnivariateGaussianMixture
+        The query [Q, K] on the context after this step.
 
-    realised_information_gain : float
-        psi-averaged KL(after || before).
+    realised_information_gain : float | None
+        psi-averaged KL(after || before) (None at step 0).
 
-    kl_to_truth_before, kl_to_truth_after : float
-        psi-averaged KL(truth || model) before and after.
+    query_kl_to_truth : float | None
+        psi-averaged KL(truth || model) after this step (None without truth).
 
     outside_training_support : bool
-        The context after the step lies outside the training prior's
-        context shapes (`support_violations` says how).
+        The context after this step lies outside the training support.
+
+    newest_regime_size : int | None
+        Rows intervened on the node of the newest acquisition (None if
+        observational).
+
+    predicted_information_gain : float
+        Re-estimated EIG of the chosen acquisition (NaN otherwise).
 
     support_violations : list[str]
-        See `context_violations`.
+        How the context leaves the support.
 
     dense_value_diagnostic : dict[int, list[ValueEvaluation]] | None
         Exhaustive EIG per node on a dense value grid, when requested.
@@ -164,42 +179,46 @@ class ActiveLearningStep:
 
     step: int
     strategy: str
+    num_variables: int
+    intervenable_nodes: tuple[int, ...]
     scores: list[AcquisitionScore]
-    chosen: Acquisition
-    choice_is_clear: bool
-    predicted_information_gain: float
-    real_rows: torch.Tensor
-    query_before: UnivariateGaussianMixture
+    chosen: Acquisition | None
+    choice_is_clear: bool | None
+    observational_candidate_available: bool
+    real_rows: torch.Tensor | None
     query_after: UnivariateGaussianMixture
-    realised_information_gain: float
-    kl_to_truth_before: float
-    kl_to_truth_after: float
+    realised_information_gain: float | None
+    query_kl_to_truth: float | None
     outside_training_support: bool
-    support_violations: list[str]
+    newest_regime_size: int | None
+    predicted_information_gain: float = float("nan")
+    support_violations: list[str] | None = None
     dense_value_diagnostic: dict[int, list[ValueEvaluation]] | None = None
+
+
+def _num_target_nodes(strategy: str, nodes: Sequence[int]) -> int:
+    return {"observational": 0, "treatment": 1}.get(strategy, len(nodes))
 
 
 def run_active_learning(
     model: CausalPredictiveModel,
     environment: ExperimentEnvironment,
     initial_context: ExperimentalContext,
-    treatment: int,
-    outcome: int,
-    treatment_values: torch.Tensor,
+    query: InterventionalQuery,
     config: ActiveLearningConfig,
     generators: ActiveLearningGenerators,
     *,
     training_support: TrainingSupport | None = None,
-    prior_value_range: tuple[float, float] | None = None,
     dense_value_diagnostic_steps: Sequence[int] = (),
     dense_value_diagnostic_points: int = 41,
     progress: Callable[[str], None] | None = None,
 ) -> list[ActiveLearningStep]:
-    """Run config.acquisition_budget steps of the loop with strategy
-    config.strategy (see `choose_acquisition`).
+    """Run step 0 and config.acquisition_budget acquisitions of strategy
+    config.strategy. Returns budget + 1 records.
 
-    Every strategy uses the same environment generator, so strategies run
-    with the same seed start from the same random state.
+    The environment is always wrapped in `ConstrainedEnvironment` with the
+    intervenable nodes. Every strategy uses the same environment generator,
+    so strategies run with the same seed start from the same state.
 
     Args:
     ----------
@@ -209,11 +228,8 @@ def run_active_learning(
     initial_context : ExperimentalContext
         D_0.
 
-    treatment, outcome : int
-        The query.
-
-    treatment_values : torch.Tensor
-        The psi values [Q] (raw scale).
+    query : InterventionalQuery
+        The target query and its psi values.
 
     config : ActiveLearningConfig
         Settings.
@@ -222,11 +238,9 @@ def run_active_learning(
         Random streams.
 
     training_support : TrainingSupport | None
-        If given, contexts outside it give a warning and the step's
-        `outside_training_support` flag.
-
-    prior_value_range : tuple[float, float] | None
-        Raw range of value_domain "prior_range".
+        If given: D above the architecture's maximum raises before the loop;
+        contexts outside the support give a warning and the step's flag; its
+        do-value range is the "training_range" value domain.
 
     dense_value_diagnostic_steps, dense_value_diagnostic_points
         Steps (1-based) at which the EIG strategy also runs the dense value
@@ -235,84 +249,139 @@ def run_active_learning(
     progress : Callable[[str], None] | None
         Called with one line per step (e.g. print).
     """
-    psi = torch.as_tensor(treatment_values, dtype=torch.float64)
-    nodes = candidate_target_nodes(
-        initial_context.num_variables, treatment, outcome,
-        config.exclude_query_nodes,
-    )  # fmt: skip
+    D = initial_context.num_variables
+    nodes = resolve_intervenable_nodes(D, config.intervenable_nodes)
+    training_range = None
     if training_support is not None:
+        check_num_variables(D, training_support)  # raises above the maximum
+        training_range = training_support.do_value_range
         problems = worst_case_violations(
-            initial_context, config.acquisition_budget,
+            initial_context,
+            config.acquisition_budget,
             config.rows_per_acquisition,
-            num_possible_target_nodes(config.strategy, nodes),
+            _num_target_nodes(config.strategy, nodes),
             training_support,
-        )  # fmt: skip
+        )
         for problem in problems:
             warnings.warn(
                 f"active learning may leave the training support: {problem}",
                 stacklevel=2,
             )
-    truth = environment.true_query_distribution(treatment, outcome, psi)
-    points = config.quadrature_points
-    context = initial_context
-    steps = []
-    for step in range(1, config.acquisition_budget + 1):
-        before = predict_query_on_context(model, context, treatment, outcome, psi)
-        choice = choose_acquisition(
-            model, environment, context, treatment, outcome, psi, config,
-            generators, query_before=before, truth=truth,
-            prior_value_range=prior_value_range,
-            dense_value_diagnostic_points=(
-                dense_value_diagnostic_points
-                if step in dense_value_diagnostic_steps else None
-            ),
-        )  # fmt: skip
-        chosen = choice.chosen
-        rows = environment.run(chosen, generators.environment)
-        context_after = context.append(rows, chosen.target_node)
-        after = predict_query_on_context(
-            model, context_after, treatment, outcome, psi
+    environment = ConstrainedEnvironment(environment, nodes)
+    if config.strategy == "expected_information_gain":
+        available = config.include_observational_candidate and bool(
+            getattr(model, "supports_observational_prediction", False)
         )
-        violations = (
-            [] if training_support is None
-            else context_violations(context_after, training_support)
-        )  # fmt: skip
-        for problem in violations:
+        if config.include_observational_candidate and not available:
+            warnings.warn(OBSERVATIONAL_UNAVAILABLE_WARNING, stacklevel=2)
+    else:
+        available = config.include_observational_candidate
+    psi = query.treatment_values
+    truth = environment.true_query_distribution(
+        query.treatment, query.outcome, psi
+    )
+    points = config.quadrature_points
+
+    def check(context, step):
+        if training_support is None:
+            return []
+        problems = context_violations(context, training_support)
+        for problem in problems:
             warnings.warn(
                 f"step {step}: outside the training support: {problem}",
-                stacklevel=2,
+                stacklevel=3,
             )
+        return problems
+
+    context = initial_context
+    before = predict_query_on_context(
+        model, context, query.treatment, query.outcome, psi
+    )
+    violations = check(context, 0)
+    steps = [
+        ActiveLearningStep(
+            step=0,
+            strategy=config.strategy,
+            num_variables=D,
+            intervenable_nodes=nodes,
+            scores=[],
+            chosen=None,
+            choice_is_clear=None,
+            observational_candidate_available=available,
+            real_rows=None,
+            query_after=before,
+            realised_information_gain=None,
+            query_kl_to_truth=None
+            if truth is None
+            else query_kl(truth, before, points),
+            outside_training_support=bool(violations),
+            newest_regime_size=context.newest_regime_size(),
+            support_violations=violations,
+        )
+    ]
+    for step in range(1, config.acquisition_budget + 1):
+        choice = choose_acquisition(
+            model,
+            environment,
+            context,
+            query,
+            config,
+            generators,
+            query_before=before,
+            truth=truth,
+            training_value_range=training_range,
+            dense_value_diagnostic_points=(
+                dense_value_diagnostic_points
+                if step in dense_value_diagnostic_steps
+                else None
+            ),
+        )
+        chosen = choice.chosen
+        rows = environment.run(chosen, generators.environment)
+        context = context.append(rows, chosen.target_node)
+        after = predict_query_on_context(
+            model, context, query.treatment, query.outcome, psi
+        )
+        violations = check(context, step)
         record = ActiveLearningStep(
             step=step,
             strategy=config.strategy,
+            num_variables=D,
+            intervenable_nodes=nodes,
             scores=choice.scores,
             chosen=chosen,
             choice_is_clear=choice.choice_is_clear,
-            predicted_information_gain=choice.predicted_information_gain,
+            observational_candidate_available=available,
             real_rows=rows,
-            query_before=before,
             query_after=after,
             realised_information_gain=float(
                 kl_divergence_quadrature(after, before, points).mean()
             ),
-            kl_to_truth_before=query_kl(truth, before, points),
-            kl_to_truth_after=query_kl(truth, after, points),
+            query_kl_to_truth=None
+            if truth is None
+            else query_kl(truth, after, points),
             outside_training_support=bool(violations),
+            newest_regime_size=context.newest_regime_size()
+            if chosen.target_node is not None
+            else None,
+            predicted_information_gain=choice.predicted_information_gain,
             support_violations=violations,
             dense_value_diagnostic=choice.dense_value_diagnostic,
         )
         steps.append(record)
         if progress is not None:
             predicted = record.predicted_information_gain
+            kl = record.query_kl_to_truth
             progress(
                 f"[{config.strategy}] step {step}: {chosen.describe()}"
                 + (
                     f", EIG {predicted:.4f}"
                     + ("" if record.choice_is_clear else " (not clear-cut)")
-                    if math.isfinite(predicted) else ""
+                    if math.isfinite(predicted)
+                    else ""
                 )
-                + f", realised gain {record.realised_information_gain:.4f}, "
-                f"KL to truth {record.kl_to_truth_after:.4f}"
-            )  # fmt: skip
-        context = context_after
+                + f", realised gain {record.realised_information_gain:.4f}"
+                + ("" if kl is None else f", query KL {kl:.4f}")
+            )
+        before = after
     return steps

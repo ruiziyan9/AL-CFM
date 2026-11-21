@@ -38,9 +38,10 @@ class UnivariateGaussianMixture:
     def __getitem__(self, index) -> "UnivariateGaussianMixture":
         """Index the leading axes of all three tensors."""
         return UnivariateGaussianMixture(
-            self.mean[index], self.standard_deviation[index],
+            self.mean[index],
+            self.standard_deviation[index],
             self.log_weights[index],
-        )  # fmt: skip
+        )
 
     def reshape(self, *leading: int) -> "UnivariateGaussianMixture":
         """Reshape the axes before (Q, K) to `leading`."""

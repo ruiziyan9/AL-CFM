@@ -41,9 +41,12 @@ class ValueEvaluation:
         Upper confidence bound that proposed the value (NaN for the initial
         design and the grid).
 
-    lengthscale, output_scale : float
+    lengthscale, output_scale, nugget : float
         Hyperparameters of the surrogate that proposed it, on the
         standardised target scale (NaN for the initial design and the grid).
+
+    noise_mode : str
+        The fantasy noise mode of the search ("independent" or "shared").
     """
 
     round: int
@@ -54,6 +57,8 @@ class ValueEvaluation:
     acquisition_value: float = float("nan")
     lengthscale: float = float("nan")
     output_scale: float = float("nan")
+    nugget: float = float("nan")
+    noise_mode: str = ""
 
 
 @dataclass
@@ -68,9 +73,9 @@ class ValueSearchResult:
     best_value, best_standardised_value : float
         The recommended v and u.
 
-    best_value_surrogate_mean : float
-        Surrogate estimate of EIG at the recommended value (BO: GP posterior
-        mean; grid: the estimate itself).
+    best_value_surrogate_mean, best_value_surrogate_standard_deviation
+        GP posterior mean and standard deviation of the latent EIG at the
+        recommended value (grid: the estimate itself and NaN).
 
     evaluations : list[ValueEvaluation]
         Every evaluation, in order.
@@ -89,6 +94,7 @@ class ValueSearchResult:
     evaluations: list[ValueEvaluation]
     domain: ValueDomain
     surrogate: FittedGaussianProcess | None = None
+    best_value_surrogate_standard_deviation: float = float("nan")
 
     @property
     def acquisition(self) -> Acquisition:
@@ -129,11 +135,16 @@ def make_value_search(config) -> ValueSearch:
     from causal_active_learning.value_search.grid import GridValueSearch
 
     if config.value_search == "grid":
-        return GridValueSearch(config.grid_standardised_values)
+        values = config.grid_standardised_values
+        if values is None:
+            values = tuple(np.linspace(-1.0, 1.0, config.grid_num_values))
+        return GridValueSearch(values, noise_mode=config.fantasy_noise)
     return BayesianOptimisationValueSearch(
         initial_points=config.bayesian_optimisation_initial_points,
         iterations=config.bayesian_optimisation_iterations,
         exploration_weight=config.ucb_exploration_weight,
         acquisition_grid_points=config.acquisition_grid_points,
         restarts=config.gaussian_process_restarts,
+        noise_policy=config.resolved_gaussian_process_noise(),
+        noise_mode=config.fantasy_noise,
     )

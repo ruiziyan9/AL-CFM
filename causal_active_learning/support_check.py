@@ -1,77 +1,134 @@
-"""Does a context stay inside what the model saw in training?
+"""Does a context stay inside what the model can take and was trained on?
 
-The integration fills `TrainingSupport` from the model's training
-configuration; for CITNP (`integrations/citnp/support.py`), from the run's data
-config (`MixedRegimeConfig`, see `sample_design` in
-CITNP/datasets/mixed_regime_generator.py):
+`TrainingSupport` is filled by the integration from the model's training
+configuration (for CITNP, `integrations/citnp/support.py`). A regime is "all
+rows intervened on the same node": repeated acquisitions on a node join that
+node's regime, as in the CITNP generator, where every row of a regime has its
+own do-value.
 
-- total context rows: drawn from `n_ctx_range` (inclusive);
-- regimes: an observational regime (always present when n_obs_min > 0, with
-  at least n_obs_min + 1 rows: one row plus the reserve) and K <=
-  min(k_max, D) single-node interventional regimes on DISTINCT nodes; the
-  rows of one interventional regime share the target node and each has its
-  own do-value;
-- rows per regime: every regime gets one row, the rest is split by a
-  Dirichlet-multinomial, so any regime size >= 1 occurs (single-row regimes
-  included, though rarely when the Dirichlet concentration is large).
+Checks, at every step, so the step at which a run leaves the support is
+recorded:
+- D larger than the architecture can take: error before the loop starts;
+- D not among the trained D values: warning and flag;
+- context size outside the range, fewer observational rows than the minimum,
+  more regimes than the maximum, do-values outside the range: warning and
+  flag;
+- the size of the newest regime is recorded (small regimes are rare in
+  training; not a flag).
 
-In the loop's terms, all experiments on node i form one interventional
-regime, so the number of regimes is the number of distinct intervened nodes.
-Violations give a warning and a flag, never an error.
+Known difference, not flagged: within a regime the training prior always has
+distinct do-values, whereas an R-row acquisition repeats one do-value R
+times.
 """
 
 from dataclasses import dataclass
+
 
 from causal_active_learning.context import ExperimentalContext
 
 
 @dataclass(frozen=True)
 class TrainingSupport:
-    """The context shapes of the training prior.
+    """What the model was trained on (None = unknown or unbounded).
 
     Attributes:
     ----------
-    context_size_range : tuple[int, int]
-        n_ctx_range, inclusive.
+    trained_num_variables : tuple[int, ...] | None
+        The D values seen in training.
+
+    maximum_num_variables : int | None
+        The largest D the architecture can take (None: unbounded).
+
+    context_size_range : tuple[int, int] | None
+        Context rows, inclusive.
 
     minimum_observational_rows : int
         Fewest observational rows of a training context.
 
-    maximum_interventional_regimes : int
-        min(k_max, D).
+    maximum_interventional_regimes : int | None
+        Most interventional regimes of a training context.
+
+    rows_per_regime_range : tuple[int, int | None]
+        Rows per interventional regime (upper None: unbounded).
+
+    do_value_range : tuple[float, float] | None
+        Raw do-value range of training interventions.
+
+    observational_queries_trained : bool
+        Whether the model was trained on queries without intervention.
     """
 
-    context_size_range: tuple[int, int]
-    minimum_observational_rows: int
-    maximum_interventional_regimes: int
+    trained_num_variables: tuple[int, ...] | None = None
+    maximum_num_variables: int | None = None
+    context_size_range: tuple[int, int] | None = None
+    minimum_observational_rows: int = 0
+    maximum_interventional_regimes: int | None = None
+    rows_per_regime_range: tuple[int, int | None] = (1, None)
+    do_value_range: tuple[float, float] | None = None
+    observational_queries_trained: bool = False
+
+
+def check_num_variables(
+    num_variables: int, support: TrainingSupport
+) -> list[str]:
+    """Raise ValueError if D exceeds the architecture's maximum; return a
+    violation if D was not trained on."""
+    maximum = support.maximum_num_variables
+    if maximum is not None and num_variables > maximum:
+        raise ValueError(
+            f"the context has D = {num_variables} variables, more than the "
+            f"model's architecture can take ({maximum})"
+        )
+    trained = support.trained_num_variables
+    if trained is not None and num_variables not in trained:
+        return [
+            f"D = {num_variables} was not trained on (trained D: {list(trained)})"
+        ]
+    return []
+
+
+def number_of_regimes(context: ExperimentalContext) -> int:
+    """Distinct intervened nodes (a regime = rows intervened on one node)."""
+    return int(context.intervened.any(0).sum())
 
 
 def context_violations(
     context: ExperimentalContext, support: TrainingSupport
 ) -> list[str]:
     """Ways in which `context` lies outside `support` (empty if inside)."""
-    problems = []
-    low, high = support.context_size_range
-    if not low <= context.num_rows <= high:
-        problems.append(
-            f"context has {context.num_rows} rows, outside the training "
-            f"n_ctx_range [{low}, {high}]"
-        )
+    problems = check_num_variables(context.num_variables, support)
+    if support.context_size_range is not None:
+        low, high = support.context_size_range
+        if not low <= context.num_rows <= high:
+            problems.append(
+                f"context has {context.num_rows} rows, outside the training "
+                f"range [{low}, {high}]"
+            )
     observational = int((~context.intervened.any(-1)).sum())
     if observational < support.minimum_observational_rows:
         problems.append(
             f"context has {observational} observational rows, fewer than the "
             f"training minimum {support.minimum_observational_rows}"
         )
-    regimes = int(context.intervened.any(0).sum())
-    if regimes > support.maximum_interventional_regimes:
+    regimes = number_of_regimes(context)
+    if (
+        support.maximum_interventional_regimes is not None
+        and regimes > support.maximum_interventional_regimes
+    ):
         problems.append(
-            f"context has {regimes} interventional regimes (distinct "
-            f"intervened nodes), more than the training maximum "
-            f"{support.maximum_interventional_regimes}"
+            f"context has {regimes} interventional regimes, more than the "
+            f"training maximum {support.maximum_interventional_regimes}"
         )
-    if bool((context.intervened.sum(-1) > 1).any()):
-        problems.append("context has rows intervened on more than one node")
+    if support.do_value_range is not None:
+        low_value, high_value = support.do_value_range
+        values = context.values[context.intervened]
+        outside = (values < low_value) | (values > high_value)
+        if bool(outside.any()):
+            problems.append(
+                f"{int(outside.sum())} do-value(s) outside the training range "
+                f"[{low_value:g}, {high_value:g}] (largest magnitude "
+                f"{float(values[outside].abs().max()):.3g})"
+            )
     return problems
 
 
@@ -82,36 +139,31 @@ def worst_case_violations(
     num_target_nodes: int,
     support: TrainingSupport,
 ) -> list[str]:
-    """Violations that the final context can reach: N0 + budget * R rows
-    and up to min(budget, number of possible target nodes) new regimes."""
+    """Violations the final context can reach: N0 + budget * R rows and up to
+    min(budget, number of possible target nodes) new regimes."""
     problems = []
     final_rows = (
         initial_context.num_rows + acquisition_budget * rows_per_acquisition
     )
-    low, high = support.context_size_range
-    if final_rows > high:
-        problems.append(
-            f"the final context has {final_rows} rows, above the training "
-            f"n_ctx_range maximum {high}"
-        )
-    if initial_context.num_rows < low:
-        problems.append(
-            f"the initial context has {initial_context.num_rows} rows, below "
-            f"the training n_ctx_range minimum {low}"
-        )
-    existing = initial_context.intervened.any(0)
-    regimes = int(existing.sum()) + min(acquisition_budget, num_target_nodes)
-    regimes = min(regimes, int(existing.numel()))
-    if regimes > support.maximum_interventional_regimes:
-        problems.append(
-            f"up to {regimes} interventional regimes, above the training "
-            f"maximum {support.maximum_interventional_regimes}"
-        )
-    observational = int((~initial_context.intervened.any(-1)).sum())
-    if observational < support.minimum_observational_rows:
-        problems.append(
-            f"the initial context has {observational} observational rows, "
-            f"fewer than the training minimum "
-            f"{support.minimum_observational_rows}"
-        )
+    if support.context_size_range is not None:
+        low, high = support.context_size_range
+        if final_rows > high:
+            problems.append(
+                f"the final context has {final_rows} rows, above the training "
+                f"maximum {high}"
+            )
+        if initial_context.num_rows < low:
+            problems.append(
+                f"the initial context has {initial_context.num_rows} rows, "
+                f"below the training minimum {low}"
+            )
+    if support.maximum_interventional_regimes is not None:
+        existing = initial_context.intervened.any(0)
+        regimes = int(existing.sum()) + min(acquisition_budget, num_target_nodes)
+        regimes = min(regimes, int(existing.numel()))
+        if regimes > support.maximum_interventional_regimes:
+            problems.append(
+                f"up to {regimes} interventional regimes, above the training "
+                f"maximum {support.maximum_interventional_regimes}"
+            )
     return problems

@@ -1,6 +1,7 @@
-"""Causal active learning: choose the next acquisition (an intervention on a
-node at a value, or observational rows) that is most informative about a
-target query p(X_Y | do(X_T = psi)), run it, add it to the context, repeat.
+"""Causal active learning: choose the next acquisition (R rows under an
+intervention on a node at a value, or R observational rows) that is most
+informative about a target query p(X_Y | do(X_T = psi)), run it, add it to the
+context, repeat.
 
 The core knows nothing about any particular model: a model implements
 `CausalPredictiveModel` (protocols.py). The CITNP adapter lives in
@@ -9,7 +10,11 @@ The core knows nothing about any particular model: a model implements
 
 from causal_active_learning.acquisitions import (
     Acquisition,
-    candidate_target_nodes,
+    CandidateSet,
+    ConstrainedEnvironment,
+    InterventionalQuery,
+    NonIntervenableNodeError,
+    build_candidate_set,
 )
 from causal_active_learning.config import ActiveLearningConfig
 from causal_active_learning.context import ExperimentalContext
@@ -24,8 +29,8 @@ from causal_active_learning.loop import (
     run_active_learning,
 )
 from causal_active_learning.protocols import (
-    ExperimentEnvironment,
     CausalPredictiveModel,
+    ExperimentEnvironment,
 )
 from causal_active_learning.selection import (
     AcquisitionScore,
@@ -35,18 +40,22 @@ from causal_active_learning.selection import (
 from causal_active_learning.support_check import TrainingSupport
 
 __all__ = [
+    "Acquisition",
+    "AcquisitionScore",
     "ActiveLearningConfig",
     "ActiveLearningGenerators",
     "ActiveLearningStep",
-    "Acquisition",
-    "AcquisitionScore",
-    "ExperimentalContext",
-    "ExperimentEnvironment",
-    "InformationGainEstimate",
+    "CandidateSet",
     "CausalPredictiveModel",
-    "UnivariateGaussianMixture",
+    "ConstrainedEnvironment",
+    "ExperimentEnvironment",
+    "ExperimentalContext",
+    "InformationGainEstimate",
+    "InterventionalQuery",
+    "NonIntervenableNodeError",
     "TrainingSupport",
-    "candidate_target_nodes",
+    "UnivariateGaussianMixture",
+    "build_candidate_set",
     "choice_is_clear",
     "estimate_expected_information_gain",
     "run_active_learning",

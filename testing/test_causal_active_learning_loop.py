@@ -1,16 +1,14 @@
-"""The loop, contexts, config validation and the support check (core)."""
+"""The loop and the strategies (plan tests 9, 20, 21, 23; core)."""
 
 import sys
 import warnings
 from pathlib import Path
 
-import numpy as np
 import pytest
 import torch
 
-from causal_active_learning.acquisitions import Acquisition
-from causal_active_learning.config import ActiveLearningConfig
-from causal_active_learning.context import ExperimentalContext
+from causal_active_learning.acquisitions import NonIntervenableNodeError
+from causal_active_learning.config import STRATEGIES, ActiveLearningConfig
 from causal_active_learning.loop import (
     ActiveLearningGenerators,
     run_active_learning,
@@ -19,76 +17,157 @@ from causal_active_learning.support_check import TrainingSupport
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from causal_active_learning_stubs import (
-    PSI,
     ConjugateStub,
     StubEnvironment,
+    cheap_config,
     empty_context,
+    query,
 )
-from test_causal_active_learning_selection import cheap_config
 
 
-def test_context_append():
-    context = empty_context(rows=15, D=5)
-    rows = torch.randn(2, 5, dtype=torch.float64)
-    after = context.append(rows, 3)
-    assert after.values.shape == (17, 5)
-    assert torch.equal(after.values[:15], context.values)
-    assert after.intervened[15:, 3].all() and after.intervened.sum() == 2
-    assert not context.append(rows, None).intervened.any()
-    with pytest.raises(ValueError):
-        ExperimentalContext(
-            torch.zeros(2, 3), torch.zeros(2, 2, dtype=torch.bool)
-        )
-    with pytest.raises(ValueError):
-        ExperimentalContext(
-            torch.tensor([[float("nan"), 0.0]]),
-            torch.zeros(1, 2, dtype=torch.bool),
-        )
-    with pytest.raises(ValueError):
-        ExperimentalContext(torch.zeros(1, 2), torch.ones(1, 2, dtype=torch.bool))
-
-
-def test_reproducible_and_real_rows_independent_of_acquisition_settings():
-    stub = ConjugateStub()
-
-    def run(**settings):
-        return run_active_learning(
-            stub, StubEnvironment(), empty_context(), 0, 2, PSI,
-            cheap_config(**settings), ActiveLearningGenerators.from_seed(3),
-        )  # fmt: skip
-
-    first, second = run(), run()
-    for a, b in zip(first, second):
-        assert a.chosen == b.chosen and torch.equal(a.real_rows, b.real_rows)
-    random_a = run(strategy="random")
-    random_b = run(
-        strategy="random", bayesian_optimisation_iterations=5, num_fantasies=12
+def _run(config, D=4, seed=3, model=None, **kw):
+    return run_active_learning(
+        model or ConjugateStub(),
+        StubEnvironment(D),
+        empty_context(D=D),
+        query(),
+        config,
+        ActiveLearningGenerators.from_seed(seed),
+        **kw,
     )
-    for a, b in zip(random_a, random_b):
+
+
+# 20. Step 0 and rows per step
+@pytest.mark.parametrize("R", [1, 3])
+@pytest.mark.parametrize("D", [3, 5, 8])
+def test_step_zero_and_rows_per_step(R, D):
+    steps = _run(cheap_config(strategy="random", rows_per_acquisition=R), D=D)
+    assert len(steps) == 2 + 1
+    zero = steps[0]
+    assert zero.step == 0 and zero.chosen is None and zero.real_rows is None
+    assert zero.query_kl_to_truth is not None and zero.query_kl_to_truth > 0
+    for step in steps[1:]:
+        assert step.real_rows.shape == (R, D)
+        assert step.num_variables == D
+        if step.chosen.target_node is not None:
+            assert step.newest_regime_size is not None
+            assert step.newest_regime_size % R == 0
+
+
+# 9. Only intervenable nodes, for every strategy
+@pytest.mark.parametrize("strategy", STRATEGIES)
+def test_strategies_only_intervene_on_intervenable_nodes(strategy):
+    nodes = (1, 3)
+    config = cheap_config(
+        strategy=strategy, intervenable_nodes=nodes, acquisition_budget=6
+    )
+    if strategy == "treatment":
+        with pytest.raises(NonIntervenableNodeError):
+            _run(config)
+        return
+    for seed in range(3):
+        for step in _run(config, seed=seed)[1:]:
+            node = step.chosen.target_node
+            assert node is None or node in nodes
+            assert step.intervenable_nodes == nodes
+
+
+def test_random_baselines_use_the_observational_candidate():
+    model = ConjugateStub(observational=False)
+    config = cheap_config(
+        strategy="random_fixed_value",
+        acquisition_budget=12,
+        fixed_intervention_value=0.25,
+    )
+    steps = _run(config, model=model)
+    chosen = [s.chosen for s in steps[1:]]
+    assert any(c.is_observational for c in chosen)
+    assert all(c.intervention_value in (None, 0.25) for c in chosen)
+    assert all(s.observational_candidate_available for s in steps)
+    with pytest.warns(UserWarning, match="observational candidate"):
+        eig = _run(cheap_config(), model=model)
+    assert not any(s.observational_candidate_available for s in eig)
+
+
+def test_random_strategy_values_stay_in_range():
+    config = cheap_config(
+        strategy="random",
+        acquisition_budget=10,
+        random_value_range=(-0.5, 0.25),
+        include_observational_candidate=False,
+    )
+    for step in _run(config)[1:]:
+        assert -0.5 <= step.chosen.intervention_value <= 0.25
+
+
+# 21. Reproducibility (core part)
+def test_reproducible_and_real_rows_independent_of_acquisition_settings():
+    first, second = _run(cheap_config()), _run(cheap_config())
+    for a, b in zip(first, second):
+        assert a.chosen == b.chosen
+        assert a.query_kl_to_truth == b.query_kl_to_truth
+    random_a = _run(cheap_config(strategy="random"))
+    random_b = _run(
+        cheap_config(
+            strategy="random",
+            bayesian_optimisation_iterations=5,
+            num_fantasies=12,
+            fantasy_noise="shared",
+        )
+    )
+    for a, b in zip(random_a[1:], random_b[1:]):
         assert torch.equal(a.real_rows, b.real_rows)
 
 
-def test_training_support_warning_and_flag():
-    support = TrainingSupport((10, 21), 11, 2)
-    stub = ConjugateStub()
+# Training support (core part of test 30) ----------------------------------------
+def test_training_support_warning_flag_and_regime_sizes():
+    support = TrainingSupport(
+        trained_num_variables=(4,),
+        context_size_range=(10, 21),
+        minimum_observational_rows=11,
+        maximum_interventional_regimes=2,
+        do_value_range=(-6.0, 6.0),
+    )
+    config = cheap_config(
+        strategy="random_fixed_value",
+        fixed_intervention_value=0.1,
+        include_observational_candidate=False,
+    )
     with pytest.warns(UserWarning, match="training support"):
-        steps = run_active_learning(
-            stub, StubEnvironment(), empty_context(rows=20), 0, 2, PSI,
-            cheap_config(strategy="random"),
-            ActiveLearningGenerators.from_seed(0), training_support=support,
-        )  # fmt: skip
+        steps = _run(config, training_support=support)
     assert not steps[0].outside_training_support
+    assert steps[2].outside_training_support
+    assert any("rows" in v for v in steps[2].support_violations)
+    big_values = cheap_config(
+        strategy="random_fixed_value",
+        fixed_intervention_value=7.0,
+        include_observational_candidate=False,
+    )
+    with pytest.warns(UserWarning, match="do-value"):
+        steps = _run(
+            big_values,
+            training_support=TrainingSupport(do_value_range=(-6.0, 6.0)),
+        )
     assert steps[1].outside_training_support
+    with pytest.warns(UserWarning, match="not trained on"):
+        _run(
+            cheap_config(strategy="observational"),
+            training_support=TrainingSupport(trained_num_variables=(5,)),
+        )
+    with pytest.raises(ValueError, match="architecture"):
+        _run(
+            cheap_config(),
+            training_support=TrainingSupport(maximum_num_variables=3),
+        )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        run_active_learning(
-            stub, StubEnvironment(), empty_context(rows=20), 0, 2, PSI,
-            cheap_config(strategy="random"),
-            ActiveLearningGenerators.from_seed(0),
-            training_support=TrainingSupport((10, 100), 11, 2),
-        )  # fmt: skip
+        _run(
+            cheap_config(strategy="observational"),
+            training_support=TrainingSupport(trained_num_variables=(4,)),
+        )
 
 
+# 23. Config validation
 @pytest.mark.parametrize(
     "settings",
     [
@@ -96,12 +175,24 @@ def test_training_support_warning_and_flag():
         {"value_search": "random_search"},
         {"kl_estimator": "exact"},
         {"value_domain": "anywhere"},
+        {"fantasy_noise": "sometimes"},
+        {"gaussian_process_noise": "free"},
         {"acquisition_budget": 0},
-        {"num_fantasies": 1},
+        {"num_fantasies": 7},
+        {"final_num_fantasies": 4},
         {"rows_per_acquisition": 0},
         {"inference_batch_size": 0},
+        {"observational_cost": 0.0},
         {"bayesian_optimisation_initial_points": 1},
         {"value_domain_half_width": 0.0},
+        {"grid_num_values": 1},
+        {"grid_standardised_values": (0.5,)},
+        {"grid_standardised_values": (0.0, 1.5)},
+        {"value_domain": "fixed_range"},
+        {"value_domain_fixed_range": (-1.0, 1.0)},
+        {"value_domain": "fixed_range", "value_domain_fixed_range": (1.0, -1.0)},
+        {"random_value_range": (2.0, 2.0)},
+        {"intervenable_nodes": (1, 1)},
     ],
 )
 def test_config_validation(settings):
@@ -111,10 +202,9 @@ def test_config_validation(settings):
         ActiveLearningConfig(**base)
 
 
-def test_candidate_validation():
-    with pytest.raises(ValueError):
-        Acquisition(1, None)
-    with pytest.raises(ValueError):
-        Acquisition(None, 1.0)
-    assert Acquisition(None, None).is_observational
-    assert np.isfinite(1.0)
+def test_config_defaults():
+    config = ActiveLearningConfig(acquisition_budget=5)
+    assert config.rows_per_acquisition == 3
+    assert config.fantasy_noise == "independent"
+    assert config.include_observational_candidate
+    assert config.intervenable_nodes is None

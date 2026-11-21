@@ -11,9 +11,10 @@ PACKAGE = Path(__file__).resolve().parents[1] / "causal_active_learning"
 
 def _core_modules() -> list[Path]:
     return [
-        p for p in PACKAGE.rglob("*.py")
+        p
+        for p in PACKAGE.rglob("*.py")
         if "integrations" not in p.relative_to(PACKAGE).parts
-    ]  # fmt: skip
+    ]
 
 
 def _module_name(path: Path) -> str:
@@ -47,8 +48,10 @@ def test_importing_the_core_leaves_citnp_unloaded():
         "for m in sys.modules), sorted(m for m in sys.modules if 'CITNP' in m)\n"
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], cwd=PACKAGE.parent,
-        capture_output=True, text=True,
-    )  # fmt: skip
+        [sys.executable, "-c", code],
+        cwd=PACKAGE.parent,
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0, result.stderr
     assert len(modules) >= 15

@@ -7,20 +7,23 @@ from causal_active_learning.value_search import (
 
 
 class GridValueSearch:
-    """Evaluate a fixed set of standardised values per node (clipped to the
-    domain, duplicates removed) and return the best estimate. A baseline for
-    BO and a tool for tests; all values of all nodes go into one call."""
+    """Evaluate a fixed set of values u in [-1, 1] per node (clipped,
+    duplicates removed) and return the value with the largest estimate. All
+    values of all nodes go into one `evaluate` call."""
 
-    def __init__(self, standardised_values: tuple[float, ...]):
+    def __init__(self, standardised_values, noise_mode: str = "independent"):
         self.standardised_values = tuple(float(u) for u in standardised_values)
+        self.noise_mode = noise_mode
 
     def search(self, evaluate, domains, generator):
         plan: list[tuple[int, float]] = []
         for node, domain in domains.items():
-            us = sorted({
-                min(max(u, domain.lower), domain.upper)
-                for u in self.standardised_values
-            })  # fmt: skip
+            us = sorted(
+                {
+                    min(max(u, domain.lower), domain.upper)
+                    for u in self.standardised_values
+                }
+            )
             plan += [(node, u) for u in us]
         estimates = evaluate([domains[n].acquisition(u) for n, u in plan])
         results = {}
@@ -32,7 +35,8 @@ class GridValueSearch:
                     value=domain.to_value(u),
                     expected_information_gain=e.expected_information_gain,
                     standard_error=e.standard_error,
-                )  # fmt: skip
+                    noise_mode=self.noise_mode,
+                )
                 for (n, u), e in zip(plan, estimates)
                 if n == node
             ]
