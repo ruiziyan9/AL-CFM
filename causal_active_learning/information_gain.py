@@ -1,15 +1,28 @@
 """Expected information gain (EIG) of acquisitions about the query, in the
-predictive-update form (ABCI Eq. 3.5 and 4.11-4.12):
+predictive-update form (ABCI Eq. 3.5 and 4.11-4.12), with three objectives.
 
-    EIG(a) = E_psi E_{x ~ p(x | a, D)}
-             KL( p(y | do(X_T = psi), D + x) || p(y | do(X_T = psi), D) ),
-
-estimated with S fantasies x_s (all R rows of the acquisition) and the query
+For one query value psi write p0 = p(y | do(X_T = psi), D), p_s = p(y |
+do(X_T = psi), D + x_s) after fantasy s (all R rows of the acquisition, S
+fantasies) and p_bar = (1/S) sum_s p_s. Per fantasy, averaged over the psi
 values psi_1..psi_Q:
 
-    EIG_hat(a) = (1/S) sum_s KL_s,
-    KL_s = (1/Q) sum_q KL( p(y | psi_q, D + x_s) || p(y | psi_q, D) ),
-    standard error = std(KL_1..KL_S) / sqrt(S).
+    entropy_reduction            H(p0) - H(p_s)
+    kl_divergence                KL(p_s || p0)
+    mixture_entropy_reduction    KL(p_s || p_bar)
+
+Each objective's estimate is the mean of its S terms, its standard error
+std(terms) / sqrt(S). With I = H(p_bar) - (1/S) sum_s H(p_s), the mutual
+information between the query outcome and the fantasy under the model's
+fantasy distribution:
+
+    mixture_entropy_reduction = I,
+    kl_divergence             = I + KL(p_bar || p0)        (drift),
+    entropy_reduction         = I + H(p0) - H(p_bar)       (entropy shift).
+
+All three agree when the model is coherent (p_bar = p0); a PFN does not
+guarantee that. `config.information_gain_objective` (default
+"entropy_reduction") is the one the value search and the outer level
+maximise; all three are computed in every call and recorded.
 
 This is the estimator; the value search (BO or a grid) is the optimiser that
 decides where to call it.
@@ -17,22 +30,34 @@ decides where to call it.
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 
 from causal_active_learning.acquisitions import Acquisition
-from causal_active_learning.config import ActiveLearningConfig
+from causal_active_learning.config import (
+    INFORMATION_GAIN_OBJECTIVES,
+    ActiveLearningConfig,
+)
 from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.distributions import (
     UnivariateGaussianMixture,
     average_mixture,
+    average_mixture_divergences,
+    entropy_quadrature,
     kl_divergence_monte_carlo,
     kl_divergence_quadrature,
 )
 from causal_active_learning.fantasies import fantasy_contexts
 from causal_active_learning.protocols import CausalPredictiveModel
+
+# Debugging aid: check the identities between the objectives in every
+# estimator call (quadrature KL only), see `check_objective_identities`.
+CHECK_OBJECTIVE_IDENTITIES = False
+# Largest absolute disagreement (nats) tolerated by the check: quadrature
+# error, the objectives' terms being computed on different grids.
+OBJECTIVE_IDENTITY_TOLERANCE = 1e-6
 
 
 def kl_divergence(
@@ -54,7 +79,7 @@ def kl_divergence(
 
 @dataclass
 class InformationGainEstimate:
-    """EIG estimate of one acquisition.
+    """Information gain estimate of one acquisition.
 
     Attributes:
     ----------
@@ -62,18 +87,37 @@ class InformationGainEstimate:
         The acquisition.
 
     expected_information_gain : float
-        (1/S) sum_s KL_s in nats, KL_s the psi-averaged KL of fantasy s.
+        The selected objective (`objective`): (1/S) sum_s G_s in nats, G_s the
+        psi-averaged term of fantasy s (module docstring). May be negative
+        for "entropy_reduction".
 
     standard_error : float
-        std_s(KL_s) / sqrt(S) (unbiased standard deviation).
+        std_s(G_s) / sqrt(S) (unbiased standard deviation).
 
     per_fantasy_information_gain : torch.Tensor
-        [S] float64, the KL_s.
+        [S] float64, the G_s of the selected objective.
 
     coherence_gap : float
         psi-averaged KL( p(y | D) || (1/S) sum_s p(y | D + x_s) ), NaN unless
         requested. About 0 for a coherent Bayesian predictive; a gap
         comparable to the EIG values means the ranking is not trustworthy.
+
+    objective : str
+        The selected objective's name ("" when built by hand, e.g. stubs).
+
+    objective_values, objective_standard_errors : dict[str, float]
+        Estimate and standard error of every objective of
+        INFORMATION_GAIN_OBJECTIVES. The standard error of
+        "mixture_entropy_reduction" is approximate: its terms share p_bar,
+        which depends on all S fantasies, so they are not independent.
+
+    drift : float
+        psi-averaged KL(p_bar || p0) = kl_divergence -
+        mixture_entropy_reduction (0 for a coherent model).
+
+    entropy_shift : float
+        psi-averaged H(p0) - H(p_bar) = entropy_reduction -
+        mixture_entropy_reduction (0 for a coherent model).
     """
 
     acquisition: Acquisition
@@ -81,6 +125,83 @@ class InformationGainEstimate:
     standard_error: float
     per_fantasy_information_gain: torch.Tensor
     coherence_gap: float = float("nan")
+    objective: str = ""
+    objective_values: dict[str, float] = field(default_factory=dict)
+    objective_standard_errors: dict[str, float] = field(default_factory=dict)
+    drift: float = float("nan")
+    entropy_shift: float = float("nan")
+
+
+def check_objective_identities(
+    objective_values: Mapping[str, torch.Tensor],
+    drift: torch.Tensor,
+    entropy_shift: torch.Tensor,
+    tolerance: float = OBJECTIVE_IDENTITY_TOLERANCE,
+) -> None:
+    """Raise AssertionError unless, per candidate,
+        kl_divergence - mixture_entropy_reduction = drift,
+        entropy_reduction - mixture_entropy_reduction = entropy_shift
+    hold within `tolerance` (all tensors [C])."""
+    mixture = objective_values["mixture_entropy_reduction"]
+    errors = {
+        "drift": objective_values["kl_divergence"] - mixture - drift,
+        "entropy_shift": objective_values["entropy_reduction"]
+        - mixture
+        - entropy_shift,
+    }
+    for name, error in errors.items():
+        worst = float(error.abs().max()) if error.numel() else 0.0
+        if not worst <= tolerance:
+            raise AssertionError(
+                f"objective identity for {name} off by {worst:.3g} nats "
+                f"(tolerance {tolerance:.3g})"
+            )
+
+
+@dataclass
+class InformationGainObjectives:
+    """Per-fantasy terms of every objective and the two correction terms
+    (module docstring), averaged over psi.
+
+    Attributes:
+    -----------
+    - terms: objective name -> [C, S] float64 (CPU), the terms G_s.
+    - drift: [C], KL(p_bar || p0).
+    - entropy_shift: [C], H(p0) - H(p_bar).
+    """
+
+    terms: dict[str, torch.Tensor]
+    drift: torch.Tensor
+    entropy_shift: torch.Tensor
+
+
+def information_gain_objectives(
+    query_after: UnivariateGaussianMixture,
+    query_before: UnivariateGaussianMixture,
+    config: ActiveLearningConfig,
+    kl_generator: torch.Generator | None = None,
+) -> InformationGainObjectives:
+    """The terms of every objective from the query after each fantasy
+    [C, S, Q, K] and before [Q, K]: KL(p_s || p0) with `config.kl_estimator`,
+    the entropies and the p_bar terms by quadrature with
+    `config.quadrature_points` points (no random numbers, so the KL
+    estimator's generator is used exactly as by the KL alone)."""
+    kl = kl_divergence(query_after, query_before, config, kl_generator)
+    points = config.quadrature_points
+    entropy_after = entropy_quadrature(query_after, points)  # [C, S, Q]
+    entropy_before = entropy_quadrature(query_before, points).to(
+        entropy_after.device
+    )  # [Q]
+    average = average_mixture_divergences(query_after, query_before, points)
+    return InformationGainObjectives(
+        terms={
+            "entropy_reduction": (entropy_before - entropy_after).mean(-1).cpu(),
+            "kl_divergence": kl.mean(-1).cpu(),
+            "mixture_entropy_reduction": average.kl_to_average.mean(-1).cpu(),
+        },
+        drift=average.average_kl_to_reference.mean(-1).cpu(),
+        entropy_shift=(entropy_before - average.average_entropy).mean(-1).cpu(),
+    )
 
 
 def predict_query_in_chunks(
@@ -134,14 +255,24 @@ def estimate_expected_information_gain(
     query_before: UnivariateGaussianMixture | None = None,
     compute_coherence_gap: bool = False,
     kl_generator: torch.Generator | None = None,
+    check_identities: bool | None = None,
 ) -> list[InformationGainEstimate]:
-    """EIG of every candidate about the query, in one batched pass.
+    """Information gain of every candidate about the query, in one batched
+    pass, for every objective (module docstring).
 
     Per candidate c: S fantasies of all R rows (`model.sample_fantasies` with
     the candidate's noise), the C x S fantasy contexts, the query predicted on
-    all of them in chunks of `config.inference_batch_size`, then the
-    psi-averaged KL to the query on D (`config.kl_estimator`) per fantasy,
-    its mean and standard error.
+    all of them in chunks of `config.inference_batch_size`, then per fantasy
+    and psi: KL(p_s || p0) (`config.kl_estimator`), H(p0) and H(p_s)
+    (`entropy_quadrature`), and KL(p_s || p_bar), H(p_bar) and
+    KL(p_bar || p0) (`average_mixture_divergences`), all quadratures with
+    `config.quadrature_points` points. Each objective's psi-averaged terms
+    [C, S] give its mean and standard error; the estimate's headline value is
+    `config.information_gain_objective`'s.
+
+    Each term of "mixture_entropy_reduction" is at most log S (p_bar contains
+    p_s with weight 1/S), far above EIG values in practice; its standard
+    error is approximate (the terms share p_bar).
 
     Args:
     ----------
@@ -177,6 +308,11 @@ def estimate_expected_information_gain(
     kl_generator : torch.Generator | None
         Needed for kl_estimator "monte_carlo".
 
+    check_identities : bool | None
+        Check the identities between the objectives
+        (`check_objective_identities`; quadrature KL only); None =
+        CHECK_OBJECTIVE_IDENTITIES.
+
     Returns:
     ----------
     list[InformationGainEstimate]
@@ -211,22 +347,41 @@ def estimate_expected_information_gain(
     query_after = predict_query_in_chunks(
         model, contexts, treatment, outcome, psi, config.inference_batch_size
     ).reshape(C, S)  # [C, S, Q, K]
-    kl = kl_divergence(query_after, query_before, config, kl_generator)
-    per_fantasy = kl.mean(-1).cpu()  # [C, S], averaged over psi
-    gain = per_fantasy.mean(-1)
-    standard_error = per_fantasy.std(-1, unbiased=True) / math.sqrt(S)
+    objectives = information_gain_objectives(
+        query_after, query_before, config, kl_generator
+    )
+    terms, drift = objectives.terms, objectives.drift
+    entropy_shift = objectives.entropy_shift
+    means = {name: t.mean(-1) for name, t in terms.items()}
+    errors = {
+        name: t.std(-1, unbiased=True) / math.sqrt(S) for name, t in terms.items()
+    }
+    if check_identities is None:
+        check_identities = CHECK_OBJECTIVE_IDENTITIES
+    if check_identities and config.kl_estimator == "quadrature":
+        check_objective_identities(means, drift, entropy_shift)
+    objective = config.information_gain_objective
     gaps = torch.full((C,), float("nan"), dtype=torch.float64)
     if compute_coherence_gap:
-        average = average_mixture(query_after, axis=1)  # [C, Q, S * K]
-        gaps = kl_divergence(query_before, average, config, kl_generator)
+        mixture = average_mixture(query_after, axis=1)  # [C, Q, S * K]
+        gaps = kl_divergence(query_before, mixture, config, kl_generator)
         gaps = gaps.mean(-1).cpu()
     return [
         InformationGainEstimate(
             acquisition=c,
-            expected_information_gain=float(gain[i]),
-            standard_error=float(standard_error[i]),
-            per_fantasy_information_gain=per_fantasy[i],
+            expected_information_gain=float(means[objective][i]),
+            standard_error=float(errors[objective][i]),
+            per_fantasy_information_gain=terms[objective][i],
             coherence_gap=float(gaps[i]),
+            objective=objective,
+            objective_values={
+                n: float(means[n][i]) for n in INFORMATION_GAIN_OBJECTIVES
+            },
+            objective_standard_errors={
+                n: float(errors[n][i]) for n in INFORMATION_GAIN_OBJECTIVES
+            },
+            drift=float(drift[i]),
+            entropy_shift=float(entropy_shift[i]),
         )
         for i, c in enumerate(candidates)
     ]

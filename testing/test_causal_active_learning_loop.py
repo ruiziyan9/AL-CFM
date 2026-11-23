@@ -1,5 +1,7 @@
 """The loop and the strategies (plan tests 9, 20, 21, 23; core)."""
 
+import json
+import math
 import sys
 import warnings
 from pathlib import Path
@@ -208,3 +210,35 @@ def test_config_defaults():
     assert config.fantasy_noise == "independent"
     assert config.include_observational_candidate
     assert config.intervenable_nodes is None
+
+
+# Entropy objective test 8: the KL objective reproduces the pre-change runs
+def _same(a, b) -> bool:
+    if isinstance(a, float) and isinstance(b, float):
+        return a == b or (math.isnan(a) and math.isnan(b))
+    return a == b
+
+
+def test_kl_objective_reproduces_the_runs_before_the_entropy_objectives():
+    """Every strategy (and the EIG strategy with grid, Monte Carlo KL, shared
+    noise, unequal costs, dense diagnostic), two steps: every column that
+    existed before is identical, bit for bit, to the tables recorded by
+    testing/make_causal_active_learning_kl_reference.py on the commit before
+    the change."""
+    from make_causal_active_learning_kl_reference import reference_tables
+
+    path = Path(__file__).resolve().parent / "golden"
+    reference = json.loads(
+        (path / "causal_active_learning_kl_divergence.json").read_text()
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tables = reference_tables(information_gain_objective="kl_divergence")
+    for name, rows in reference.items():
+        assert len(tables[name]) == len(rows), name
+        for i, (new, old) in enumerate(zip(tables[name], rows)):
+            assert set(old) <= set(new), (name, i, set(old) - set(new))
+            different = {
+                k: (old[k], new[k]) for k in old if not _same(new[k], old[k])
+            }
+            assert not different, (name, i, different)

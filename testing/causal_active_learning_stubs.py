@@ -163,6 +163,103 @@ class ContextBlindStub(ConjugateStub):
         )
 
 
+class ShiftedWidenedStub:
+    """A stub whose post-fantasy query is shifted and widened (not coherent).
+
+    On a context of `base_rows` rows the query is p0 = N(0, s0^2) at every
+    psi. A fantasy row has outcome y ~ N(0, s0^2 - v) (the spread of a
+    coherent model's posterior means) and the query after it is
+    p_s = N(shift + y, w^2 v), w^2 = `width_squared(node, value)` of the
+    newest row's intervention (default the constant `width ** 2`).
+    For S -> infinity p_bar = N(shift, V), V = s0^2 - v + w^2 v, and
+        entropy_reduction         = 0.5 log(s0^2 / (w^2 v)),
+        kl_divergence             = log(s0 / (w sqrt v))
+                                    + (w^2 v + shift^2 + s0^2 - v) / (2 s0^2)
+                                    - 1/2,
+        mixture_entropy_reduction = 0.5 log(V / (w^2 v)),
+        drift                     = log(s0 / sqrt V) + (V + shift^2) / (2 s0^2)
+                                    - 1/2,
+        entropy_shift             = 0.5 log(s0^2 / V)
+    (`closed_forms`). Every term of entropy_reduction is the same, so its
+    estimate is exact for any S.
+    """
+
+    supports_observational_prediction = False
+
+    def __init__(
+        self,
+        base_rows=20,
+        prior_sd=1.0,
+        posterior_variance=0.5,
+        shift=0.7,
+        width=3.0**0.5,
+        width_squared=None,
+    ):
+        self.base_rows = base_rows
+        self.prior_sd = prior_sd
+        self.posterior_variance = posterior_variance
+        self.shift = shift
+        self.width_squared = width_squared or (lambda node, value: width**2)
+
+    def _w2(self, context):
+        intervened = context.intervened[-1]
+        if not bool(intervened.any()):
+            return float(self.width_squared(None, None))
+        node = int(torch.nonzero(intervened)[0, 0])
+        return float(self.width_squared(node, float(context.values[-1, node])))
+
+    def predict_query(self, contexts, treatment, outcome, treatment_values):
+        Q = len(treatment_values)
+        means, sds = [], []
+        for c in contexts:
+            if c.num_rows == self.base_rows:
+                means.append(0.0)
+                sds.append(self.prior_sd)
+            else:
+                means.append(self.shift + float(c.values[-1, OUTCOME]))
+                sds.append(math.sqrt(self._w2(c) * self.posterior_variance))
+        m = torch.tensor(means, dtype=DOUBLE)[:, None].expand(-1, Q)
+        sd = torch.tensor(sds, dtype=DOUBLE)[:, None].expand(-1, Q)
+        return UnivariateGaussianMixture.gaussian(m, sd)
+
+    def draw_fantasy_noise(
+        self, num_variables, num_fantasies, num_rows, generator
+    ):
+        return torch.randn(
+            num_fantasies,
+            num_rows,
+            num_variables,
+            generator=generator,
+            dtype=DOUBLE,
+        )
+
+    def sample_fantasies(self, contexts, acquisitions, noise):
+        spread = math.sqrt(self.prior_sd**2 - self.posterior_variance)
+        out = []
+        for a, z in zip(acquisitions, noise):
+            rows = torch.zeros(z.shape[0], a.num_rows, z.shape[2], dtype=DOUBLE)
+            rows[:, :, OUTCOME] = spread * z[:, : a.num_rows, OUTCOME]
+            if a.target_node is not None:
+                rows[:, :, a.target_node] = a.intervention_value
+            out.append(rows)
+        return torch.stack(out)
+
+    def closed_forms(self, w2=None):
+        """The S -> infinity values of the class docstring."""
+        w2 = float(self.width_squared(None, None)) if w2 is None else w2
+        s02, v, c = self.prior_sd**2, self.posterior_variance, self.shift
+        V = s02 - v + w2 * v
+        return {
+            "entropy_reduction": 0.5 * math.log(s02 / (w2 * v)),
+            "kl_divergence": 0.5 * math.log(s02 / (w2 * v))
+            + (w2 * v + c**2 + s02 - v) / (2 * s02)
+            - 0.5,
+            "mixture_entropy_reduction": 0.5 * math.log(V / (w2 * v)),
+            "drift": 0.5 * math.log(s02 / V) + (V + c**2) / (2 * s02) - 0.5,
+            "entropy_shift": 0.5 * math.log(s02 / V),
+        }
+
+
 def empty_context(rows=20, D=4, seed=0):
     """An observational context of standard normal rows."""
     g = torch.Generator().manual_seed(seed)
