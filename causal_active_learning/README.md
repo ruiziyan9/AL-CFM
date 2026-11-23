@@ -27,11 +27,11 @@ scan), and CITNP never imports this package.
 | `config.py` | `ActiveLearningConfig` and its validation |
 | `context.py` | `ExperimentalContext` (values, intervened mask, `append`) |
 | `acquisitions.py` | `Acquisition`, `InterventionalQuery`, `CandidateSet`, `build_candidate_set`, `ConstrainedEnvironment` |
-| `distributions.py` | `UnivariateGaussianMixture`, quadrature and Monte Carlo KL |
+| `distributions.py` | `UnivariateGaussianMixture`, quadrature and Monte Carlo KL, quadrature entropy |
 | `fantasies.py` | fantasy noise per node, fantasy contexts |
-| `information_gain.py` | `estimate_expected_information_gain`, coherence gap |
+| `information_gain.py` | `estimate_expected_information_gain` (the three objectives), coherence gap |
 | `value_search/` | `ValueDomain`, exact GP, BO, grid |
-| `selection.py` | `select_next_acquisition`, outer re-estimation, `choice_is_clear` |
+| `selection.py` | `select_next_acquisition`, outer re-estimation, `cost_adjusted_value`, `choice_is_clear` |
 | `strategies.py`, `loop.py` | the strategies; `run_active_learning`, step records |
 | `support_check.py` | `TrainingSupport` and the checks |
 | `evaluation/` | records to tables, summaries (95% CI), plots |
@@ -68,10 +68,14 @@ context. Each later step, with D_t the real context:
    EIG(i, v) (BO by default, a grid as an option);
 3. outer level: re-estimate EIG at every node's best value and for an
    observational batch, with fresh and more numerous fantasies; pick the
-   largest (per unit cost);
+   largest (cost-adjusted, see below);
 4. run the chosen acquisition on the true system and append all R rows;
 5. record the query, the realised information gain KL(after || before), the
-   query KL to the truth, the support check and the size of the newest regime.
+   realised entropy reduction H(before) − H(after), the query KL to the
+   truth, the support check and the size of the newest regime.
+
+"EIG" below means the objective selected by `information_gain_objective`
+(default `entropy_reduction`; see "Information gain objectives").
 
 **The query and intervenable nodes.** `InterventionalQuery(treatment,
 outcome, treatment_values)` names T, Y and the ψ values.
@@ -111,10 +115,81 @@ tiny; a Monte Carlo version cross-checks it. All densities are on the raw scale
 (the per-task standardisation changes with the context). The same model gives
 the fantasies and the query, so EIG measures what the model expects to learn.
 
+## Information gain objectives
+
+For one query value ψ write p0(y) = p(y | do(ψ), D) for the current
+prediction, p_x(y) = p(y | do(ψ), D + x) for the prediction after a fantasy x
+(all R rows), and p̄ = E_x p_x for the average post-fantasy prediction, the
+expectation over the model's own fantasy distribution p(x | a, D). Three
+objectives (`information_gain_objective`), each averaged over the ψ values:
+
+| name | formula | relation to I = H(p̄) − E_x H(p_x) | sign |
+|---|---|---|---|
+| `entropy_reduction` (default) | H(p0) − E_x H(p_x) | I + [H(p0) − H(p̄)] | may be negative |
+| `kl_divergence` (before the change, the only one) | E_x KL(p_x ‖ p0) | I + KL(p̄ ‖ p0) | ≥ 0 |
+| `mixture_entropy_reduction` | H(p̄) − E_x H(p_x) = E_x KL(p_x ‖ p̄) | I exactly | ≥ 0 |
+
+I is the mutual information I(Y; x | D) between the query outcome and the
+acquisition's rows under the model's predictive. **Derivation.** Start from
+I = E_x KL(p_x ‖ p̄) and split the logarithm:
+
+    E_x KL(p_x ‖ p̄) = E_x ∫ p_x log p_x − E_x ∫ p_x log p̄
+                    = −E_x H(p_x) − ∫ p̄ log p̄          (E_x p_x = p̄)
+                    = H(p̄) − E_x H(p_x).
+
+Add and subtract log p̄ inside the KL to p0:
+
+    E_x KL(p_x ‖ p0) = E_x ∫ p_x (log p_x − log p̄) + E_x ∫ p_x (log p̄ − log p0)
+                     = I + ∫ p̄ (log p̄ − log p0) = I + KL(p̄ ‖ p0),
+
+and add and subtract H(p̄) in the entropy form:
+
+    H(p0) − E_x H(p_x) = [H(p̄) − E_x H(p_x)] + [H(p0) − H(p̄)] = I + H(p0) − H(p̄).
+
+**Coherent model versus a PFN.** A coherent Bayesian predictive satisfies
+p̄ = p0 (the prediction averaged over what it expects to see is the
+prediction itself), so both correction terms vanish and the three objectives
+are equal: the mutual information. A PFN is trained to approximate posterior
+predictives but nothing forces p̄ = p0, so the objectives differ by the drift
+KL(p̄ ‖ p0) ≥ 0 and the entropy shift H(p0) − H(p̄). The KL form rewards any
+predicted change of the prediction, including a systematic shift the model
+would make whatever it saw (drift); the entropy form scores only how much
+narrower the prediction is expected to become, the standard formulation of
+prediction-oriented Bayesian active learning, and is the default.
+
+**Negative values.** The entropy form is negative when the fantasies make the
+prediction wider on average. It is kept as a conservative acquisition value,
+not clipped: an acquisition the model expects to leave it less certain scores
+below zero. The GP standardises its targets, so the value search is
+unaffected; the outer level's cost adjustment handles the sign (below).
+
+**Estimation.** With S fantasies, per fantasy s and ψ: H(p0) and H(p_s)
+(`entropy_quadrature`), KL(p_s ‖ p0) (`kl_estimator`), and KL(p_s ‖ p̄_S),
+H(p̄_S), KL(p̄_S ‖ p0) with p̄_S the S-component average
+(`average_mixture_divergences`, on one grid per candidate and ψ, p̄_S's, so
+the S × K components are evaluated once rather than per fantasy). Each
+objective's estimate is the mean of its S ψ-averaged terms and its standard
+error their standard deviation / √S; for `mixture_entropy_reduction` the terms
+share p̄_S, so the standard error is approximate, and each term is at most
+log S (p̄_S contains p_s with weight 1/S), far above EIG values in practice.
+All three objectives, the drift and the entropy shift are computed in every
+call (inner level, outer level, dense diagnostic) and recorded; entropies and
+the p̄ terms are quadratures in float64, negligible next to the forward passes,
+and draw no random numbers. `information_gain.CHECK_OBJECTIVE_IDENTITIES`
+(or `check_identities=True`) asserts the two identities per candidate to
+1e-6 (quadrature KL only).
+
+**Realised counterparts** (calibration plot, `steps.csv`): after the real
+acquisition, `realised_entropy_reduction` = H(before) − H(after) for
+`entropy_reduction` (may be negative), `realised_information_gain` =
+KL(after ‖ before) for `kl_divergence`. `mixture_entropy_reduction` has no
+realised quantity of its own and is plotted against the realised entropy
+reduction (equal in expectation for a coherent model).
+
 ## Bi-level optimisation (ABCI Eq. 4.15, Appendix D.7)
 
     inner level, for every intervenable node i:   v_i* in argmax_v EIG(i, v)
-    outer level:   a* = argmax over {(i, v_i*)} ∪ {observational batch} of EIG(a) / cost(a)
+    outer level:   a* = argmax over {(i, v_i*)} ∪ {observational batch} of cost_adjusted(EIG(a), cost(a))
 
 **Value domain.** A standardised coordinate u ∈ [−1, 1] maps to a raw value:
 `observational_range` (default, v = m_i + s_i c u with the node's
@@ -169,7 +244,17 @@ records `observational_candidate_available = False`; it never raises for this.
 Strategies that do not score with the model (the random baselines, OBS) still
 use it, since the true system produces the rows; plot captions note the
 asymmetry. Optional costs (`observational_cost`, `intervention_cost`) make the
-outer level maximise EIG per unit cost.
+outer level maximise the cost-adjusted value (`cost_adjusted_value`):
+
+    value / cost   if value ≥ 0,
+    value × cost   if value < 0,
+
+increasing in the value and decreasing in the cost on both sides. Dividing a
+negative value by a larger cost would bring it closer to zero and rank the more
+expensive acquisition higher; multiplying avoids that. With equal costs (the
+default) the ranking is the plain one. `choice_is_clear` and
+`exhaustive_true_gain` (whose real KL drops can be negative) rank the same
+way.
 
 **Cost, and when BO pays off.** For single-node interventions the value search
 is one-dimensional for every D, so grid and BO costs both grow linearly in the
@@ -189,7 +274,9 @@ p(y | ψ, D + x) equals p(y | ψ, D). A PFN is not guaranteed to. The outer leve
 reports per candidate the coherence gap KL( p(y | ψ, D) || (1/S) Σ_s p(y | ψ,
 D + x_s) ), ψ-averaged (`scores.csv`); it is about 0 for the conjugate test
 stub. A gap comparable to the EIG values means the ranking is not trustworthy
-for that context. It is reported, never acted on.
+for that context. It is reported, never acted on. `scores.csv` also reports
+the drift KL(p̄ ‖ p0) and entropy shift H(p0) − H(p̄) that separate the three
+objectives (see "Information gain objectives").
 
 ## Training support
 
@@ -242,10 +329,11 @@ explicit `treatment_values` list, or `num_query_samples` draws from
 `run` writes, with prefix `--out PREFIX`: `PREFIX_steps.csv` (one row per
 setting × task × restart × strategy × step, steps 0..budget),
 `PREFIX_scores.csv` (EIG strategy, per candidate: value, re-estimated EIG,
-standard error, coherence gap, surrogate mean and standard deviation),
-`PREFIX_bayesian_optimisation_trace.csv` (per BO evaluation: round, u, value,
-EIG, standard error, proposing UCB, lengthscale, output scale, nugget, noise
-mode), `PREFIX_surrogate.csv` (GP posteriors at `--surrogate_steps`),
+standard error, coherence gap, surrogate mean and standard deviation, the
+objective, every objective's value and standard error, drift, entropy
+shift), `PREFIX_bayesian_optimisation_trace.csv` (per BO evaluation: round, u,
+value, EIG, standard error, proposing UCB, lengthscale, output scale, nugget,
+noise mode, the objective and every objective's value), `PREFIX_surrogate.csv` (GP posteriors at `--surrogate_steps`),
 `PREFIX_summary.csv` (per setting × strategy × step: `num_runs`,
 `mean_query_kl`, `standard_error_query_kl`, `ci95_lower`, `ci95_upper` with the
 Student t quantile on num_runs − 1 degrees of freedom,
@@ -253,9 +341,15 @@ Student t quantile on num_runs − 1 degrees of freedom,
 `fraction_observational_candidate_available`), `PREFIX_dense_value_diagnostic.csv`
 (with `--dense_value_diagnostic`: EIG on 41 values per node with
 `final_num_fantasies`, for both noise modes, with the distance between the BO
-recommendation and the dense maximiser), `PREFIX_meta.json` and figures (query
-KL with 95% CI, EIG calibration, chosen-acquisition frequency, GP posterior per
-node with the dense diagnostic and the observational EIG).
+recommendation and the dense maximiser, and every objective's value),
+`PREFIX_meta.json` and figures (query KL with 95% CI, calibration of the
+predicted objective against its realised counterpart, chosen-acquisition
+frequency, GP posterior per node with the dense diagnostic and the
+observational EIG). `PREFIX_steps.csv` holds `information_gain_objective`,
+`predicted_information_gain` (the selected objective),
+`predicted_entropy_reduction`, `predicted_kl_divergence`,
+`predicted_mixture_entropy_reduction`, `realised_information_gain` (KL) and
+`realised_entropy_reduction`.
 
 ## ABCI Figure 4, inside the training distribution
 
@@ -270,6 +364,10 @@ estimated through the PFN); panel (a) all nodes intervenable
 (`abci_figure_4_treatment_not_intervenable.yaml`). Not replicable: U_CD and
 U_CML. `exhaustive_true_gain` is not in ABCI's figure and roughly doubles the
 cost; it is left out of the configs and can be added with `--strategies`.
+Both configs set `information_gain_objective: entropy_reduction` explicitly:
+the first Figure 4 runs, made before the entropy objectives existed, used
+`kl_divergence`; pass `--information_gain_objective kl_divergence` to
+reproduce them.
 
 | | ABCI | ours | reason |
 |---|---|---|---|
@@ -312,8 +410,12 @@ python -m causal_active_learning.integrations.citnp run ... --environment exampl
     --seeds 0,1,2,3,4 --value_search bayesian_optimisation,grid --out al_example
 python -m causal_active_learning.integrations.citnp run ... --environment prior \
     --n_tasks 50 --out al_prior
-python -m causal_active_learning.integrations.citnp plot PREFIX
+python -m causal_active_learning.integrations.citnp plot PREFIX [--all_calibration_pairs]
 ```
+
+Every `ActiveLearningConfig` field given on the command line (for example
+`--information_gain_objective kl_divergence`) overrides the experiment's
+`active_learning` section.
 
 ## One design step (sequential wet-lab mode)
 
@@ -341,9 +443,14 @@ print(chosen.describe(), choice_is_clear(scores))
 ## Tests
 
 ```bash
-pytest testing/test_causal_active_learning_*.py          # ~1.5 min on a CPU
+pytest testing/test_causal_active_learning_*.py          # ~3 min on a CPU
 pytest testing/test_causal_active_learning_*.py -m slow  # + environment moments
 ```
+
+The backward-compatibility test compares the `kl_divergence` runs bit for bit
+with `testing/golden/causal_active_learning_kl_divergence.json`, recorded on the
+commit before the entropy objectives (one torch thread; how to record it again
+is in `testing/make_causal_active_learning_kl_reference.py`).
 
 ## References
 
