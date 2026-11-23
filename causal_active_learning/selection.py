@@ -19,7 +19,7 @@ i, so searching several nodes in lockstep equals searching each alone.
 
 import math
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -80,6 +80,16 @@ class AcquisitionScore:
     cost : float
         The acquisition's cost; the outer level maximises
         `cost_adjusted_value(expected_information_gain, cost)`.
+
+    objective : str
+        The name of the selected objective (`expected_information_gain`).
+
+    objective_values, objective_standard_errors : dict[str, float]
+        Every objective's re-estimate and standard error (empty when not
+        scored with the model).
+
+    drift, entropy_shift : float
+        See `InformationGainEstimate`.
     """
 
     acquisition: Acquisition
@@ -88,6 +98,11 @@ class AcquisitionScore:
     coherence_gap: float
     value_search_result: ValueSearchResult | None
     cost: float = 1.0
+    objective: str = ""
+    objective_values: dict[str, float] = field(default_factory=dict)
+    objective_standard_errors: dict[str, float] = field(default_factory=dict)
+    drift: float = float("nan")
+    entropy_shift: float = float("nan")
 
 
 def acquisition_cost(
@@ -165,6 +180,11 @@ def reevaluate_and_select(
             cost=1.0
             if config is None
             else acquisition_cost(e.acquisition, config),
+            objective=e.objective,
+            objective_values=dict(e.objective_values),
+            objective_standard_errors=dict(e.objective_standard_errors),
+            drift=e.drift,
+            entropy_shift=e.entropy_shift,
         )
         for i, e in enumerate(estimates)
     ]

@@ -77,7 +77,12 @@ class StrategyChoice:
         See `choice_is_clear` (None for the baselines).
 
     predicted_information_gain : float
-        Re-estimated EIG of the chosen acquisition (NaN for baselines).
+        Re-estimate of the selected objective for the chosen acquisition
+        (NaN for baselines).
+
+    predicted_objective_values : dict[str, float]
+        Every objective's re-estimate for the chosen acquisition (EIG
+        strategy; empty otherwise).
 
     dense_value_diagnostic : dict | None
         Dense value diagnostic, when requested.
@@ -88,6 +93,7 @@ class StrategyChoice:
     choice_is_clear: bool | None = None
     predicted_information_gain: float = float("nan")
     dense_value_diagnostic: dict[int, list[ValueEvaluation]] | None = None
+    predicted_objective_values: dict[str, float] = field(default_factory=dict)
 
 
 def query_kl(
@@ -137,9 +143,8 @@ def choose_acquisition(
             query_before=query_before,
             warn_observational_unavailable=False,
         )
-        predicted = next(
-            s.expected_information_gain for s in scores if s.acquisition == chosen
-        )
+        chosen_score = next(s for s in scores if s.acquisition == chosen)
+        predicted = chosen_score.expected_information_gain
         diagnostic = None
         if dense_value_diagnostic_points:
             nodes = eig_candidate_set(model, context, config).intervenable_nodes
@@ -155,7 +160,12 @@ def choose_acquisition(
                 query_before=query_before,
             )
         return StrategyChoice(
-            chosen, scores, choice_is_clear(scores), predicted, diagnostic
+            chosen,
+            scores,
+            choice_is_clear(scores),
+            predicted,
+            diagnostic,
+            dict(chosen_score.objective_values),
         )
     if strategy == "observational":
         return StrategyChoice(Acquisition.observational(R))

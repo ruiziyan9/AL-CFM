@@ -6,8 +6,10 @@ context; each later step:
 2. chooses the acquisition (`strategies.choose_acquisition`);
 3. runs it on the (constrained) environment and appends all R real rows;
 4. predicts the query on D_{t+1}; records the realised information gain
-   KL(after || before), the query KL to the truth, the support check and the
-   size of the newest regime.
+   KL(after || before) and the realised entropy reduction H(before) -
+   H(after) (the realised counterparts of the "kl_divergence" and
+   "entropy_reduction" objectives), the query KL to the truth, the support
+   check and the size of the newest regime.
 
 Randomness: `ActiveLearningGenerators` holds separate streams, so changing the
 acquisition settings does not change the real rows drawn for a given strategy
@@ -17,7 +19,7 @@ and seed.
 import math
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -32,6 +34,7 @@ from causal_active_learning.config import ActiveLearningConfig
 from causal_active_learning.context import ExperimentalContext
 from causal_active_learning.distributions import (
     UnivariateGaussianMixture,
+    entropy_quadrature,
     kl_divergence_quadrature,
 )
 from causal_active_learning.information_gain import predict_query_on_context
@@ -155,7 +158,8 @@ class ActiveLearningStep:
         The query [Q, K] on the context after this step.
 
     realised_information_gain : float | None
-        psi-averaged KL(after || before) (None at step 0).
+        psi-averaged KL(after || before), the realised counterpart of the
+        "kl_divergence" objective (None at step 0).
 
     query_kl_to_truth : float | None
         psi-averaged KL(truth || model) after this step (None without truth).
@@ -168,13 +172,25 @@ class ActiveLearningStep:
         observational).
 
     predicted_information_gain : float
-        Re-estimated EIG of the chosen acquisition (NaN otherwise).
+        Re-estimate of the selected objective for the chosen acquisition
+        (NaN otherwise).
 
     support_violations : list[str]
         How the context leaves the support.
 
     dense_value_diagnostic : dict[int, list[ValueEvaluation]] | None
         Exhaustive EIG per node on a dense value grid, when requested.
+
+    realised_entropy_reduction : float | None
+        psi-averaged H(before) - H(after), the realised counterpart of the
+        "entropy_reduction" objective; may be negative (None at step 0).
+
+    predicted_objective_values : dict[str, float]
+        Every objective's re-estimate for the chosen acquisition (EIG
+        strategy; empty otherwise).
+
+    information_gain_objective : str
+        The run's `config.information_gain_objective`.
     """
 
     step: int
@@ -194,6 +210,9 @@ class ActiveLearningStep:
     predicted_information_gain: float = float("nan")
     support_violations: list[str] | None = None
     dense_value_diagnostic: dict[int, list[ValueEvaluation]] | None = None
+    realised_entropy_reduction: float | None = None
+    predicted_objective_values: dict[str, float] = field(default_factory=dict)
+    information_gain_objective: str = ""
 
 
 def _num_target_nodes(strategy: str, nodes: Sequence[int]) -> int:
@@ -317,6 +336,7 @@ def run_active_learning(
             outside_training_support=bool(violations),
             newest_regime_size=context.newest_regime_size(),
             support_violations=violations,
+            information_gain_objective=config.information_gain_objective,
         )
     ]
     for step in range(1, config.acquisition_budget + 1):
@@ -367,6 +387,14 @@ def run_active_learning(
             predicted_information_gain=choice.predicted_information_gain,
             support_violations=violations,
             dense_value_diagnostic=choice.dense_value_diagnostic,
+            realised_entropy_reduction=float(
+                (
+                    entropy_quadrature(before, points)
+                    - entropy_quadrature(after, points)
+                ).mean()
+            ),
+            predicted_objective_values=dict(choice.predicted_objective_values),
+            information_gain_objective=config.information_gain_objective,
         )
         steps.append(record)
         if progress is not None:
@@ -381,7 +409,9 @@ def run_active_learning(
                     if math.isfinite(predicted)
                     else ""
                 )
-                + f", realised gain {record.realised_information_gain:.4f}"
+                + f", realised KL {record.realised_information_gain:.4f}"
+                + ", realised entropy reduction "
+                + f"{record.realised_entropy_reduction:.4f}"
                 + ("" if kl is None else f", query KL {kl:.4f}")
             )
         before = after

@@ -242,3 +242,35 @@ def test_kl_objective_reproduces_the_runs_before_the_entropy_objectives():
                 k: (old[k], new[k]) for k in old if not _same(new[k], old[k])
             }
             assert not different, (name, i, different)
+
+
+# Entropy objective plan 3.5: realised counterparts
+@pytest.mark.parametrize("objective", ["entropy_reduction", "kl_divergence"])
+def test_realised_entropy_reduction_and_predicted_objectives(objective):
+    config = cheap_config(
+        intervenable_nodes=(1,),
+        include_observational_candidate=False,
+        information_gain_objective=objective,
+    )
+    steps = _run(config)
+    assert steps[0].realised_entropy_reduction is None
+    for step in steps:
+        assert step.information_gain_objective == objective
+    for step in steps[1:]:
+        predicted = step.predicted_objective_values
+        assert set(predicted) == {
+            "entropy_reduction",
+            "kl_divergence",
+            "mixture_entropy_reduction",
+        }
+        assert predicted[objective] == step.predicted_information_gain
+        # conjugate stub, intervention: H(after) does not depend on the
+        # outcome, so the realised entropy reduction is the predicted one
+        assert step.realised_entropy_reduction == pytest.approx(
+            predicted["entropy_reduction"], abs=1e-9
+        )
+        assert step.realised_entropy_reduction > 0
+    random = _run(cheap_config(strategy="random"))
+    for step in random[1:]:
+        assert math.isfinite(step.realised_entropy_reduction)
+        assert step.predicted_objective_values == {}
