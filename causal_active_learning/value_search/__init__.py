@@ -4,7 +4,7 @@ option). All nodes are searched in lockstep, one batched EIG evaluation per
 round."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -47,6 +47,10 @@ class ValueEvaluation:
 
     noise_mode : str
         The fantasy noise mode of the search ("independent" or "shared").
+
+    objective_values : dict[str, float]
+        Every objective's estimate (`InformationGainEstimate.objective_values`;
+        `expected_information_gain` is the selected one's).
     """
 
     round: int
@@ -59,6 +63,7 @@ class ValueEvaluation:
     output_scale: float = float("nan")
     nugget: float = float("nan")
     noise_mode: str = ""
+    objective_values: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

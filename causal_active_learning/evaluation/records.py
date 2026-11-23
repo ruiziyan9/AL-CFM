@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from causal_active_learning.config import INFORMATION_GAIN_OBJECTIVES
 from causal_active_learning.loop import ActiveLearningStep
 
 TABLES = (
@@ -37,6 +38,23 @@ class ActiveLearningTables:
         return {name: getattr(self, name) for name in TABLES}
 
 
+def objective_columns(
+    values: dict[str, float],
+    prefix: str = "",
+    standard_errors: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """One column per objective of INFORMATION_GAIN_OBJECTIVES,
+    `<prefix><objective>` (NaN where missing), and with `standard_errors`
+    also `<prefix><objective>_standard_error`."""
+    out = {
+        f"{prefix}{n}": values.get(n, np.nan) for n in INFORMATION_GAIN_OBJECTIVES
+    }
+    if standard_errors is not None:
+        for n in INFORMATION_GAIN_OBJECTIVES:
+            out[f"{prefix}{n}_standard_error"] = standard_errors.get(n, np.nan)
+    return out
+
+
 def step_rows(
     ident: dict,
     step: ActiveLearningStep,
@@ -51,18 +69,26 @@ def step_rows(
     - steps: step, number of variables, intervenable nodes, rows per
       acquisition, chosen node ("observational", or the 0-based node; empty at
       step 0), chosen value, choice clear, observational candidate available,
-      predicted and realised information gain, query KL to truth,
+      the information gain objective, the predicted value of the selected
+      objective (`predicted_information_gain`) and of every objective
+      (`predicted_<objective>`), the realised information gain
+      KL(after || before) and realised entropy reduction, query KL to truth,
       outside-support flag and reasons, newest regime size, context rows;
-    - scores (EIG strategy): per candidate, node, value, re-estimated EIG,
-      standard error, coherence gap, surrogate mean and standard deviation;
+    - scores (EIG strategy): per candidate, node, value, re-estimated value
+      of the selected objective (`expected_information_gain`) and its
+      standard error, coherence gap, cost, surrogate mean and standard
+      deviation, the objective, every objective's value and standard error
+      (`<objective>`, `<objective>_standard_error`), drift and entropy shift;
     - bayesian_optimisation_trace: per BO evaluation, node, round, u, value,
-      EIG estimate, standard error, the UCB value that proposed it,
-      lengthscale, output scale, nugget, noise mode;
+      the selected objective's estimate, standard error, the UCB value that
+      proposed it, lengthscale, output scale, nugget, noise mode, the
+      objective and every objective's estimate;
     - surrogate: the final GP posterior per node on the acquisition grid, at
       `surrogate_steps`;
-    - dense_value_diagnostic: per node, value and noise mode, the dense EIG
-      and the distance (in u) between the BO recommendation and the dense
-      grid's maximiser.
+    - dense_value_diagnostic: per node, value and noise mode, the dense
+      estimate of the selected objective and of every objective, and the
+      distance (in u) between the BO recommendation and the dense grid's
+      maximiser.
     """
     c = step.chosen
     at = {**ident, "step": step.step}
@@ -90,8 +116,11 @@ def step_rows(
             "observational_candidate_available": (
                 step.observational_candidate_available
             ),
+            "information_gain_objective": step.information_gain_objective,
             "predicted_information_gain": step.predicted_information_gain,
+            **objective_columns(step.predicted_objective_values, "predicted_"),
             "realised_information_gain": step.realised_information_gain,
+            "realised_entropy_reduction": step.realised_entropy_reduction,
             "query_kl_to_truth": step.query_kl_to_truth,
             "outside_training_support": step.outside_training_support,
             "support_violations": "; ".join(step.support_violations or []),
@@ -121,6 +150,13 @@ def step_rows(
                     if result is None
                     else result.best_value_surrogate_standard_deviation,
                     "is_chosen": s.acquisition == c,
+                    "information_gain_objective": step.information_gain_objective,
+                    **objective_columns(
+                        s.objective_values,
+                        standard_errors=s.objective_standard_errors,
+                    ),
+                    "drift": s.drift,
+                    "entropy_shift": s.entropy_shift,
                 }
             )
             if result is None:
@@ -143,6 +179,10 @@ def step_rows(
                         "output_scale": e.output_scale,
                         "nugget": e.nugget,
                         "noise_mode": e.noise_mode,
+                        "information_gain_objective": (
+                            step.information_gain_objective
+                        ),
+                        **objective_columns(e.objective_values),
                     }
                 )
             if step.step not in surrogate_steps:
@@ -183,6 +223,10 @@ def step_rows(
                         "expected_information_gain": e.expected_information_gain,
                         "standard_error": e.standard_error,
                         "distance_to_recommendation": distance,
+                        "information_gain_objective": (
+                            step.information_gain_objective
+                        ),
+                        **objective_columns(e.objective_values),
                     }
                 )
     return out

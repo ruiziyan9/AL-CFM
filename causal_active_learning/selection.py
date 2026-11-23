@@ -414,6 +414,7 @@ def dense_value_diagnostic(
                     expected_information_gain=e.expected_information_gain,
                     standard_error=e.standard_error,
                     noise_mode=mode,
+                    objective_values=dict(e.objective_values),
                 )
             )
     return out

@@ -163,6 +163,7 @@ class BayesianOptimisationValueSearch:
                 p.round = round_index
                 p.expected_information_gain = estimate.expected_information_gain
                 p.standard_error = estimate.standard_error
+                p.objective_values = dict(estimate.objective_values)
                 states[node].evaluations.append(p)
         results = {}
         for node, state in states.items():

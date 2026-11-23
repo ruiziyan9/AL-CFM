@@ -10,7 +10,8 @@
         --summaries PREFIX_a_summary.csv PREFIX_b_summary.csv \\
         --experiments <yaml a> <yaml b> \\
         --titles "All nodes intervenable" "X3 not intervenable" --out FILE
-    python -m causal_active_learning.integrations.citnp plot PREFIX
+    python -m causal_active_learning.integrations.citnp plot PREFIX \\
+        [--all_calibration_pairs]
 
 `run` executes one experiment config (one setting). Without --experiment, the
 ad hoc arguments describe a quick run: --environment example (one fixed model,
@@ -61,6 +62,11 @@ FLOAT_SETTINGS = (
 )
 CHOICE_SETTINGS = {
     "fantasy_noise": ("independent", "shared"),
+    "information_gain_objective": (
+        "entropy_reduction",
+        "kl_divergence",
+        "mixture_entropy_reduction",
+    ),
     "kl_estimator": ("quadrature", "monte_carlo"),
     "value_domain": ("observational_range", "training_range", "fixed_range"),
     "gaussian_process_noise": ("auto", "standard_error", "fixed", "fitted"),
@@ -189,6 +195,11 @@ def plot_panels_parser(p: argparse.ArgumentParser) -> None:
 
 def plot_parser(p: argparse.ArgumentParser) -> None:
     p.add_argument("prefix", help="the --out prefix of a run")
+    p.add_argument(
+        "--all_calibration_pairs",
+        action="store_true",
+        help="calibration of every objective, not only the selected one",
+    )
 
 
 def _overrides(a: argparse.Namespace) -> dict:
@@ -451,13 +462,13 @@ def run_command(a: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     _plot(prefix)
 
 
-def _plot(prefix: str) -> None:
+def _plot(prefix: str, all_calibration_pairs: bool = False) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     from causal_active_learning.evaluation.plots import plot_active_learning_all
 
-    for path in plot_active_learning_all(prefix):
+    for path in plot_active_learning_all(prefix, all_calibration_pairs):
         print(f"wrote {path}")
 
 
@@ -529,4 +540,4 @@ def main(argv: list[str] | None = None) -> None:
     elif a.command == "plot-panels":
         plot_panels_command(a, parsers["plot-panels"])
     else:
-        _plot(a.prefix)
+        _plot(a.prefix, a.all_calibration_pairs)

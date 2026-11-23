@@ -36,6 +36,7 @@ class GridValueSearch:
                     expected_information_gain=e.expected_information_gain,
                     standard_error=e.standard_error,
                     noise_mode=self.noise_mode,
+                    objective_values=dict(e.objective_values),
                 )
                 for (n, u), e in zip(plan, estimates)
                 if n == node

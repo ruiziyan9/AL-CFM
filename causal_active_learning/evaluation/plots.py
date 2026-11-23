@@ -3,12 +3,14 @@
 - <prefix>_query_kl.png: query KL to the truth against the number of
   acquisitions, one line per strategy with its 95% CI band (ABCI Fig. 4/9
   "Query KLD");
-- <prefix>_calibration.png: predicted EIG against realised information gain
-  of the chosen acquisitions;
+- <prefix>_calibration.png: the predicted objective of the chosen
+  acquisitions against its realised counterpart (CALIBRATION_PAIRS), for the
+  run's selected objective or, with `all_calibration_pairs`, every objective;
 - <prefix>_chosen_acquisition.png: share of each chosen acquisition per step;
 - <prefix>_surrogate_task<t>_restart<r>_step<k>.png: per node, the GP
-  posterior of EIG against the value, evaluated points with standard-error
-  bars, the dense diagnostic and the observational EIG (horizontal line);
+  posterior of the selected objective against the value, evaluated points
+  with standard-error bars, the dense diagnostic, the observational
+  candidate's value (horizontal line) and zero;
 - `plot_panels`: ABCI Figure 4's layout, one panel per summary, the graph on
   the right.
 """
@@ -22,6 +24,27 @@ import pandas as pd
 from causal_active_learning.evaluation.summaries import read_table, summarise
 
 XLABEL = "number of acquisitions"
+# Objective -> (predicted column, realised column, realised label) of
+# steps.csv. mixture_entropy_reduction has no realised counterpart of its
+# own; for a coherent model its expectation equals that of the realised
+# entropy reduction, which it is paired with.
+CALIBRATION_PAIRS = {
+    "entropy_reduction": (
+        "predicted_entropy_reduction",
+        "realised_entropy_reduction",
+        "realised entropy reduction H(before) - H(after)",
+    ),
+    "kl_divergence": (
+        "predicted_kl_divergence",
+        "realised_information_gain",
+        "realised KL(after || before)",
+    ),
+    "mixture_entropy_reduction": (
+        "predicted_mixture_entropy_reduction",
+        "realised_entropy_reduction",
+        "realised entropy reduction H(before) - H(after)",
+    ),
+}
 YLABEL = "query KL to the truth (nats)"
 # Strategies drawn without a CI band in `plot_panels`, as ABCI does.
 NO_BAND_STRATEGIES = ("observational", "random_fixed_value")
@@ -90,37 +113,84 @@ def plot_query_kl(summary: pd.DataFrame, prefix: str) -> str:
     return path
 
 
-def plot_calibration(steps: pd.DataFrame, prefix: str) -> str | None:
-    """<prefix>_calibration.png (None without EIG predictions)."""
-    d = steps[
-        pd.to_numeric(steps.predicted_information_gain, errors="coerce").notna()
-    ]
-    if d.empty:
+def _selected_objective(df: pd.DataFrame) -> pd.Series:
+    """The information gain objective per row ("kl_divergence" for tables
+    written before the column existed)."""
+    if "information_gain_objective" not in df:
+        return pd.Series("kl_divergence", index=df.index)
+    return df.information_gain_objective.fillna("kl_divergence").astype(str)
+
+
+def _calibration_points(
+    steps: pd.DataFrame, objective: str, selected_only: bool
+) -> tuple[pd.DataFrame, str, str]:
+    """(rows with x = predicted, y = realised, strategy), and the axis
+    labels, for one objective."""
+    predicted, realised, realised_label = CALIBRATION_PAIRS[objective]
+    d = steps
+    if selected_only:
+        d = d[_selected_objective(d) == objective]
+    if predicted not in d:  # tables written before the objective columns
+        predicted = "predicted_information_gain"
+    if realised not in d:
+        return pd.DataFrame(columns=["x", "y", "strategy"]), "", ""
+    points = pd.DataFrame(
+        {
+            "x": pd.to_numeric(d[predicted], errors="coerce"),
+            "y": pd.to_numeric(d[realised], errors="coerce"),
+            "strategy": d.strategy,
+        }
+    ).dropna()
+    return points, f"predicted {objective} (nats)", f"{realised_label} (nats)"
+
+
+def plot_calibration(
+    steps: pd.DataFrame, prefix: str, all_pairs: bool = False
+) -> str | None:
+    """<prefix>_calibration.png: each predicted objective of the chosen
+    acquisition against its realised counterpart (CALIBRATION_PAIRS), one
+    panel per objective: by default the objectives the runs selected (each
+    run's rows in its own objective's panel), with `all_pairs` all three
+    objectives for every run. Axes allow negative values; the diagonal goes
+    through zero. None without predictions."""
+    if all_pairs:
+        objectives = list(CALIBRATION_PAIRS)
+    else:
+        present = _selected_objective(steps)
+        objectives = [o for o in CALIBRATION_PAIRS if (present == o).any()]
+    panels = []
+    for objective in objectives:
+        points, xlabel, ylabel = _calibration_points(
+            steps, objective, selected_only=not all_pairs
+        )
+        if not points.empty:
+            panels.append((objective, points, xlabel, ylabel))
+    if not panels:
         return None
-    fig, ax = plt.subplots(figsize=(5.5, 5))
-    for strategy, g in d.groupby("strategy", sort=False):
-        ax.scatter(
-            g.predicted_information_gain,
-            g.realised_information_gain,
-            s=10,
-            alpha=0.6,
-            label=strategy,
-            color=_style(strategy)["color"],
-        )
-    top = float(
-        np.nanmax(
-            [
-                d.predicted_information_gain.max(),
-                d.realised_information_gain.max(),
-                1e-6,
-            ]
-        )
+    fig, axes = plt.subplots(
+        1, len(panels), figsize=(5.5 * len(panels), 5), squeeze=False
     )
-    ax.plot([0, top], [0, top], color="k", lw=0.7)
-    ax.set_xlabel("predicted EIG of the chosen acquisition (nats)")
-    ax.set_ylabel("realised information gain KL(after || before) (nats)")
-    ax.set_title("EIG calibration")
-    ax.legend(fontsize=7)
+    for ax, (objective, points, xlabel, ylabel) in zip(axes[0], panels):
+        for strategy, g in points.groupby("strategy", sort=False):
+            ax.scatter(
+                g.x,
+                g.y,
+                s=10,
+                alpha=0.6,
+                label=strategy,
+                color=_style(strategy)["color"],
+            )
+        values = np.concatenate([points.x.to_numpy(), points.y.to_numpy(), [0.0]])
+        low, high = float(np.min(values)), float(np.max(values))
+        if high - low < 1e-6:
+            high = low + 1e-6
+        ax.plot([low, high], [low, high], color="k", lw=0.7)
+        ax.axhline(0.0, color="0.7", lw=0.5)
+        ax.axvline(0.0, color="0.7", lw=0.5)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"calibration: {objective}")
+        ax.legend(fontsize=7)
     path = prefix + "_calibration.png"
     _save(fig, path)
     return path
@@ -188,9 +258,11 @@ def plot_value_surrogate(
     dense: pd.DataFrame | None = None,
 ) -> str | None:
     """Per node at one (task, restart, step, strategy): the final GP posterior
-    of EIG against the value, the evaluated points (two standard errors), the
-    re-estimated recommendation (star), the dense diagnostic (both noise
-    modes) and the observational candidate's EIG (horizontal line)."""
+    of the selected objective against the value, the evaluated points (two
+    standard errors), the re-estimated recommendation (star), the dense
+    diagnostic (both noise modes), the observational candidate's value
+    (horizontal line) and zero (the entropy objective may be negative); the
+    y label names the objective."""
 
     def at(df):
         if df is None or df.empty:
@@ -206,6 +278,11 @@ def plot_value_surrogate(
     if t is None or t.empty:
         return None
     nodes = sorted(t.node.unique())
+    objective = (
+        str(t.information_gain_objective.iloc[0])
+        if "information_gain_objective" in t
+        else "EIG"
+    )
     fig, axes = plt.subplots(
         1, len(nodes), figsize=(4.5 * len(nodes), 4), squeeze=False
     )
@@ -260,8 +337,9 @@ def plot_value_surrogate(
             )
         if observational is not None:
             ax.axhline(observational, color="0.3", lw=1, label="observational")
+        ax.axhline(0.0, color="0.7", lw=0.5)
         ax.set_xlabel(f"do-value of X{int(node) + 1}")
-        ax.set_ylabel("EIG (nats)")
+        ax.set_ylabel(f"{objective} (nats)")
         ax.legend(fontsize=7)
     fig.suptitle(
         f"task {task}, restart {restart}, step {step}, {strategy}", fontsize=9
@@ -271,10 +349,14 @@ def plot_value_surrogate(
     return path
 
 
-def plot_active_learning_all(prefix: str) -> list[str]:
+def plot_active_learning_all(
+    prefix: str, all_calibration_pairs: bool = False
+) -> list[str]:
     """Every per-run figure from the CSVs written with `prefix`; the
     surrogate figure for the first task and restart at every step present in
-    the surrogate table. Returns the files written."""
+    the surrogate table; the calibration of every objective with
+    `all_calibration_pairs` (else of the selected one). Returns the files
+    written."""
     steps = read_table(prefix + "_steps.csv")
     if steps.empty:
         return []
@@ -283,7 +365,7 @@ def plot_active_learning_all(prefix: str) -> list[str]:
         summary = summarise(steps)
     written = [plot_query_kl(summary, prefix)]
     for path in (
-        plot_calibration(steps, prefix),
+        plot_calibration(steps, prefix, all_calibration_pairs),
         plot_chosen_acquisition_frequency(steps, prefix),
     ):
         if path:

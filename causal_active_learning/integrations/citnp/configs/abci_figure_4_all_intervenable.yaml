@@ -30,6 +30,9 @@ active_learning:
   acquisition_budget: 50          # ABCI: 50 experiments; final context
                                   #   64 + 50 x 3 = 214 rows <= 360 (prior)
   rows_per_acquisition: 3         # ABCI: N_t = 3 samples per experiment
+  # Explicit, so old and new results are never confused by the default: the
+  # first Figure 4 runs (before the entropy objectives) used kl_divergence.
+  information_gain_objective: entropy_reduction
   intervenable_nodes: null        # ABCI panel (a): all nodes
   include_observational_candidate: true   # ABCI: targets include the empty set
   fixed_intervention_value: 0.0   # ABCI RAND-FIXED: value 0

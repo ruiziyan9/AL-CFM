@@ -598,6 +598,11 @@ def test_figure_4_configs(path):
     ]
     expected = None if path.stem.endswith("all_intervenable") else (0, 1, 3, 4)
     assert config.intervenable_nodes == expected
+    # explicit, not the default: the first Figure 4 runs used kl_divergence
+    assert spec.active_learning["information_gain_objective"] == (
+        "entropy_reduction"
+    )
+    assert config.information_gain_objective == "entropy_reduction"
     tasks = build_tasks(spec, _data_config(), 0, [0])
     assert tasks[0].environment.graph.sum() == 7
     assert len(tasks[0].query.treatment_values) == 16
@@ -876,3 +881,104 @@ def test_ad_hoc_example_run(tmp_path):
     assert dense.distance_to_recommendation.notna().any()
     meta = json.loads(Path(f"{out}_meta.json").read_text())
     assert meta["tasks"][0]["treatment"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Information gain objectives (entropy objective plan test 10)
+# --------------------------------------------------------------------------- #
+OBJECTIVES = ("entropy_reduction", "kl_divergence", "mixture_entropy_reduction")
+
+
+@pytest.mark.parametrize("objective", OBJECTIVES)
+@pytest.mark.parametrize("path", FIGURE_4_FILES, ids=lambda p: p.stem)
+def test_objectives_end_to_end_on_the_figure_4_configs(objective, path):
+    spec = load_experiment(str(path))
+    adapter = CITNPPredictiveModel(tiny_joint_model(), "cpu")
+    strategies = make_strategies(
+        lambda name: spec.config(
+            name,
+            acquisition_budget=2,
+            num_fantasies=8,
+            final_num_fantasies=8,
+            quadrature_points=64,
+            bayesian_optimisation_iterations=1,
+            gaussian_process_restarts=1,
+            information_gain_objective=objective,
+        ),
+        ["expected_information_gain"],
+    )
+    tasks = build_tasks(spec, _data_config(), 0, [0])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tables = run_experiment(
+            adapter,
+            spec.name,
+            tasks,
+            [0],
+            strategies,
+            spec.initial_observational_rows,
+            dense_value_diagnostic_steps=(1,),
+            dense_value_diagnostic_points=3,
+        )
+    steps = tables.steps[tables.steps.step > 0]
+    assert len(steps) == 2
+    assert (tables.steps.information_gain_objective == objective).all()
+    columns = [
+        "predicted_information_gain",
+        "realised_information_gain",
+        "realised_entropy_reduction",
+        *(f"predicted_{o}" for o in OBJECTIVES),
+    ]
+    assert np.isfinite(steps[columns].to_numpy(dtype=float)).all()
+    np.testing.assert_array_equal(
+        steps.predicted_information_gain, steps[f"predicted_{objective}"]
+    )
+    scores = tables.scores
+    nodes = {str(n) for n in spec.config("random").intervenable_nodes or range(5)}
+    assert set(scores.node.astype(str)) == nodes
+    score_columns = [
+        "expected_information_gain",
+        "standard_error",
+        "drift",
+        "entropy_shift",
+        *OBJECTIVES,
+        *(f"{o}_standard_error" for o in OBJECTIVES),
+    ]
+    assert np.isfinite(scores[score_columns].to_numpy(dtype=float)).all()
+    np.testing.assert_array_equal(
+        scores.expected_information_gain, scores[objective]
+    )
+    for name in ("bayesian_optimisation_trace", "dense_value_diagnostic"):
+        table = getattr(tables, name)
+        assert not table.empty
+        assert np.isfinite(table[list(OBJECTIVES)].to_numpy(dtype=float)).all()
+        np.testing.assert_array_equal(
+            table.expected_information_gain, table[objective]
+        )
+
+
+def test_information_gain_objective_command_option():
+    import argparse
+
+    from causal_active_learning.integrations.citnp.command import (
+        _overrides,
+        run_parser,
+    )
+
+    parser = argparse.ArgumentParser()
+    run_parser(parser)
+    base = ["--ckpt", "c", "--model_config", "m", "--data_config", "d"]
+    base += ["--out", "o"]
+    for objective in OBJECTIVES:
+        a = parser.parse_args([*base, "--information_gain_objective", objective])
+        assert _overrides(a)["information_gain_objective"] == objective
+    assert "information_gain_objective" not in _overrides(parser.parse_args(base))
+    with pytest.raises(SystemExit):
+        parser.parse_args([*base, "--information_gain_objective", "kl"])
+    spec = load_experiment(str(FIGURE_4 / "abci_figure_4_all_intervenable.yaml"))
+    assert (
+        spec.config(
+            "random", information_gain_objective="kl_divergence"
+        ).information_gain_objective
+        == "kl_divergence"
+    )
