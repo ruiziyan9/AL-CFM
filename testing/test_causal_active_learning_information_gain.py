@@ -109,3 +109,20 @@ def test_standard_error_matches_the_spread_of_repeated_estimates():
     ratio = float(np.std(estimates, ddof=1)) / float(np.mean(errors))
     assert 0.6 < ratio < 1.6, ratio
     assert all(math.isfinite(x) and x >= 0 for x in estimates)
+
+
+# Entropy objective test 5
+def test_default_objective_is_entropy_reduction_and_names_are_validated():
+    from causal_active_learning.config import (
+        INFORMATION_GAIN_OBJECTIVES,
+        ActiveLearningConfig,
+    )
+
+    assert ActiveLearningConfig(1).information_gain_objective == (
+        "entropy_reduction"
+    )
+    for name in INFORMATION_GAIN_OBJECTIVES:
+        assert ActiveLearningConfig(1, information_gain_objective=name)
+    for bad in ("kl", "entropy", "mutual_information", ""):
+        with pytest.raises(ValueError, match="information_gain_objective"):
+            ActiveLearningConfig(1, information_gain_objective=bad)

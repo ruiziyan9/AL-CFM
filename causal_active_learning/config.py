@@ -12,6 +12,14 @@ STRATEGIES = (
 )
 FANTASY_NOISE = ("independent", "shared")
 KL_ESTIMATORS = ("quadrature", "monte_carlo")
+# The objective the inner and outer levels maximise (see
+# `information_gain.estimate_expected_information_gain` and the README's
+# "Information gain objectives"); all three are always computed and recorded.
+INFORMATION_GAIN_OBJECTIVES = (
+    "entropy_reduction",
+    "kl_divergence",
+    "mixture_entropy_reduction",
+)
 VALUE_SEARCHES = ("bayesian_optimisation", "grid")
 VALUE_DOMAINS = ("observational_range", "training_range", "fixed_range")
 GAUSSIAN_PROCESS_NOISE = ("auto", "standard_error", "fixed", "fitted")
@@ -73,8 +81,18 @@ class ActiveLearningConfig:
         Fantasies per EIG evaluation in the value search and at the outer
         re-estimation.
 
+    information_gain_objective : str
+        The objective maximised, one of INFORMATION_GAIN_OBJECTIVES, with p0
+        the query on D, p_s the query after fantasy s and p_bar their average:
+        "entropy_reduction" (default) H(p0) - E_s H(p_s), which may be
+        negative for a model that is not coherent; "kl_divergence"
+        E_s KL(p_s || p0), the objective before entropy_reduction became the
+        default; "mixture_entropy_reduction" H(p_bar) - E_s H(p_s).
+
     kl_estimator : str
-        "quadrature" (default) or "monte_carlo".
+        "quadrature" (default) or "monte_carlo", for the "kl_divergence"
+        objective and the coherence gap; entropies and the p_bar terms are
+        always computed by quadrature.
 
     quadrature_points, kl_monte_carlo_samples : int
         Size of the quadrature grid; Monte Carlo samples.
@@ -134,6 +152,7 @@ class ActiveLearningConfig:
     fantasy_noise: str = "independent"
     num_fantasies: int = 64
     final_num_fantasies: int = 256
+    information_gain_objective: str = "entropy_reduction"
     kl_estimator: str = "quadrature"
     quadrature_points: int = 1024
     kl_monte_carlo_samples: int = 1024
@@ -157,6 +176,7 @@ class ActiveLearningConfig:
         choices = {
             "strategy": STRATEGIES,
             "fantasy_noise": FANTASY_NOISE,
+            "information_gain_objective": INFORMATION_GAIN_OBJECTIVES,
             "kl_estimator": KL_ESTIMATORS,
             "value_search": VALUE_SEARCHES,
             "value_domain": VALUE_DOMAINS,
