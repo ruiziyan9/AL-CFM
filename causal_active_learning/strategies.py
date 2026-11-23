@@ -12,7 +12,8 @@ candidate set (`build_candidate_set`).
   if T is not intervenable;
 - "exhaustive_true_gain" (evaluation only, an upper reference): the inner
   search per node, then every candidate run on the true system with a cloned
-  generator; the largest real drop in query KL to the truth wins.
+  generator; the largest real drop in query KL to the truth wins (per unit
+  cost, `cost_adjusted_value`, as the drop may be negative).
 
 The baselines do not score with the model, so they include the observational
 candidate whenever `include_observational_candidate` is true (the true system
@@ -47,6 +48,7 @@ from causal_active_learning.selection import (
     AcquisitionScore,
     acquisition_cost,
     choice_is_clear,
+    cost_adjusted_value,
     dense_value_diagnostic,
     eig_candidate_set,
     search_intervention_values,
@@ -243,8 +245,10 @@ def choose_acquisition(
             query.outcome,
             query.treatment_values,
         )
-        drop = kl_before - query_kl(truth, after, config.quadrature_points)
-        drop /= acquisition_cost(acquisition, config)
+        drop = cost_adjusted_value(
+            kl_before - query_kl(truth, after, config.quadrature_points),
+            acquisition_cost(acquisition, config),
+        )
         if drop > best_drop:
             best_drop, best = drop, acquisition
     assert best is not None

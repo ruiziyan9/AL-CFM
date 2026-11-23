@@ -375,7 +375,8 @@ def run_active_learning(
             progress(
                 f"[{config.strategy}] step {step}: {chosen.describe()}"
                 + (
-                    f", EIG {predicted:.4f}"
+                    f", predicted {config.information_gain_objective} "
+                    f"{predicted:.4f}"
                     + ("" if record.choice_is_clear else " (not clear-cut)")
                     if math.isfinite(predicted)
                     else ""

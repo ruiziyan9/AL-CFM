@@ -15,6 +15,7 @@ from causal_active_learning.loop import ActiveLearningGenerators
 from causal_active_learning.selection import (
     AcquisitionScore,
     choice_is_clear,
+    cost_adjusted_value,
     reevaluate_and_select,
     search_intervention_values,
     select_next_acquisition,
@@ -25,6 +26,7 @@ from causal_active_learning.value_search.domain import value_domains
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from causal_active_learning_stubs import (
     ConjugateStub,
+    ShiftedWidenedStub,
     cheap_config,
     domain,
     empty_context,
@@ -233,3 +235,139 @@ def test_scores_are_finite_with_coherence_gaps():
     best = max(scores, key=lambda s: s.expected_information_gain / s.cost)
     assert chosen == best.acquisition
     assert all(math.isfinite(s.coherence_gap) for s in scores)
+
+
+# Entropy objective test 6: negative values through the whole step
+def _negative_stub():
+    """Every acquisition widens the query: w^2 = base + (value - optimum)^2
+    with base > 2, so entropy_reduction = 0.5 log(1 / (0.5 w^2)) < 0;
+    node 1 at value -0.4 is the least negative."""
+    base = {0: 3.0, 1: 2.5, 2: 4.0, 3: 3.5}
+    optimum = {0: 0.2, 1: -0.4, 2: 0.0, 3: 0.5}
+    return ShiftedWidenedStub(
+        base_rows=20,
+        width_squared=lambda node, value: (
+            base[node] + (value - optimum[node]) ** 2
+        ),
+    )
+
+
+@pytest.mark.parametrize("search", ["bayesian_optimisation", "grid"])
+def test_negative_values_run_the_full_step_and_choose_the_largest(search):
+    config = cheap_config(
+        value_search=search,
+        include_observational_candidate=False,
+        value_domain="fixed_range",
+        value_domain_fixed_range=(-2.0, 2.0),
+        bayesian_optimisation_iterations=4,
+        grid_num_values=21,
+    )
+    assert config.information_gain_objective == "entropy_reduction"
+    chosen, scores = _select(_negative_stub(), config, context=empty_context())
+    values = [s.expected_information_gain for s in scores]
+    assert all(math.isfinite(v) and v < 0 for v in values)
+    best = max(scores, key=lambda s: s.expected_information_gain)
+    assert chosen == best.acquisition
+    assert chosen.target_node == 1
+    assert abs(chosen.intervention_value + 0.4) < 0.3
+    for s in scores:
+        result = s.value_search_result
+        assert all(
+            math.isfinite(e.expected_information_gain)
+            and e.expected_information_gain < 0
+            for e in result.evaluations
+        )
+        if search == "bayesian_optimisation":
+            assert result.surrogate is not None
+            assert math.isfinite(result.best_value_surrogate_mean)
+            ucb = [e.acquisition_value for e in result.evaluations[3:]]
+            assert ucb and all(math.isfinite(u) for u in ucb)
+    # the recommendation is near each node's optimum, not pulled to zero
+    assert abs(scores[0].acquisition.intervention_value - 0.2) < 0.5
+
+
+# Entropy objective test 7: the cost-adjusted ranking
+def test_cost_adjusted_value():
+    assert cost_adjusted_value(-1.0, 0.5) > cost_adjusted_value(-1.0, 2.0)
+    assert cost_adjusted_value(1.0, 0.5) > cost_adjusted_value(1.0, 2.0)
+    assert cost_adjusted_value(0.6, 2.0) == 0.3
+    assert cost_adjusted_value(-0.6, 2.0) == -1.2
+    for value in (-0.7, 0.0, 0.4):
+        assert cost_adjusted_value(value, 1.0) == value
+    # increasing in the value at any cost
+    grid = [-2.0, -0.5, -1e-9, 0.0, 1e-9, 0.5, 2.0]
+    for cost in (0.25, 1.0, 4.0):
+        adjusted = [cost_adjusted_value(v, cost) for v in grid]
+        assert adjusted == sorted(adjusted)
+
+
+def _outer(values, costs, standard_error=0.01):
+    """reevaluate_and_select over node 0, node 1 and observational rows with
+    the given values and costs (observational, intervention)."""
+    from causal_active_learning.config import ActiveLearningConfig
+
+    inner = {0: _result(0, 0.5, 0.0), 1: _result(1, -0.5, 0.0)}
+
+    def evaluate_final(acquisitions):
+        return [
+            InformationGainEstimate(
+                a, values[a.target_node], standard_error, torch.zeros(1)
+            )
+            for a in acquisitions
+        ]
+
+    config = ActiveLearningConfig(
+        1, observational_cost=costs[0], intervention_cost=costs[1]
+    )
+    return reevaluate_and_select(
+        evaluate_final, inner, [Acquisition.observational(3)], config
+    )
+
+
+def test_cheaper_of_two_equal_negative_values_ranks_higher():
+    values = {0: -0.4, 1: -0.9, None: -0.4}
+    chosen, _ = _outer(values, (2.0, 1.0))
+    assert chosen.target_node == 0  # the observational batch costs more
+    chosen, _ = _outer(values, (0.5, 1.0))
+    assert chosen.is_observational
+    # value / cost would have ranked the more expensive one higher
+    assert -0.4 / 2.0 > -0.4 / 1.0
+
+
+def test_non_negative_values_keep_the_value_per_cost_ranking():
+    values = {0: 0.3, 1: 0.5, None: 0.2}
+    for costs in ((1.0, 1.0), (0.25, 1.0), (1.0, 3.0)):
+        chosen, scores = _outer(values, costs)
+        best = max(scores, key=lambda s: s.expected_information_gain / s.cost)
+        assert chosen == best.acquisition
+    assert _outer(values, (0.25, 1.0))[0].is_observational
+
+
+def test_equal_costs_rank_by_the_plain_value():
+    for values in (
+        {0: -0.3, 1: -0.1, None: -0.2},
+        {0: 0.3, 1: -0.1, None: 0.0},
+        {0: 0.1, 1: 0.5, None: 0.2},
+    ):
+        for cost in (1.0, 3.0):
+            chosen, scores = _outer(values, (cost, cost))
+            best = max(scores, key=lambda s: s.expected_information_gain)
+            assert chosen == best.acquisition
+
+
+def test_choice_is_clear_with_costs_and_negative_values():
+    def score(value, se, cost, node=0):
+        return AcquisitionScore(
+            Acquisition.intervention(node, 0.0),
+            value,
+            se,
+            float("nan"),
+            None,
+            cost,
+        )
+
+    # equal negative values, different costs: adjusted -0.25 vs -1.0
+    assert choice_is_clear([score(-0.5, 0.01, 0.5), score(-0.5, 0.01, 2.0, 1)])
+    assert not choice_is_clear(
+        [score(-0.50, 0.02, 1.0), score(-0.47, 0.02, 1.0, 1)]
+    )

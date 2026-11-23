@@ -3,7 +3,10 @@ with the observational candidate):
 
     inner level, for every intervenable node i:   v_i* in argmax_v EIG(i, v)
     outer level:   a* = argmax over {(i, v_i*)} union {observational batch}
-                   of EIG(a) / cost(a)
+                   of cost_adjusted_value(EIG(a), cost(a))
+
+EIG here is the selected objective (`config.information_gain_objective`),
+which may be negative for "entropy_reduction" (`cost_adjusted_value`).
 
 Fantasy noise (`config.fantasy_noise`): "independent" (default) draws fresh
 noise for every EIG evaluation, so each estimate is EIG(v) plus an error
@@ -75,7 +78,8 @@ class AcquisitionScore:
         The inner-level result (None for the observational candidate).
 
     cost : float
-        The acquisition's cost; the outer level maximises EIG / cost.
+        The acquisition's cost; the outer level maximises
+        `cost_adjusted_value(expected_information_gain, cost)`.
     """
 
     acquisition: Acquisition
@@ -95,22 +99,42 @@ def acquisition_cost(
     return config.intervention_cost
 
 
+def cost_adjusted_value(value: float, cost: float) -> float:
+    """The value per unit cost the outer level ranks by:
+        value / cost   if value >= 0,
+        value * cost   if value < 0.
+    Increasing in the value and decreasing in the cost on both sides, so a
+    more expensive acquisition never ranks higher for the same value
+    (dividing a negative value by a larger cost would bring it closer to
+    zero, i.e. rank it higher). With cost 1 it is the value itself."""
+    return value / cost if value >= 0 else value * cost
+
+
+def _cost_adjusted_standard_error(score: "AcquisitionScore") -> float:
+    """The standard error on the scale of `cost_adjusted_value`."""
+    if score.expected_information_gain >= 0:
+        return score.standard_error / score.cost
+    return score.standard_error * score.cost
+
+
+def _ranking_key(score: "AcquisitionScore") -> float:
+    return cost_adjusted_value(score.expected_information_gain, score.cost)
+
+
 def choice_is_clear(scores: list[AcquisitionScore]) -> bool:
     """False if the runner-up is within two combined standard errors of the
-    winner (on EIG per unit cost), sqrt(se_1^2 + se_2^2); True with a single
+    winner on the cost-adjusted value (`cost_adjusted_value`, standard errors
+    scaled the same way), sqrt(se_1^2 + se_2^2); True with a single
     candidate."""
     if len(scores) < 2:
         return True
-    ranked = sorted(scores, key=lambda s: s.expected_information_gain / s.cost)
+    ranked = sorted(scores, key=_ranking_key)
     best, second = ranked[-1], ranked[-2]
     combined = math.sqrt(
-        (best.standard_error / best.cost) ** 2
-        + (second.standard_error / second.cost) ** 2
+        _cost_adjusted_standard_error(best) ** 2
+        + _cost_adjusted_standard_error(second) ** 2
     )
-    gap = (
-        best.expected_information_gain / best.cost
-        - second.expected_information_gain / second.cost
-    )
+    gap = _ranking_key(best) - _ranking_key(second)
     return bool(gap > 2.0 * combined)
 
 
@@ -122,8 +146,9 @@ def reevaluate_and_select(
 ) -> tuple[Acquisition, list[AcquisitionScore]]:
     """Outer level: re-estimate every node's best acquisition (and the
     `extra_acquisitions`, e.g. an observational batch) with `evaluate_final`
-    and return the candidate with the largest EIG per unit cost (costs from
-    `config`, all 1 without) and all scores (node order, extras last)."""
+    and return the candidate with the largest cost-adjusted value
+    (`cost_adjusted_value`; costs from `config`, all 1 without) and all
+    scores (node order, extras last)."""
     nodes = list(value_search_results)
     acquisitions = [value_search_results[n].acquisition for n in nodes]
     acquisitions += list(extra_acquisitions or [])
@@ -143,7 +168,7 @@ def reevaluate_and_select(
         )
         for i, e in enumerate(estimates)
     ]
-    best = max(scores, key=lambda s: s.expected_information_gain / s.cost)
+    best = max(scores, key=_ranking_key)
     return best.acquisition, scores
 
 
@@ -248,8 +273,8 @@ def select_next_acquisition(
     acquisition, and an observational batch if included and the model can
     predict observational rows (otherwise one warning and the candidate is
     skipped), re-estimated with `final_num_fantasies` fresh fantasies from
-    the outer-level generator, with the coherence gap; the largest EIG per
-    unit cost wins.
+    the outer-level generator, with the coherence gap; the largest
+    cost-adjusted value (`cost_adjusted_value`) wins.
 
     Returns:
     ----------

@@ -62,8 +62,9 @@ class ActiveLearningConfig:
         observational rows.
 
     observational_cost, intervention_cost : float
-        Costs of the two kinds of acquisition; the outer level maximises EIG
-        per unit cost.
+        Costs of the two kinds of acquisition; the outer level maximises the
+        cost-adjusted value (`selection.cost_adjusted_value`: value / cost
+        for a non-negative value, value * cost for a negative one).
 
     fixed_intervention_value : float
         Value of the "random_fixed_value" strategy (ABCI's RAND-FIXED).
