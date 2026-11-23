@@ -1,9 +1,10 @@
-"""Univariate Gaussian mixtures (the query distributions) and the KL
-divergence between them.
+"""Univariate Gaussian mixtures (the query distributions), their entropy and
+the KL divergence between them.
 
-The KL between two univariate Gaussian mixtures has no closed form; it is
-computed by quadrature on a 1-D grid (default) or by Monte Carlo. All
-densities are on the raw scale in float64.
+Neither the KL between two univariate Gaussian mixtures nor a mixture's
+entropy has a closed form; both are computed by trapezoidal quadrature on a
+1-D grid (`quadrature_grid`), the KL also by Monte Carlo. All densities are
+on the raw scale in float64.
 """
 
 import math
@@ -118,6 +119,30 @@ def _flatten(
     )
 
 
+def quadrature_grid(
+    mixture: UnivariateGaussianMixture, num_points: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Trapezoidal quadrature grid of univariate mixtures: `num_points`
+    evenly spaced points from min_k(mu_k - 8 sd_k) to max_k(mu_k + 8 sd_k)
+    over the mixture's own components, and the trapezoidal weights.
+
+    mixture: tensors [..., K]. Returns (points, weights), both [..., G]
+    float64 on the mixture's device, with sum_g weights_g f(points_g) the
+    integral of f over the grid's range."""
+    width = QUADRATURE_HALF_WIDTH_IN_STANDARD_DEVIATIONS
+    device = mixture.mean.device
+    unit = torch.linspace(
+        0.0, 1.0, num_points, dtype=torch.float64, device=device
+    )
+    trapezoid = torch.ones(num_points, dtype=torch.float64, device=device)
+    trapezoid[0] = trapezoid[-1] = 0.5
+    low = (mixture.mean - width * mixture.standard_deviation).min(-1).values
+    high = (mixture.mean + width * mixture.standard_deviation).max(-1).values
+    points = low[..., None] + (high - low)[..., None] * unit  # [..., G]
+    weights = ((high - low) / (num_points - 1))[..., None] * trapezoid
+    return points, weights
+
+
 def kl_divergence_quadrature(
     p: UnivariateGaussianMixture,
     q: UnivariateGaussianMixture,
@@ -125,8 +150,7 @@ def kl_divergence_quadrature(
 ) -> torch.Tensor:
     """KL(p || q) of univariate Gaussian mixtures by trapezoidal quadrature.
 
-    Grid: `num_points` points from min_k(mu_k - 8 sd_k) to max_k(mu_k + 8 sd_k)
-    over the components of p only (the integrand p (log p - log q) is
+    Grid: `quadrature_grid` of p only (the integrand p (log p - log q) is
     negligible outside p's support, and widening the grid for a broad q would
     leave a narrow p with too few points), then
         KL = sum_g Delta_g p(y_g) (log p(y_g) - log q(y_g)),
@@ -142,24 +166,120 @@ def kl_divergence_quadrature(
     M = pf.mean.shape[0]
     K = max(pf.mean.shape[-1], qf.mean.shape[-1])
     chunk = max(1, _QUADRATURE_CHUNK_ENTRIES // (num_points * K))
-    width = QUADRATURE_HALF_WIDTH_IN_STANDARD_DEVIATIONS
-    device = pf.mean.device
-    unit = torch.linspace(
-        0.0, 1.0, num_points, dtype=torch.float64, device=device
-    )
-    trapezoid = torch.ones(num_points, dtype=torch.float64, device=device)
-    trapezoid[0] = trapezoid[-1] = 0.5
     out = []
     for start in range(0, M, chunk):
         pc, qc = pf[start : start + chunk], qf[start : start + chunk]
-        low = (pc.mean - width * pc.standard_deviation).min(-1).values
-        high = (pc.mean + width * pc.standard_deviation).max(-1).values
-        points = low[:, None] + (high - low)[:, None] * unit  # [m, G]
-        delta = ((high - low) / (num_points - 1))[:, None] * trapezoid
+        points, delta = quadrature_grid(pc, num_points)  # [m, G]
         log_p = mixture_log_density(pc, points)
         log_q = mixture_log_density(qc, points)
         out.append((delta * log_p.exp() * (log_p - log_q)).sum(-1))
     return torch.cat(out).reshape(lead)
+
+
+def entropy_quadrature(
+    mixture: UnivariateGaussianMixture, num_points: int = 1024
+) -> torch.Tensor:
+    """Differential entropy H(p) = -integral p log p of univariate Gaussian
+    mixtures by trapezoidal quadrature on `quadrature_grid` of the mixture,
+    with the log density from `logsumexp` in float64.
+
+    mixture: tensors [..., K]. Returns [...] float64 on the mixture's device
+    (in nats; may be negative for narrow distributions)."""
+    lead = mixture.mean.shape[:-1]
+    flat = _flatten(mixture, lead)
+    M, K = flat.mean.shape
+    chunk = max(1, _QUADRATURE_CHUNK_ENTRIES // (num_points * K))
+    out = []
+    for start in range(0, M, chunk):
+        part = flat[start : start + chunk]
+        points, delta = quadrature_grid(part, num_points)  # [m, G]
+        log_p = mixture_log_density(part, points)
+        out.append(-(delta * log_p.exp() * log_p).sum(-1))
+    return torch.cat(out).reshape(lead)
+
+
+@dataclass
+class AverageMixtureDivergences:
+    """Divergences involving the equal-weight average p_bar = (1/S) sum_s p_s
+    of S mixtures p_s, against a reference r (see
+    `average_mixture_divergences`).
+
+    Attributes:
+    -----------
+    - kl_to_average: [C, S, Q], KL(p_s || p_bar).
+    - average_entropy: [C, Q], H(p_bar).
+    - average_kl_to_reference: [C, Q], KL(p_bar || r).
+    """
+
+    kl_to_average: torch.Tensor
+    average_entropy: torch.Tensor
+    average_kl_to_reference: torch.Tensor
+
+
+def average_mixture_divergences(
+    mixtures: UnivariateGaussianMixture,
+    reference: UnivariateGaussianMixture,
+    num_points: int = 1024,
+) -> AverageMixtureDivergences:
+    """KL(p_s || p_bar), H(p_bar) and KL(p_bar || r) for the average p_bar of
+    the mixtures along axis 1, all by trapezoidal quadrature on one grid per
+    (c, q): `quadrature_grid` of p_bar, which covers every p_s.
+
+    One shared grid keeps the cost of the S x (S K)-component evaluations
+    linear in S: p_bar is evaluated once per (c, q) instead of once per
+    fantasy. It spans every p_s's own grid, so each p_s is resolved at least
+    as finely as the spread of the S components allows (`num_points` over
+    their joint range; the trapezoidal rule on Gaussians is accurate far
+    below one point per standard deviation).
+
+    mixtures: tensors [C, S, Q, K]; reference: tensors whose leading axes
+    broadcast to [C, Q] (e.g. [Q, K']), moved to the mixtures' device.
+    Returns float64 on the mixtures' device."""
+    reference = reference.to(mixtures.mean.device)
+    C, S, Q, K = mixtures.mean.shape
+    average = average_mixture(mixtures, axis=1)  # [C, Q, S K]
+    flat_average = _flatten(average, torch.Size([C, Q]))  # [C Q, S K]
+    flat_reference = _flatten(reference, torch.Size([C, Q]))
+
+    def by_query(x):  # [C, S, Q, K] -> [C Q, S, K]
+        return x.movedim(1, 2).reshape(C * Q, S, K)
+
+    components = UnivariateGaussianMixture(
+        by_query(mixtures.mean),
+        by_query(mixtures.standard_deviation),
+        by_query(mixtures.log_weights),
+    )
+    M = C * Q
+    chunk = max(1, _QUADRATURE_CHUNK_ENTRIES // (2 * num_points * S * K))
+    kl_to_average, entropy, kl_to_reference = [], [], []
+    for start in range(0, M, chunk):
+        part = slice(start, start + chunk)
+        bar, comp, ref = (
+            flat_average[part],
+            components[part],
+            flat_reference[part],
+        )
+        points, delta = quadrature_grid(bar, num_points)  # [m, G]
+        log_bar = mixture_log_density(bar, points)
+        log_ref = mixture_log_density(ref, points)
+        log_comp = mixture_log_density(
+            comp, points[:, None, :].expand(-1, S, -1)
+        )  # [m, S, G]
+        density_bar = log_bar.exp()
+        entropy.append(-(delta * density_bar * log_bar).sum(-1))
+        kl_to_reference.append(
+            (delta * density_bar * (log_bar - log_ref)).sum(-1)
+        )
+        kl_to_average.append(
+            (
+                delta[:, None] * log_comp.exp() * (log_comp - log_bar[:, None, :])
+            ).sum(-1)
+        )
+    return AverageMixtureDivergences(
+        kl_to_average=torch.cat(kl_to_average).reshape(C, Q, S).movedim(2, 1),
+        average_entropy=torch.cat(entropy).reshape(C, Q),
+        average_kl_to_reference=torch.cat(kl_to_reference).reshape(C, Q),
+    )
 
 
 def sample_mixture(
