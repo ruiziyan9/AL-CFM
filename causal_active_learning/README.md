@@ -253,8 +253,8 @@ increasing in the value and decreasing in the cost on both sides. Dividing a
 negative value by a larger cost would bring it closer to zero and rank the more
 expensive acquisition higher; multiplying avoids that. With equal costs (the
 default) the ranking is the plain one. `choice_is_clear` and
-`exhaustive_true_gain` (whose real KL drops can be negative) rank the same
-way.
+`exhaustive_true_gain` (whose mean true KL drops can be negative) rank the
+same way.
 
 **Cost, and when BO pays off.** For single-node interventions the value search
 is one-dimensional for every D, so grid and BO costs both grow linearly in the
@@ -312,7 +312,20 @@ regime.
 | `random_fixed_value` | uniform over intervenable nodes and the observational candidate; value `fixed_intervention_value` (0) | RAND-FIXED |
 | `random` | as above; value uniform over `random_value_range` (or the node's value domain) | RAND |
 | `treatment` | always intervene on T, value uniform over its domain; raises if T is not intervenable | – |
-| `exhaustive_true_gain` | evaluation only: inner search per node, then every candidate run on the true system with a cloned generator; the largest real drop in query KL wins (an upper reference) | – |
+| `exhaustive_true_gain` | evaluation only: inner search per node, then every candidate run `true_gain_draws` times (default 32) on the true system with fresh draws; the largest mean drop in query KL to the truth wins, and the loop then runs it on a new real draw (an upper reference for ranking experiments; see below) | – |
+
+**Why `exhaustive_true_gain` uses fresh draws.** Until the fix, it ran each
+candidate once with a copy of the environment generator, so the rows it ranked
+were exactly the rows the loop then acquired. The choice per step was the same,
+but the chosen draw's luck entered the context: on panel (b) about two thirds
+of its per-step drop in query KL was luck (0.033 on the seen rows versus 0.012
+on fresh draws of the same experiment), the context drifted into states better
+than the data justify, and from there it preferred observational rows (46% of
+choices in steps 4-10), which move the prediction least, although on average
+they were worse than the best intervention. Ranking by the mean over fresh
+draws from its own generator (`true_gain` stream) and leaving the environment
+generator to the real step removes both effects; the reference is then an
+upper bound for ranking experiments by their expected true value.
 
 ABCI's U_CD and U_CML (causal discovery and model learning utilities) need a
 posterior over graphs or SCMs, which a PFN does not have; they are not
@@ -363,7 +376,9 @@ estimated through the PFN); panel (a) all nodes intervenable
 (`abci_figure_4_all_intervenable.yaml`), panel (b) X3 not intervenable
 (`abci_figure_4_treatment_not_intervenable.yaml`). Not replicable: U_CD and
 U_CML. `exhaustive_true_gain` is not in ABCI's figure and roughly doubles the
-cost; it is left out of the configs and can be added with `--strategies`.
+cost; it is left out of the configs. `--strategies` cannot be combined with
+`--experiment`, so add it through a copy of a config with
+`strategies: [exhaustive_true_gain]`.
 Both configs set `information_gain_objective: entropy_reduction` explicitly:
 the first Figure 4 runs, made before the entropy objectives existed, used
 `kl_divergence`; pass `--information_gain_objective kl_divergence` to

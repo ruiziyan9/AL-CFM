@@ -98,6 +98,10 @@ class ActiveLearningConfig:
     quadrature_points, kl_monte_carlo_samples : int
         Size of the quadrature grid; Monte Carlo samples.
 
+    true_gain_draws : int
+        "exhaustive_true_gain" only: fresh runs of each candidate on the true
+        system whose mean drop in query KL to the truth ranks the candidates.
+
     inference_batch_size : int
         Contexts per forward pass.
 
@@ -158,6 +162,7 @@ class ActiveLearningConfig:
     quadrature_points: int = 1024
     kl_monte_carlo_samples: int = 1024
     inference_batch_size: int = 128
+    true_gain_draws: int = 32
     # inner level
     value_search: str = "bayesian_optimisation"
     value_domain: str = "observational_range"
@@ -197,6 +202,7 @@ class ActiveLearningConfig:
             "quadrature_points",
             "kl_monte_carlo_samples",
             "inference_batch_size",
+            "true_gain_draws",
             "acquisition_grid_points",
             "gaussian_process_restarts",
         )

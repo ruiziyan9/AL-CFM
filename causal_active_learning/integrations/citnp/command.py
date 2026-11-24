@@ -47,6 +47,7 @@ INT_SETTINGS = (
     "quadrature_points",
     "kl_monte_carlo_samples",
     "inference_batch_size",
+    "true_gain_draws",
     "grid_num_values",
     "bayesian_optimisation_initial_points",
     "bayesian_optimisation_iterations",

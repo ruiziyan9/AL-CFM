@@ -6,6 +6,7 @@ import sys
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -234,6 +235,17 @@ def test_kl_objective_reproduces_the_runs_before_the_entropy_objectives():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         tables = reference_tables(information_gain_objective="kl_divergence")
+    # exhaustive_true_gain changed on purpose afterwards (fresh draws instead
+    # of the rows of the real step; test_exhaustive_true_gain_* below)
+    changed = "exhaustive_true_gain"
+    reference = {
+        name: [r for r in rows if r.get("run") != changed]
+        for name, rows in reference.items()
+    }
+    tables = {
+        name: [r for r in rows if r.get("run") != changed]
+        for name, rows in tables.items()
+    }
     for name, rows in reference.items():
         assert len(tables[name]) == len(rows), name
         for i, (new, old) in enumerate(zip(tables[name], rows)):
@@ -274,3 +286,56 @@ def test_realised_entropy_reduction_and_predicted_objectives(objective):
     for step in random[1:]:
         assert math.isfinite(step.realised_entropy_reduction)
         assert step.predicted_objective_values == {}
+
+
+# The reference ranks by fresh draws and never sees the real rows
+def _reference_choice(environment_seed, true_gain_seed=11, draws=8):
+    from causal_active_learning.information_gain import (
+        predict_query_on_context,
+    )
+    from causal_active_learning.strategies import choose_acquisition
+
+    model, environment, context, q = (
+        ConjugateStub(),
+        StubEnvironment(4),
+        empty_context(D=4),
+        query(),
+    )
+    config = cheap_config(strategy="exhaustive_true_gain", true_gain_draws=draws)
+    generators = ActiveLearningGenerators.from_seed(true_gain_seed)
+    generators.environment = np.random.default_rng(environment_seed)
+    state = generators.environment.bit_generator.state
+    truth = environment.true_query_distribution(
+        q.treatment, q.outcome, q.treatment_values
+    )
+    before = predict_query_on_context(
+        model, context, q.treatment, q.outcome, q.treatment_values
+    )
+    choice = choose_acquisition(
+        model,
+        environment,
+        context,
+        q,
+        config,
+        generators,
+        query_before=before,
+        truth=truth,
+    )
+    return choice.chosen, state, generators.environment.bit_generator.state
+
+
+def test_exhaustive_true_gain_leaves_the_environment_generator_alone():
+    _, before, after = _reference_choice(environment_seed=0)
+    assert before == after
+
+
+def test_exhaustive_true_gain_choice_does_not_depend_on_the_real_draw():
+    chosen = {_reference_choice(environment_seed=s)[0] for s in range(4)}
+    assert len(chosen) == 1
+
+
+def test_exhaustive_true_gain_runs_and_validates_draws():
+    steps = _run(cheap_config(strategy="exhaustive_true_gain", true_gain_draws=4))
+    assert all(s.chosen is not None for s in steps[1:])
+    with pytest.raises(ValueError, match="true_gain_draws"):
+        cheap_config(strategy="exhaustive_true_gain", true_gain_draws=0)

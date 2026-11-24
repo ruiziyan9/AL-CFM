@@ -63,6 +63,7 @@ _STREAMS = {
     "environment": 4,
     "baseline": 5,
     "diagnostic": 6,
+    "true_gain": 7,
 }
 
 
@@ -95,6 +96,11 @@ class ActiveLearningGenerators:
 
     diagnostic : torch.Generator
         Fantasy noise of the dense value diagnostic.
+
+    true_gain : np.random.Generator
+        The true system's noise for the fresh draws with which
+        "exhaustive_true_gain" scores its candidates (separate from
+        `environment`, so the real rows are never drawn before the choice).
     """
 
     inner_fantasy: torch.Generator
@@ -103,6 +109,7 @@ class ActiveLearningGenerators:
     environment: np.random.Generator
     baseline: torch.Generator
     diagnostic: torch.Generator
+    true_gain: np.random.Generator
 
     @classmethod
     def from_seed(cls, seed: int | Sequence[int]) -> "ActiveLearningGenerators":
@@ -117,6 +124,7 @@ class ActiveLearningGenerators:
             environment=np.random.default_rng([*key, _STREAMS["environment"]]),
             baseline=_torch_generator([*key, _STREAMS["baseline"]]),
             diagnostic=_torch_generator([*key, _STREAMS["diagnostic"]]),
+            true_gain=np.random.default_rng([*key, _STREAMS["true_gain"]]),
         )
 
 

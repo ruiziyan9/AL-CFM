@@ -11,16 +11,20 @@ candidate set (`build_candidate_set`).
 - "treatment": always intervene on T, value uniform over its domain; raises
   if T is not intervenable;
 - "exhaustive_true_gain" (evaluation only, an upper reference): the inner
-  search per node, then every candidate run on the true system with a cloned
-  generator; the largest real drop in query KL to the truth wins (per unit
-  cost, `cost_adjusted_value`, as the drop may be negative).
+  search per node, then every candidate run `true_gain_draws` times on the
+  true system with fresh draws from the reference's own generator; the
+  largest mean drop in query KL to the truth wins (per unit cost,
+  `cost_adjusted_value`, as the drop may be negative). The chosen candidate
+  is then run once more by the loop with the environment generator, which
+  the reference never touches, so the real rows are a new draw: the
+  reference ranks experiments by their expected true value, not by the
+  luck of a draw it has already seen.
 
 The baselines do not score with the model, so they include the observational
 candidate whenever `include_observational_candidate` is true (the true system
 produces the rows), as ABCI's RAND does.
 """
 
-import copy
 import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -39,7 +43,7 @@ from causal_active_learning.distributions import (
     UnivariateGaussianMixture,
     kl_divergence_quadrature,
 )
-from causal_active_learning.information_gain import predict_query_on_context
+from causal_active_learning.information_gain import predict_query_in_chunks
 from causal_active_learning.protocols import (
     CausalPredictiveModel,
     ExperimentEnvironment,
@@ -247,19 +251,55 @@ def choose_acquisition(
     best_drop, best = -math.inf, None
     kl_before = query_kl(truth, query_before, config.quadrature_points)
     for acquisition, _ in trials:
-        rows = environment.run(acquisition, copy.deepcopy(generators.environment))
-        after = predict_query_on_context(
-            model,
-            context.append(rows, acquisition.target_node),
-            query.treatment,
-            query.outcome,
-            query.treatment_values,
-        )
         drop = cost_adjusted_value(
-            kl_before - query_kl(truth, after, config.quadrature_points),
+            expected_true_drop(
+                model,
+                environment,
+                context,
+                query,
+                acquisition,
+                truth,
+                kl_before,
+                config,
+                generators.true_gain,
+            ),
             acquisition_cost(acquisition, config),
         )
         if drop > best_drop:
             best_drop, best = drop, acquisition
     assert best is not None
     return StrategyChoice(best, [s for _, s in trials])
+
+
+def expected_true_drop(
+    model: CausalPredictiveModel,
+    environment: ExperimentEnvironment,
+    context: ExperimentalContext,
+    query: InterventionalQuery,
+    acquisition: Acquisition,
+    truth: UnivariateGaussianMixture,
+    kl_before: float,
+    config: ActiveLearningConfig,
+    generator,
+) -> float:
+    """Mean drop in query KL to the truth over `config.true_gain_draws`
+    fresh runs of `acquisition` on the true system (rows from `generator`,
+    never the environment generator of the real step)."""
+    node = acquisition.target_node
+    contexts = [
+        context.append(environment.run(acquisition, generator), node)
+        for _ in range(config.true_gain_draws)
+    ]
+    after = predict_query_in_chunks(
+        model,
+        contexts,
+        query.treatment,
+        query.outcome,
+        query.treatment_values,
+        config.inference_batch_size,
+    )
+    kl_after = [
+        query_kl(truth, after[i], config.quadrature_points)
+        for i in range(len(contexts))
+    ]
+    return kl_before - sum(kl_after) / len(kl_after)
